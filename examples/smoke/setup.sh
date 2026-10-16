@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Creates a self-contained smoke project: local bare "origin" repos, runner clones, config.
-# Usage: ~/runner/examples/smoke/setup.sh   (safe to re-run: wipes ~/smoke)
+# Usage: ~/harness/examples/smoke/setup.sh   (safe to re-run: wipes ~/projects/smoke)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-S="$HOME/smoke"
+S="$HOME/projects/smoke"
 IMAGE="${1:-$(docker images hands --format '{{.Tag}}' | grep -v latest | head -1)}"
 [ -n "$IMAGE" ] || { echo "no pinned hands image found"; exit 1; }
 rm -rf "$S"; mkdir -p "$S"
