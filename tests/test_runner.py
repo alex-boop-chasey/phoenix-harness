@@ -1,4 +1,4 @@
-"""Run: python3 -m unittest discover -s tests -v   (from ~/runner). No docker or Claude needed."""
+"""Run: python3 -m unittest discover -s tests -v   (from ~/harness). No docker or Claude needed."""
 import io
 import json
 import os

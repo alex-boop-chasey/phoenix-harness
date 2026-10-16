@@ -7,7 +7,7 @@ Runner loop: hands/loop.py; planner: hands/planner.py; projects: hands/newprojec
 - Make small changes; run `python3 -m unittest discover -s tests` (all must pass) and `node --check hands/static/app.js` after JS edits.
 - Commit every change with git (clear message).
 - Install only when the user says so AND no build is running (`hands <project> status` -> runner alive: False):
-  `bash install.sh` (copies to ~/runner, restarts the dashboard: users must log in again via `hands-dash url`).
+  `bash install.sh` (copies to ~/.local/share/hands/runner, restarts the dashboard: users must log in again via `hands-dash url`).
 
 ## Never weaken these
 - Dashboard: CSP has no inline script and no style attributes (set styles via element.style or CSS classes);

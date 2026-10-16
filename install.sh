@@ -2,7 +2,7 @@
 # Install/upgrade the runner for user `builder`. Run from the extracted folder:  bash install.sh
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
-DEST="$HOME/runner"
+DEST="$HOME/.local/share/hands/runner"
 
 [ "$(id -u)" != 0 ] || { echo "run as builder, not root"; exit 1; }
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' || { echo "need python3 >= 3.12"; exit 1; }
@@ -11,8 +11,8 @@ docker info >/dev/null 2>&1 || { echo "builder cannot reach docker (docker group
 
 if [ "$SRC" != "$DEST" ]; then
   mkdir -p "$DEST"
-  rm -rf "$DEST/hands" "$DEST/prompts" "$DEST/planner-skills" "$DEST/container" "$DEST/tests" "$DEST/examples"
-  cp -r "$SRC"/hands "$SRC"/prompts "$SRC"/planner-skills "$SRC"/container "$SRC"/tests "$SRC"/examples "$SRC"/README.md "$SRC"/VERSION "$DEST"/
+  rm -rf "$DEST/hands" "$DEST/prompts" "$DEST/planner-skills" "$DEST/container" "$DEST/tests" "$DEST/examples" "$DEST/image"
+  cp -r "$SRC"/hands "$SRC"/prompts "$SRC"/planner-skills "$SRC"/container "$SRC"/tests "$SRC"/examples "$SRC"/image "$SRC"/README.md "$SRC"/VERSION "$DEST"/
 fi
 chmod 755 "$DEST/container/entry.sh" "$DEST/tests/fake_docker.py" "$DEST/examples/smoke/setup.sh"
 find "$DEST" -name __pycache__ -prune -exec rm -rf {} +
@@ -32,14 +32,14 @@ chmod 755 "$HOME/.local/bin/hands-dash"
 echo "== self-test (fake docker, no Claude usage)"
 ( cd "$DEST" && python3 -m unittest discover -s tests 2>&1 | tail -3 )
 
-IMG_TAG="$(sed -n 's/^CLAUDE_CODE_VERSION=//p' ~/hands/versions.env 2>/dev/null)"
-PW_TAG="$(sed -n 's/^PLAYWRIGHT_VERSION=//p' ~/hands/versions.env 2>/dev/null)"
+IMG_TAG="$(sed -n 's/^CLAUDE_CODE_VERSION=//p' "$SRC/image/versions.env" 2>/dev/null)"
+PW_TAG="$(sed -n 's/^PLAYWRIGHT_VERSION=//p' "$SRC/image/versions.env" 2>/dev/null)"
 CFG="$HOME/.config/hands/projects/ra.toml"
 if [ ! -f "$CFG" ] && [ -n "$IMG_TAG" ]; then
   cat > "$CFG" <<EOF
-spec_dir = "~/ra-specs"
-app_dir = "~/ra-app"
-state_dir = "~/ra-state"
+spec_dir = "~/projects/ra/specs"
+app_dir = "~/projects/ra/app"
+state_dir = "~/projects/ra/state"
 image = "hands:cc$IMG_TAG-pw$PW_TAG"
 coder_model = "claude-fable-5-1"
 eval_model = "claude-fable-5-1"

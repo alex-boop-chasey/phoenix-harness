@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 CONFIG_HOME = Path(os.environ.get("HANDS_CONFIG_HOME", Path.home() / ".config" / "hands"))
-RUNNER_HOME = Path(__file__).resolve().parent.parent  # ~/runner
+RUNNER_HOME = Path(__file__).resolve().parent.parent  # install dir: ~/.local/share/hands/runner
 
 
 def _p(v: str | None) -> Path | None:
@@ -40,7 +40,7 @@ class Config:
     claude_env: Path = field(default_factory=lambda: CONFIG_HOME / "claude.env")
     telegram_env: Path | None = field(default_factory=lambda: CONFIG_HOME / "telegram.env")
     project_env: Path | None = None     # dev/test secrets passed to coder, acceptance and evaluator
-    skills_dir: Path | None = field(default_factory=lambda: Path.home() / "hands" / "skills")
+    skills_dir: Path | None = field(default_factory=lambda: RUNNER_HOME / "image" / "skills")
     pnpm_volume: str = ""               # coder-only cache volume; default hands-<project>-coder-store
     tz: str = "Australia/Brisbane"       # container TZ; also used to read "resets 3pm" messages
     min_free_gb: int = 8
