@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "project": "smoke",
+  "allowed_paths": ["src/**", "test/**", "package.json"],
+  "always_refs": ["docs/conventions.md"],
+  "steps": [
+    {
+      "id": "S01",
+      "title": "greet function",
+      "goal": "Create src/greet.js (ES module) exporting greet(name) as specified, with unit tests in test/.",
+      "refs": ["docs/greetings.md#greet"],
+      "acceptance": ["node --test acceptance/greet.test.mjs", "node --test test/*.test.mjs"]
+    },
+    {
+      "id": "S02",
+      "title": "shout function",
+      "goal": "Add shout(name) to src/greet.js as specified, reusing greet's validation, with unit tests in test/.",
+      "refs": ["docs/greetings.md#shout"],
+      "depends_on": ["S01"],
+      "acceptance": ["node --test acceptance/greet.test.mjs acceptance/shout.test.mjs", "node --test test/*.test.mjs"]
+    }
+  ]
+}
