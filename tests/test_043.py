@@ -89,7 +89,9 @@ class TestUsage(unittest.TestCase):
         ev = {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "resetsAt": 1792174800,
               "rateLimitType": "five_hour", "unifiedWindows": {"five_hour": {"utilization": 0.19, "resetsAt": 1792174800},
                                                               "seven_day": {"utilization": 0.16, "resetsAt": 1792530000}}}}
-        u = usage.extract(ev)
+        from unittest import mock
+        with mock.patch("hands.usage.time.time", new=lambda: 1792174800 - 3600):  # fixture resets are fixed timestamps
+            u = usage.extract(ev)
         self.assertEqual(u["five_hour"], {"used_pct": 19.0, "resets_at": 1792174800})
         self.assertEqual(u["seven_day"]["used_pct"], 16.0)
         self.assertIsNone(usage.extract({"type": "rate_limit_event", "rate_limit_info": {}}))
