@@ -35,9 +35,10 @@ async function loadProjects() {
   if (current && !list.some((p) => p.name === current)) current = null;
   const nav = $("#projects");
   nav.replaceChildren(...list.map((p) =>
-    el("button", { "aria-current": String(mode === "project" && p.name === current), on: { click: () => select(p.name) } },
-      p.name, " ", badge(p.error ? "error" : p.status))),
-    el("button", { "aria-current": String(mode !== "project"), on: { click: showNew } }, "+ New project"));
+    el("button", { class: "pcard", type: "button", "aria-current": String(mode === "project" && p.name === current),
+                   on: { click: () => select(p.name) } },
+      el("span", { class: "pname" }, p.name), badge(p.error ? "error" : p.status))));
+  $("#newproject").setAttribute("aria-current", String(mode !== "project"));
   if (mode !== "project") return;
   if (!current && list.length) select(list[0].name);
   if (!list.length) showNew();
@@ -442,6 +443,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   let saved = null;
   try { saved = localStorage.getItem("hands.project"); } catch (e) { saved = null; }
   current = saved;
+  $("#newproject").addEventListener("click", showNew);
   await loadProjects().catch(() => {});
   loadUsage();
   if (current && current === saved) select(current);

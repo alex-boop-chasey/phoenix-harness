@@ -13,11 +13,28 @@ header { display: flex; gap: 16px; align-items: center; padding: 10px 16px; bord
          background: var(--panel); position: sticky; top: 0; z-index: 2; flex-wrap: wrap; }
 h1 { font-size: 16px; margin: 0; letter-spacing: .02em; }
 h2 { font-size: 15px; margin: 0 0 8px; }
-nav { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
-nav button { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 6px;
-             padding: 4px 10px; cursor: pointer; font: inherit; }
-nav button[aria-current="true"] { border-color: var(--ink); font-weight: 600; }
-main { padding: 16px; max-width: 1500px; margin: 0 auto; display: grid; gap: 16px; }
+.shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 0; max-width: 1740px; margin: 0 auto; align-items: start; }
+.sidebar { position: sticky; top: 49px; max-height: calc(100vh - 49px); overflow: auto; padding: 16px 12px;
+           border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.plist { display: flex; flex-direction: column; gap: 6px; }
+.pcard { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; text-align: left;
+         border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 8px;
+         padding: 8px 10px; cursor: pointer; font: inherit; }
+.pcard:hover { border-color: var(--ink); }
+.pcard[aria-current="true"] { border-color: var(--run); background: color-mix(in srgb, var(--run) 12%, var(--panel)); }
+.pcard[aria-current="true"] .pname { font-weight: 600; }
+.pname { overflow-wrap: anywhere; }
+.pnew { margin-top: auto; color: var(--muted); align-items: center; }
+.pnew[aria-current="true"] { color: var(--ink); }
+main { padding: 16px; display: grid; gap: 16px; min-width: 0; }
+@media (max-width: 1000px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .sidebar { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--line);
+             flex-direction: row; flex-wrap: wrap; padding: 10px 16px; }
+  .plist { flex-direction: row; flex-wrap: wrap; }
+  .pcard { width: auto; flex-direction: row; align-items: center; gap: 8px; padding: 6px 10px; }
+  .pnew { margin-top: 0; }
+}
 section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
 .grid2 { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 @media (max-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
