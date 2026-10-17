@@ -39,7 +39,9 @@ from pathlib import Path
 
 from . import config as cfgmod
 from . import gitops
+from . import sessions
 from . import spec as specmod
+from . import ws
 from .state import Lock
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -561,6 +563,13 @@ def attempt_file(name: str, attempt: str, fname: str) -> tuple[str, bool]:
     return read_file(d / fname)
 
 
+def _sid(s: str) -> str:
+    try:
+        return sessions.validate_id(s)
+    except ValueError:
+        raise LookupError(s)
+
+
 # ---------------------------------------------------------------- actions (run the CLI, so its checks apply)
 ACTIONS = {"stop": ["stop"], "start": ["start"], "ack": ["ack"], "ack-clear-model": ["ack", "--clear-model"]}
 
@@ -627,16 +636,21 @@ class Handler(BaseHTTPRequestHandler):
         return bool(LOCAL_HOST.match(self.headers.get("Host", "")))
 
     def _authed(self) -> bool:
+        return bool(self._login_sid())
+
+    def _login_sid(self) -> str:
         raw = self.headers.get("Cookie", "")
         for part in raw.split(";"):
             k, _, v = part.strip().partition("=")
             if k == COOKIE and self.server.session_ok(v):
-                return True
-        return False
+                return v
+        return ""
+
+    def _same_origin(self) -> bool:
+        return self.headers.get("Origin", "") == f"http://{self.headers.get('Host', '')}"
 
     def _origin_ok(self) -> bool:
-        origin = self.headers.get("Origin", "")
-        return origin == f"http://{self.headers.get('Host', '')}" and self.headers.get("X-Hands") == "1"
+        return self._same_origin() and self.headers.get("X-Hands") == "1"
 
     # -- verbs
     def do_GET(self):
@@ -675,6 +689,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._get(path, urllib.parse.parse_qs(u.query))
         except LookupError:
             return self._json(404, {"error": "not found"})
+        except sessions.Conflict as e:
+            return self._json(409, {"error": str(e)[:500]})
         except ValueError as e:
             return self._json(400, {"error": str(e)[:500]})
         except Exception as e:  # never leak a traceback page
@@ -714,6 +730,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, u)
         if parts[:2] == ["api", "projects"] and len(parts) == 2:
             return self._json(200, [summary(n) for n in project_names()])
+        if parts == ["api", "sessions"]:
+            return self._json(200, sessions.Store().listing())
+        if parts == ["api", "sessions", "defaults"]:
+            return self._json(200, {"cwd": str(sessions.default_cwd()), "home": str(sessions.HOME),
+                                    "max_terminals": sessions.MAX_TERMINALS})
+        if len(parts) == 3 and parts[:2] == ["ws", "sessions"]:
+            return self._terminal(_sid(parts[2]), (q.get("t") or [""])[0])
         if len(parts) >= 3 and parts[:2] == ["api", "p"]:
             name, rest = parts[2], parts[3:]
             if rest == ["env"]:
@@ -759,7 +782,53 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 raise ValueError("bad json")
             return self._json(200, env_update(parts[2], req))
+        if parts == ["api", "sessions", "new"]:
+            try:
+                req = json.loads(body or b"{}")
+            except ValueError:
+                raise ValueError("bad json")
+            cwd = req.get("cwd") if isinstance(req, dict) else None
+            return self._json(200, sessions.start_new(cwd if isinstance(cwd, str) and cwd else None))
+        if len(parts) == 4 and parts[:2] == ["api", "sessions"]:
+            sid, verb = _sid(parts[2]), parts[3]
+            if verb == "ticket":
+                sessions.Store().get(sid)
+                return self._json(200, {"ticket": self.server.mint_ticket(self._login_sid(), sid),
+                                        "ttl": sessions.TICKET_TTL})
+            if verb == "resume":
+                return self._json(200, sessions.resume(sid))
+            if verb == "stop":
+                return self._json(200, sessions.stop(sid))
+            if verb == "delete":
+                return self._json(200, sessions.delete(sid))
         raise LookupError(path)
+
+    # -- terminal WebSocket: every check runs before the 101 (Host and login already did in _dispatch)
+    def _terminal(self, sid: str, ticket: str) -> None:
+        if not self._same_origin():
+            return self._json(403, {"error": "bad origin"})
+        err = ws.handshake_error(self.headers) if self.command == "GET" else "websocket required"
+        if err:
+            return self._json(400, {"error": err})
+        if not ticket or not self.server.redeem_ticket(ticket, self._login_sid(), sid):
+            return self._json(403, {"error": "bad or expired ticket"})
+        rec = sessions.Store().get(sid)                                   # 404 if unknown
+        if not sessions.BACKEND.alive(sid):
+            return self._json(409, {"error": "the session is not running; resume it first"})
+        if not self.server.acquire_terminal():
+            return self._json(503, {"error": f"too many terminals open ({sessions.MAX_TERMINALS} max); close one first"})
+        try:
+            viewer = sessions.Viewer(sid, sessions.BACKEND.attach_argv(sid), sessions.tmux_env())
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", ws.accept_key(self.headers["Sec-WebSocket-Key"].strip()))
+            self.end_headers()
+            self.wfile.flush()
+            viewer.run(ws.WebSocket(self.connection, self.rfile))
+        finally:
+            self.server.release_terminal()
+            self.close_connection = True
 
 
 class Server(ThreadingHTTPServer):
@@ -768,9 +837,51 @@ class Server(ThreadingHTTPServer):
 
     def __init__(self, port: int):
         self.sessions: dict[str, float] = {}
+        self.tickets: dict[str, tuple[str, str, float]] = {}      # ticket -> (login session, claude session, expiry)
         self._lock = threading.Lock()
         self._slots = threading.BoundedSemaphore(MAX_CONN)
+        self._terminals = 0
         super().__init__(("127.0.0.1", port), Handler)
+
+    # -- terminal tickets: minted by a CSRF-checked POST, redeemed once by the WebSocket upgrade
+    def mint_ticket(self, login_sid: str, session_id: str) -> str:
+        tok = secrets.token_urlsafe(24)
+        with self._lock:
+            now = time.time()
+            self.tickets = {k: v for k, v in self.tickets.items() if v[2] > now}
+            if len(self.tickets) >= 64:
+                raise ValueError("too many unused terminal tickets; wait a moment")
+            self.tickets[tok] = (login_sid, session_id, now + sessions.TICKET_TTL)
+        return tok
+
+    def redeem_ticket(self, tok: str, login_sid: str, session_id: str) -> bool:
+        with self._lock:
+            t = self.tickets.get(tok)
+            if t is None:
+                return False
+            if t[2] <= time.time():
+                del self.tickets[tok]
+                return False
+            if not (hmac.compare_digest(t[0], login_sid) and t[1] == session_id):
+                return False
+            del self.tickets[tok]
+            return True
+
+    # -- terminal slots (MAX_TERMINALS open WebSocket terminals, all sessions together)
+    def acquire_terminal(self) -> bool:
+        with self._lock:
+            if self._terminals >= sessions.MAX_TERMINALS:
+                return False
+            self._terminals += 1
+            return True
+
+    def release_terminal(self) -> None:
+        with self._lock:
+            self._terminals = max(0, self._terminals - 1)
+
+    def terminals_open(self) -> int:
+        with self._lock:
+            return self._terminals
 
     def new_session(self) -> str:
         sid = secrets.token_urlsafe(32)
