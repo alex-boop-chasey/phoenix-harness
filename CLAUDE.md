@@ -4,6 +4,7 @@ This is a Hostinger KVM 2 VPS (Ubuntu 26.04, 2 vCPU, 8 GB RAM, x86_64). Claude r
 
 ## Communication
 Short, matter-of-fact. Lead with the answer. Never guess: say when unsure, then check. Anything that needs root: write the command in one code block and Alex runs it.
+While working: no narration between tool calls. At most one terse line (shorthand, under 12 words) when changing phase, e.g. "tests: 112 ok" or "fix: + menu clip". Do not explain what you are about to do or summarise each result. Full sentences only in the end-of-step report and when asking Alex something.
 
 ## Hard rules
 - Never read, print, copy or move secrets: `~/.config/hands/**` (Claude token, GitHub PAT with org-admin rights, Telegram token, per-project secrets in `secrets/<slug>/`), `~/.ssh`, `~/.config/gh`, `~/.git-credentials`, `~/.claude/channels`. Never ask Alex to approve a command that would read them.
