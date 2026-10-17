@@ -224,3 +224,38 @@ resized together with the browser (`tmux resize-window` / `setwinsize` on the at
    fragmentation, ping/pong and close correctly, and times out idle or half-open connections.
 3. The number of open terminal connections is capped.
 4. Each of these has its own unit test.
+
+Implemented in step 10 (`hands/ws.py`, `hands/sessions.py`, routes in `docs/api.md`). Two follow-up
+decisions recorded on 2026-10-17:
+
+- **No token variables in sessions.** The session environment is an allowlist (`PATH HOME TERM LANG
+  USER SHELL` + `CLAUDE_CONFIG_DIR`, `TMUX_TMPDIR`) applied with `env -i` on the tmux command line,
+  which tmux keeps visible (`pane_start_command`, `ps` during `env`). `CLAUDE_CODE_OAUTH_TOKEN` and
+  `ANTHROPIC_API_KEY` are therefore never passed, by Alex's decision; Claude's login on this host is
+  `~/.claude/.credentials.json`, reached through `HOME`. If a token-based login is ever needed it must
+  go through a file, not the environment.
+- **`--resume` across folders:** see §7.
+
+## 7. `claude --resume` verified (2026-10-17, Claude Code 2.1.292)
+
+Question: does the Session manager's assumption hold that `claude --resume <uuid>` finds the session
+when started from the recorded working folder, and what happens from another folder?
+
+Method (cheap, real Claude): in `~/ops/tmp/resume-a`, with the same `env -i` allowlist the Session
+manager uses, `claude -p --model claude-haiku-5-5 --output-format json "Reply with exactly one word:
+pineapple"`; then `claude -p … --resume <id> "repeat your last word"` from the same folder, and again
+from `~/ops/tmp/resume-b`. Temp folders and their transcripts were deleted afterwards.
+
+| Run | Folder | Result |
+|---|---|---|
+| new session | resume-a | `result: "pineapple"`, transcript `~/.claude/projects/-home-builder-ops-tmp-resume-a/<id>.jsonl` |
+| `--resume <id>` | resume-a (same) | `is_error: false`, same `session_id`, `result: "pineapple"` |
+| `--resume <id>` | resume-b (different) | **also works**: same `session_id`, `result: "pineapple"`; the transcript stays in resume-a's project directory (entries record `cwd: …/resume-b`), nothing is created under resume-b's |
+
+Conclusions: resume is looked up by id across all project directories, so the assumption holds with
+margin. The code keeps starting every resume in the session's recorded folder (that is what the user
+expects), and `transcript_path()` keyed on the recorded folder is exactly where Claude keeps writing
+the transcript, even if a session were ever resumed elsewhere. No code change needed. Side notes: the
+CLI printed `[claude-code:unrecognized_model] claude-haiku-5-5` on stderr but served that model
+(`modelUsage` names it); a 3-turn one-word session already weighs 290 KB of transcript (the first user
+line is at the top, within `read_title`'s 256 KB bound).
