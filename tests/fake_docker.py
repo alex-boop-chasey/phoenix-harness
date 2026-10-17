@@ -94,7 +94,11 @@ if role == "accept":
     sys.exit(p.returncode)
 
 if role == "probe" and cmd and cmd[0] == "bash":
-    print("blocked\nanthropic=404\ncannot-flush\nno-sudo\n1000")
+    # a locked-down container's answer to FIREWALL_PROBE (hands/__main__.py)
+    print("blocked\nip-blocked\nanthropic=404\ncannot-flush\nno-sudo\nv6-blocked\ndns-allowed-ok\ndns-random-blocked\n"
+          "dns-direct-blocked-1.1.1.1+udp\ndns-direct-blocked-1.1.1.1+tcp\ndns-direct-blocked-8.8.8.8+udp\n"
+          "dns-direct-blocked-8.8.8.8+tcp\ndnsmasq-running\ndnsmasq-survived\ndnsconf-readonly\nssh-blocked\n"
+          "ghip-blocked\ngh-dns-blocked\ngithub=000\nhost-blocked\n1000")
     sys.exit(0)
 
 if role in ("coder", "eval", "probe", "planner"):

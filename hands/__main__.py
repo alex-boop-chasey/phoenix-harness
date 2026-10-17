@@ -282,6 +282,65 @@ def watchdog_all() -> int:
     return rc
 
 
+# Runs as the agent uid inside a probe container (bash). Every line is a marker read by firewall_checks;
+# the last line is the uid. Raw IPs: 1.1.1.1 (any outside host), 140.82.112.3 (github.com, outside the
+# allowlist unless a project lists it), the default gateway (= the host).
+FIREWALL_PROBE = (
+    "curl -s --connect-timeout 5 https://example.com >/dev/null && echo LEAK || echo blocked; "
+    "curl -s --connect-timeout 5 http://1.1.1.1/ >/dev/null && echo LEAK-IP || echo ip-blocked; "
+    "curl -s -o /dev/null -w 'anthropic=%{http_code}\\n' https://api.anthropic.com; "
+    "iptables -F 2>/dev/null && echo FLUSHED || echo cannot-flush; "
+    "sudo -n true 2>/dev/null && echo SUDO || echo no-sudo; "
+    "curl -s -6 --connect-timeout 5 https://example.com >/dev/null && echo LEAK6 || echo v6-blocked; "
+    "getent hosts api.anthropic.com >/dev/null && echo dns-allowed-ok || echo DNS-ALLOWED-FAILED; "
+    "getent hosts probe-$RANDOM$RANDOM.example.com >/dev/null && echo DNS-RANDOM-RESOLVED || echo dns-random-blocked; "
+    "for ns in 1.1.1.1 8.8.8.8; do for t in '' '+tcp'; do "
+    "dig $t +short +time=3 +tries=1 @$ns example.com 2>/dev/null | grep -q . "
+    "&& echo DNS-OPEN-$ns${t:-+udp} || echo dns-direct-blocked-$ns${t:-+udp}; done; done; "
+    "pgrep -x dnsmasq >/dev/null && echo dnsmasq-running || echo DNSMASQ-MISSING; "
+    "pkill -x dnsmasq 2>/dev/null; pkill -9 -x dnsmasq 2>/dev/null; sleep 1; "
+    "pgrep -x dnsmasq >/dev/null && echo dnsmasq-survived || echo DNSMASQ-KILLED; "
+    "touch /run/hands-dns/dnsmasq.conf 2>/dev/null && echo DNSCONF-WRITABLE || echo dnsconf-readonly; "
+    "timeout 5 bash -c 'exec 3<>/dev/tcp/140.82.112.3/22' 2>/dev/null && echo LEAK-SSH || echo ssh-blocked; "
+    "timeout 5 bash -c 'exec 3<>/dev/tcp/140.82.112.3/443' 2>/dev/null && echo LEAK-GHIP || echo ghip-blocked; "
+    "getent hosts api.github.com >/dev/null && echo GH-DNS-RESOLVED || echo gh-dns-blocked; "
+    "curl -s -o /dev/null -w 'github=%{http_code}\\n' --connect-timeout 5 https://api.github.com/zen; "
+    "GW=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}'); "
+    "[ -n \"$GW\" ] && timeout 5 bash -c \"exec 3<>/dev/tcp/$GW/22\" 2>/dev/null && echo LEAK-HOST || echo host-blocked; "
+    "id -u"
+)
+
+
+def firewall_checks(out: str, allowed: set[str] = frozenset()) -> list[tuple[bool, str]]:
+    """Turn the probe's markers into (passed, label) pairs. `allowed` = the project's allowed-domains:
+    GitHub probes are skipped (reported as passed with a note) when the project allowlists it."""
+    lines = out.split()
+    has = lines.__contains__
+    checks = [
+        (has("blocked") and not has("LEAK"), "egress blocked for non-allowlisted sites"),
+        (has("ip-blocked") and not has("LEAK-IP"), "egress blocked to a raw outside IP (1.1.1.1:80)"),
+        (any(l.startswith("anthropic=") and l != "anthropic=000" for l in lines), "api.anthropic.com reachable"),
+        (has("cannot-flush") and has("no-sudo"), "agent cannot change firewall or use sudo"),
+        (has("v6-blocked") and not has("LEAK6"), "no IPv6 egress"),
+        (has("dns-allowed-ok"), "DNS: allowlisted name resolves"),
+        (has("dns-random-blocked"), "DNS: non-allowlisted name does not resolve"),
+        (not any(l.startswith("DNS-OPEN-") for l in lines)
+         and sum(l.startswith("dns-direct-blocked-") for l in lines) == 4,
+         "DNS: direct queries to 1.1.1.1/8.8.8.8 (udp+tcp) blocked"),
+        (has("dnsmasq-running") and has("dnsmasq-survived") and has("dnsconf-readonly"),
+         "DNS: agent cannot kill or reconfigure dnsmasq"),
+        (has("ssh-blocked") and not has("LEAK-SSH"), "egress blocked on tcp/22 to an outside IP"),
+        (has("host-blocked") and not has("LEAK-HOST"), "egress blocked to the host (default gateway)"),
+    ]
+    gh = {"github.com", "api.github.com"} & allowed
+    if gh:
+        checks.append((True, f"GitHub probes skipped: project allowlists {', '.join(sorted(gh))}"))
+    else:
+        checks.append((has("ghip-blocked") and not has("LEAK-GHIP"), "egress blocked to a GitHub IP (not allowlisted)"))
+        checks.append((has("gh-dns-blocked") and has("github=000"), "api.github.com unreachable (not allowlisted)"))
+    return checks
+
+
 def check_env(cfg, line) -> bool:
     """Project variables: counts by visibility; fails on a loose file mode or lines the dashboard cannot manage."""
     from . import projectenv
@@ -380,25 +439,15 @@ def check(r: Runner) -> int:
             line(need in pres.text, f"planner skill visible: {need}")
         line("WebFetch" not in pres.text.split("TOOLS=", 1)[-1], "planner has no WebFetch")
         workspace.rmtree(pw)
-    # firewall: blocked + allowed, and the agent cannot undo it
+    # firewall: blocked + allowed, DNS filtered, and the agent cannot undo any of it
     fw = docker.run(cfg, Run(
         name=docker.unique_name(cfg, "probe", "fw"), role="probe",
-        cmd=["bash", "-c",
-             "curl -s --connect-timeout 5 https://example.com >/dev/null && echo LEAK || echo blocked; "
-             "curl -s -o /dev/null -w 'anthropic=%{http_code}\\n' https://api.anthropic.com; "
-             "iptables -F 2>/dev/null && echo FLUSHED || echo cannot-flush; "
-             "sudo -n true 2>/dev/null && echo SUDO || echo no-sudo; "
-             "curl -s -6 --connect-timeout 5 https://example.com >/dev/null && echo LEAK6 || echo v6-blocked; "
-             "dig +short +time=3 +tries=1 @1.1.1.1 example.com | grep -q . && echo DNS-OPEN || echo dns-1111-blocked; "
-             "id -u"],
+        cmd=["bash", "-c", FIREWALL_PROBE],
         mounts=docker.base_mounts(cfg, r.spec.root), stdout=pdir / "fw.txt", stderr=pdir / "fw.err", timeout_s=300))
     out = (pdir / "fw.txt").read_text() if (pdir / "fw.txt").exists() else ""
-    line(fw == 0 and "blocked" in out and "LEAK" not in out, "egress blocked for non-allowlisted sites")
-    line("anthropic=000" not in out and "anthropic=" in out, "api.anthropic.com reachable")
-    line("cannot-flush" in out and "no-sudo" in out, "agent cannot change firewall or use sudo")
-    line("LEAK6" not in out, "no IPv6 egress")
-    if "DNS-OPEN" in out:
-        print("[warn] DNS to outside resolvers is open (reference firewall allows all port 53): DNS tunnelling possible")
+    from . import planner
+    for want, label in firewall_checks(out, set(planner.domains(r.spec.root / "allowed-domains"))):
+        line(fw == 0 and want, label)
     line(out.strip().splitlines()[-1:] != ["0"], f"agent uid is not root ({out.strip().splitlines()[-1:] or '?'})")
     workspace.rmtree(work)
     if r.notify.enabled:

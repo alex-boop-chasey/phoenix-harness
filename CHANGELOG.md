@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.5.1 (release candidate, 2026-10-17)
+
+Closes the open-DNS hole in the build containers (`hands <p> check` used to warn "DNS to outside
+resolvers is open: DNS tunnelling possible"). New agent image `hands:cc2.1.301-pw1.64.1-dns1`
+(`image/versions.env` `IMAGE_VARIANT`); the old tag is untouched. Branch `dns-filter`.
+
+- Image: dnsmasq (`dnsmasq-base`) and `image/hands-dns-conf.sh`, which turns the allowlist into a
+  dnsmasq config (`no-resolv`, one `server=`/`ipset=` pair per name, `local=/#/` so everything else is
+  NXDOMAIN); it accepts only exact lowercase hostnames and IPv4 upstreams and fails closed.
+- `init-firewall.sh`: starts dnsmasq as root on 127.0.0.1:53 (config in root-only `/run/hands-dns/`),
+  upstream = the container's original resolvers, points `/etc/resolv.conf` at 127.0.0.1; resolved
+  addresses join the `allowed-domains` ipset at query time. iptables: port 53 from the agent uid only
+  to 127.0.0.1, upstream resolvers only for uid 0, all other port-53 egress dropped. Startup fails if
+  example.com resolves or api.anthropic.com is unreachable.
+- Firewall tightened: no GitHub IP ranges and no `api.github.com/meta` fetch (GitHub works only when a
+  project lists it in `allowed-domains`), no host /24 allow, no outbound tcp/22. Nothing in the
+  runner, prompts or container scripts needed any of them (GitHub API calls are host-side only).
+- `hands <p> check`: the DNS warning is replaced by probes from inside the agent container (see
+  `docs/architecture.md`): allowlisted name resolves, random name does not, direct 1.1.1.1/8.8.8.8
+  queries (udp+tcp) blocked, dnsmasq not killable/reconfigurable, raw IP, tcp/22, GitHub IP,
+  api.github.com and the host gateway blocked. GitHub probes are skipped when the project allowlists it.
+- `install.sh` writes the variant into the default image in `new-project.toml`; planner prompt, README
+  (residual risks: subdomains of listed names resolve; never allowlist wildcard-hosting apexes),
+  architecture docs updated. Tests: `tests/test_v17.py` (config generation, probe evaluation).
+
 ## 0.5.0 (release candidate, 2026-10-17)
 
 One app, one design system: the Project builder (the 0.4.3 dashboard), a Session manager (persistent

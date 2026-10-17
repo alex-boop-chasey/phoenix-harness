@@ -5,6 +5,19 @@ IFS=$'\n\t'       # Stricter word splitting
 # 1. Extract Docker DNS info BEFORE any flushing
 DOCKER_DNS_RULES=$(iptables-save -t nat | grep "127\.0\.0\.11" || true)
 
+# The container's original resolvers become dnsmasq's upstreams (IPv4 only, at most 3). Read once:
+# the file is rewritten below and a restart must not pick up 127.0.0.1.
+DNS_STATE=/run/hands-dns
+if [ -f "$DNS_STATE/upstream" ]; then
+    UPSTREAMS=$(cat "$DNS_STATE/upstream")
+else
+    UPSTREAMS=$(awk '$1 == "nameserver" && $2 ~ /^[0-9.]+$/ {print $2}' /etc/resolv.conf | head -3)
+fi
+if [ -z "$UPSTREAMS" ]; then
+    echo "ERROR: no IPv4 nameserver in /etc/resolv.conf"
+    exit 1
+fi
+
 # Flush existing rules and delete existing ipsets
 iptables -F
 iptables -X
@@ -24,54 +37,73 @@ else
     echo "No Docker DNS rules to restore"
 fi
 
-# First allow DNS and localhost before any restrictions
-# Allow outbound DNS
-iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-# Allow inbound DNS responses
-iptables -A INPUT -p udp --sport 53 -j ACCEPT
-# Allow outbound SSH
-iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
-# Allow inbound SSH responses
-iptables -A INPUT -p tcp --sport 22 -m state --state ESTABLISHED -j ACCEPT
+# DNS: everything goes through a root-owned dnsmasq on 127.0.0.1:53 that forwards only allowlisted
+# names. Only root (dnsmasq, and this script) may reach the upstream resolvers; any other port-53
+# egress is dropped. These rules come before the loopback and host-network accepts below.
+pkill -x dnsmasq 2>/dev/null || true
+for proto in udp tcp; do
+    iptables -A OUTPUT -o lo -d 127.0.0.1 -p "$proto" --dport 53 -j ACCEPT
+done
+while read -r up; do
+    if [ "$up" = 127.0.0.11 ]; then
+        # Docker's embedded resolver: its nat rules DNAT port 53 to a random port, so match the address
+        iptables -A OUTPUT -d "$up" -m owner --uid-owner 0 -j ACCEPT
+        iptables -A OUTPUT -d "$up" -j DROP
+    else
+        for proto in udp tcp; do
+            iptables -A OUTPUT -d "$up" -p "$proto" --dport 53 -m owner --uid-owner 0 -j ACCEPT
+        done
+    fi
+done <<< "$UPSTREAMS"
+for proto in udp tcp; do
+    iptables -A OUTPUT -p "$proto" --dport 53 -j DROP
+done
 # Allow localhost
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 
-# Create ipset with CIDR support
+# Create ipset with CIDR support (dnsmasq adds the addresses of allowlisted names at query time)
 ipset create allowed-domains hash:net
 
-# Fetch GitHub meta information and aggregate + add their IP ranges
-echo "Fetching GitHub IP ranges..."
-gh_ranges=$(curl -s https://api.github.com/meta)
-if [ -z "$gh_ranges" ]; then
-    echo "ERROR: Failed to fetch GitHub IP ranges"
-    exit 1
-fi
-
-if ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null; then
-    echo "ERROR: GitHub API response missing required fields"
-    exit 1
-fi
-
-echo "Processing GitHub IPs..."
-while read -r cidr; do
-    if [[ ! "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
-        echo "ERROR: Invalid CIDR range from GitHub meta: $cidr"
-        exit 1
-    fi
-    echo "Adding GitHub range $cidr"
-    ipset add allowed-domains "$cidr"
-done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
-
-# Resolve and add other allowed domains
-for domain in \
-    "registry.npmjs.org" \
+# Allowlisted names: what Claude Code and the toolchain need, plus the spec repo's allowed-domains
+ALLOWED_NAMES=$(printf '%s\n' \
     "api.anthropic.com" \
+    "registry.npmjs.org" \
     "sentry.io" \
-    "statsig.com" \
-    $(cat /etc/hands/allowed-domains 2>/dev/null || true); do
+    "statsig.com"
+    cat /etc/hands/allowed-domains 2>/dev/null || true)
+
+mkdir -p "$DNS_STATE"
+chown root:root "$DNS_STATE"
+chmod 755 "$DNS_STATE"
+printf '%s\n' "$UPSTREAMS" > "$DNS_STATE/upstream"
+# shellcheck disable=SC2086  # one argument per upstream (IFS is newline)
+if ! printf '%s\n' "$ALLOWED_NAMES" | /usr/local/bin/hands-dns-conf.sh allowed-domains $UPSTREAMS \
+        > "$DNS_STATE/dnsmasq.conf"; then
+    echo "ERROR: invalid DNS allowlist (see above)"
+    exit 1
+fi
+chmod 644 "$DNS_STATE/upstream" "$DNS_STATE/dnsmasq.conf"
+dnsmasq --test --conf-file="$DNS_STATE/dnsmasq.conf"
+dnsmasq --conf-file="$DNS_STATE/dnsmasq.conf"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -s "$DNS_STATE/dnsmasq.pid" ] && break
+    sleep 0.2
+done
+if [ ! -s "$DNS_STATE/dnsmasq.pid" ]; then
+    echo "ERROR: dnsmasq did not start"
+    exit 1
+fi
+# /etc/resolv.conf is a Docker bind mount: rewrite in place (cannot rename over it)
+printf 'nameserver 127.0.0.1\n' > /etc/resolv.conf
+chown root:root /etc/resolv.conf
+chmod 644 /etc/resolv.conf
+echo "DNS filter: dnsmasq on 127.0.0.1:53, upstream $(echo $UPSTREAMS)"
+
+# Resolve the allowed names once through dnsmasq: fails early on a typo, and pre-fills the ipset
+for domain in $(printf '%s\n' "$ALLOWED_NAMES" | grep -v '^[[:space:]]*\(#\|$\)' | tr -d ' \r'); do
     echo "Resolving $domain..."
-    ips=$(dig +noall +answer A "$domain" | awk '$4 == "A" {print $5}')
+    ips=$(dig @127.0.0.1 +noall +answer A "$domain" | awk '$4 == "A" {print $5}')
     if [ -z "$ips" ]; then
         echo "ERROR: Failed to resolve $domain"
         exit 1
@@ -83,23 +115,12 @@ for domain in \
             exit 1
         fi
         echo "Adding $ip for $domain"
-        ipset add allowed-domains "$ip"
+        ipset add -exist allowed-domains "$ip"
     done < <(echo "$ips")
 done
 
-# Get host IP from default route
-HOST_IP=$(ip route | grep default | cut -d" " -f3)
-if [ -z "$HOST_IP" ]; then
-    echo "ERROR: Failed to detect host IP"
-    exit 1
-fi
-
-HOST_NETWORK=$(echo "$HOST_IP" | sed "s/\.[0-9]*$/.0\/24/")
-echo "Host network detected as: $HOST_NETWORK"
-
-# Set up remaining iptables rules
-iptables -A INPUT -s "$HOST_NETWORK" -j ACCEPT
-iptables -A OUTPUT -d "$HOST_NETWORK" -j ACCEPT
+# No host-network allow: nothing in the container talks to the host or its LAN (the runner only
+# mounts files and reads exit codes), so the Docker gateway and the host /24 are blocked like everything else.
 
 # Set default policies to DROP first
 iptables -P INPUT DROP
@@ -125,10 +146,18 @@ else
     echo "Firewall verification passed - unable to reach https://example.com as expected"
 fi
 
-# Verify GitHub API access
-if ! curl --connect-timeout 5 https://api.github.com/zen >/dev/null 2>&1; then
-    echo "ERROR: Firewall verification failed - unable to reach https://api.github.com"
+# Verify the DNS filter: a name that exists but is not allowlisted must not resolve
+if dig @127.0.0.1 +short +time=3 +tries=1 A example.com | grep -q .; then
+    echo "ERROR: DNS filter verification failed - example.com resolved"
     exit 1
 else
-    echo "Firewall verification passed - able to reach https://api.github.com as expected"
+    echo "DNS filter verification passed - example.com does not resolve"
+fi
+
+# Verify an allowlisted site is reachable (DNS through dnsmasq, IP added to the set at query time)
+if ! curl -s -o /dev/null --connect-timeout 5 https://api.anthropic.com/ 2>/dev/null; then
+    echo "ERROR: Firewall verification failed - unable to reach https://api.anthropic.com"
+    exit 1
+else
+    echo "Firewall verification passed - able to reach https://api.anthropic.com as expected"
 fi

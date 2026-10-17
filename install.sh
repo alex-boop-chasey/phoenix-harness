@@ -40,13 +40,14 @@ chmod 755 "$HOME/.local/bin/hands-dash"
 
 IMG_TAG="$(sed -n 's/^CLAUDE_CODE_VERSION=//p' "$SRC/image/versions.env" 2>/dev/null)"
 PW_TAG="$(sed -n 's/^PLAYWRIGHT_VERSION=//p' "$SRC/image/versions.env" 2>/dev/null)"
+VARIANT="$(sed -n 's/^IMAGE_VARIANT=//p' "$SRC/image/versions.env" 2>/dev/null)"
 NP="$HOME/.config/hands/new-project.toml"
 if [ ! -f "$NP" ] && [ -n "$IMG_TAG" ]; then
   cat > "$NP" <<EOF
 # defaults for: hands <slug> create  (and the dashboard's New project form)
 org = "alex-boop-chasey"          # GitHub org that owns the repos
 codeowner = "rebirth-wd"          # must approve spec PRs
-image = "hands:cc$IMG_TAG-pw$PW_TAG"
+image = "hands:cc$IMG_TAG-pw$PW_TAG${VARIANT:+-$VARIANT}"
 coder_model = "claude-fable-5-1"
 eval_model = "claude-fable-5-1"
 fallback_model = "claude-opus-5-5"

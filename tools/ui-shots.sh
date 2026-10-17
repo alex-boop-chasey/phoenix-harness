@@ -38,7 +38,7 @@
 # takes the screenshots into the mounted output folder. Nothing outside the output folder is written.
 set -euo pipefail
 
-IMAGE="${UI_SHOTS_IMAGE:-hands:cc2.1.301-pw1.64.1}"
+IMAGE="${UI_SHOTS_IMAGE:-hands:cc2.1.301-pw1.64.1-dns1}"
 PORT=8090
 
 # ---------------------------------------------------------------- inner mode (runs inside the container)

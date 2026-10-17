@@ -18,7 +18,7 @@ Docker containers, with runner-run acceptance checks and an independent AI evalu
 | Planner | `hands/planner.py` | child process spawned by CLI/dashboard |
 | Project create/destroy | `hands/newproject.py` (+ `hands/codesummary.py` for imported repos) | child process spawned by CLI/dashboard |
 | Watchdog | `hands <p> watchdog` / `hands all watchdog` | cron, every 10 min |
-| Agent containers | `hands/docker.py`, `container/entry.sh`, image files in `image/` | Docker, image `hands:cc2.1.301-pw1.64.1` |
+| Agent containers | `hands/docker.py`, `container/entry.sh`, image files in `image/` | Docker, image `hands:cc2.1.301-pw1.64.1-dns1` |
 
 Supporting modules: `config.py` (per-project TOML), `state.py` (state.json, jsonl logs, flock-based `Lock`),
 `spec.py` (steps.json validation, refs, path globs), `prompts.py` (prompt assembly), `claude.py`
@@ -140,9 +140,20 @@ host-git hardening: env stripped of GIT_SSH/GIT_CONFIG overrides, global/system 
 git is never run inside an agent-written workspace).
 
 - `container/entry.sh` (mounted read-only): applies the egress firewall as root (allowlist =
-  api.anthropic.com etc. + the spec repo's `allowed-domains`; skipped only with `--network none`), gives
-  the home dir to the host uid, then drops to that uid with an empty capability bounding set and
-  `no_new_privs` — the agent cannot be root (uid 0 refused), change the firewall, or use sudo.
+  api.anthropic.com, registry.npmjs.org, sentry.io, statsig.com + the spec repo's `allowed-domains`;
+  skipped only with `--network none`), gives the home dir to the host uid, then drops to that uid with
+  an empty capability bounding set and `no_new_privs` — the agent cannot be root (uid 0 refused),
+  change the firewall, or use sudo. Nothing else is allowed: no GitHub ranges, no host /24, no tcp/22
+  (removed in 0.5.1; GitHub is reachable only if a project lists it in `allowed-domains`).
+- DNS filter (`image/init-firewall.sh`, `image/hands-dns-conf.sh`, 0.5.1): a root-owned dnsmasq on
+  127.0.0.1:53 (`no-resolv`, config under root-only `/run/hands-dns/`) forwards only the allowlisted
+  names to the container's original resolvers and answers NXDOMAIN for everything else; the addresses
+  it resolves are added to the firewall's ipset at query time (`ipset=/name/allowed-domains`), so
+  CDN rotation does not break builds. iptables: the agent uid may send port 53 only to 127.0.0.1; only
+  uid 0 (dnsmasq) may reach the upstream resolvers; all other port-53 egress is dropped. The config
+  generator accepts only exact lowercase hostnames and IPv4 upstreams and fails closed, so an
+  `allowed-domains` line cannot inject dnsmasq directives. dnsmasq matches by suffix: a listed name
+  also resolves its subdomains.
 - `docker run` flags: `--rm --init`, memory/swap = `memory` (default 6g), `--cpus 2`,
   `--pids-limit 4096`, `--security-opt no-new-privileges`; NET_ADMIN/NET_RAW only for the firewall
   setup before the privilege drop; `--network none` for export containers.
@@ -150,8 +161,12 @@ git is never run inside an agent-written workspace).
   acceptance view (read-only), skills. The state dir, spec repo, app clone, GitHub token and `~/.ssh`
   are never mounted. Coder keeps a persistent per-project pnpm volume; acceptance/eval get a fresh
   throwaway volume per attempt (acceptance ran agent code in the previous one).
-- `hands <p> check` live-probes the boundary: egress blocked, api.anthropic.com reachable, firewall
-  not flushable, no sudo, no IPv6 leak, agent uid not root, expected skills/subagents visible.
+- `hands <p> check` live-probes the boundary from inside an agent container (`FIREWALL_PROBE` in
+  `hands/__main__.py`): egress blocked by name and by raw IP, api.anthropic.com reachable, firewall not
+  flushable, no sudo, no IPv6 leak, allowlisted name resolves, random name does not, direct queries to
+  1.1.1.1/8.8.8.8 (udp+tcp) blocked, dnsmasq cannot be killed or reconfigured, tcp/22 to an outside IP
+  blocked, a GitHub IP and api.github.com blocked (unless allowlisted), the host (default gateway)
+  blocked, agent uid not root, expected skills/subagents visible.
 
 ## Where secrets live and who reads them
 

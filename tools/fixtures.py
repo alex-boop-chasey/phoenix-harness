@@ -34,7 +34,7 @@ from hashlib import sha1
 from pathlib import Path
 
 NOW = int(time.time())
-IMAGE = "hands:cc2.1.301-pw1.64.1"
+IMAGE = "hands:cc2.1.301-pw1.64.1-dns1"
 
 
 def iso(ts: int) -> str:

@@ -4,6 +4,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 S="$HOME/projects/smoke"
+# default: the newest pinned hands image (tags sort by creation time, newest first)
 IMAGE="${1:-$(docker images hands --format '{{.Tag}}' | grep -v latest | head -1)}"
 [ -n "$IMAGE" ] || { echo "no pinned hands image found"; exit 1; }
 rm -rf "$S"; mkdir -p "$S"

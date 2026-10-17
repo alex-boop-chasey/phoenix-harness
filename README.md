@@ -130,7 +130,13 @@ See CHANGELOG.md.
 - The dashboard login is `hands-dash url` (single-use code); there is no long-lived dashboard token.
 
 ## Known residual risks
-- Reference firewall: allows the host /24 and DNS to any resolver (DNS tunnelling possible).
+- DNS filter (0.5.1): only allowlisted names resolve, but dnsmasq matches by suffix, so every subdomain
+  of a listed name resolves and is reachable too. Never allowlist an apex that hosts arbitrary user
+  content (`github.io`, `vercel.app`, `herokuapp.com`, `s3.amazonaws.com`, ...): list the exact host.
+  The built-in list is api.anthropic.com, registry.npmjs.org, sentry.io, statsig.com; GitHub, the
+  host /24 and tcp/22 are no longer allowed (a project that needs GitHub lists it in `allowed-domains`).
+- Allowlisted hosts are reachable on any port, and an allowlisted service can still be used as a data
+  channel (e.g. publishing to the npm registry with a token the agent was given).
 - Agent-written code runs as the same uid as the evaluator's claude process; the nonce raises the
   bar for forging a verdict but is not a hard boundary. Acceptance exit codes are the hard gate.
 - Coder and evaluator containers hold the Claude token and project_env (use dev-only secrets). Since 0.5

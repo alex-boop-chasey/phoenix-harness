@@ -68,9 +68,12 @@ that partner's preferences):
   in a Playwright config set `outputDir: path.join(os.tmpdir(), 'pw-results')` and use only the `list`,
   `line` or `dot` reporters; tests must write temporary files under `os.tmpdir()`. The runner rejects a
   Playwright config without a tmpdir `outputDir`.
-- Network for builders and tests: the npm registry, GitHub and the Anthropic API only, plus hostnames
-  you list in `allowed-domains`. No other outbound calls at build or test time: tests must not depend on
-  third-party services (mock them). Only list a domain if the build truly needs it.
+- Network for builders and tests: the npm registry and the Anthropic API only, plus hostnames you list
+  in `allowed-domains` (GitHub included: `github.com` and `api.github.com` are NOT reachable unless
+  listed). Only listed names resolve; a listed name also allows its subdomains, so never list an apex
+  that hosts arbitrary user content (e.g. `github.io`, `vercel.app`, `herokuapp.com`). No other
+  outbound calls at build or test time: tests must not depend on third-party services (mock them).
+  Only list a domain if the build truly needs it.
 - Every acceptance command runs in a fresh clone of the app repo with a fresh package store and `CI=1`,
   in order: `setup`, then `regression`, then the step's `acceptance`, then its `e2e` via `e2e_command`.
   Pass = every command exits 0.
