@@ -15,7 +15,8 @@ Security model (the dashboard can start builds, so it is treated as a control pl
 - bounded threads, socket timeouts, bounded reads
 - strict CSP, no inline script; everything an agent could have influenced (logs, prompts, diffs,
   verdicts) is rendered as text, never HTML
-- read-only over state files except: STOP file, and `hands <p> start|ack` run as subprocesses
+- read-only over state files except: STOP file, and `hands <p> start|ack` run as subprocesses;
+  the only file it owns is ~/.config/hands/ui.json (which project tabs are closed)
 - it never reads agent workspaces, never holds the GitHub token, and never mounts anything
 """
 from __future__ import annotations
@@ -191,7 +192,45 @@ def summary(name: str) -> dict:
             "alive": Lock.held(cfg.state_dir / "runner.lock"), "stop": (cfg.state_dir / "STOP").exists(),
             "passed": sum(1 for x in steps.values() if x.get("status") == "passed"),
             "current": st.get("current"), "updated_at": st.get("updated_at"),
-            "activity": read_json(cfg.state_dir / "activity.json", None) if st.get("current") else None}
+            "activity": read_json(cfg.state_dir / "activity.json", None) if st.get("current") else None,
+            "hidden": name in hidden_projects()}
+
+
+# ---------------------------------------------------------------- UI state (closed tabs): ~/.config/hands/ui.json
+# {"hidden": [name, ...]}. Purely cosmetic: hiding never touches the project's folder, repos, state or config,
+# and the runner never reads it.
+def ui_path() -> Path:
+    return config_home() / "ui.json"
+
+
+def hidden_projects() -> set[str]:
+    d = read_json(ui_path(), {})
+    names = d.get("hidden") if isinstance(d, dict) else None
+    return {n for n in (names or []) if isinstance(n, str) and NAME.match(n)}
+
+
+def set_hidden(name: str, hidden: bool) -> dict:
+    if not NAME.match(name) or name not in project_names():
+        raise LookupError(name)
+    with _UI_MUTEX:
+        names = hidden_projects()
+        (names.add if hidden else names.discard)(name)
+        p = ui_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(f".{p.name}.tmp.{os.getpid()}")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({"hidden": sorted(names)}, f, indent=1)
+                f.write("\n")
+            os.replace(tmp, p)        # atomic: readers see the old or the new file, never a partial one
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+    return {"ok": True, "name": name, "hidden": hidden}
+
+
+_UI_MUTEX = threading.Lock()
 
 
 def detail(name: str) -> dict:
@@ -656,6 +695,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, plan_action(parts[2], parts[4], fb, hs))
         if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "action":
             return self._json(200, run_action(parts[2], parts[4]))
+        if len(parts) == 4 and parts[:2] == ["api", "p"] and parts[3] in ("hide", "unhide"):
+            return self._json(200, set_hidden(parts[2], parts[3] == "hide"))
         raise LookupError(path)
 
 
