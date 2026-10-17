@@ -271,6 +271,35 @@ def watchdog_all() -> int:
     return rc
 
 
+def check_env(cfg, line) -> bool:
+    """Project variables: counts by visibility; fails on a loose file mode or lines the dashboard cannot manage."""
+    from . import projectenv
+    if not cfg.project_env:
+        print("[--] project_env not set: no project variables go to the build containers")
+        return True
+    p = cfg.project_env
+    if not p.is_file():
+        line(False, f"project_env {p} missing")
+        return False
+    ok = True
+    mode = p.stat().st_mode & 0o777
+    if mode != 0o600 or p.is_symlink():
+        line(False, f"project_env {p} must be a regular file with mode 0600 (is {mode:o})")
+        ok = False
+    try:
+        st = projectenv.Store(p.parent, p.name)
+    except projectenv.EnvError as e:
+        line(False, f"project_env: {e}")
+        return False
+    n_secret = sum(1 for _, pub in st.names() if not pub)
+    n_public = len(st.values) - n_secret
+    line(True, f"project variables: {n_secret} secret, {n_public} public ({p})")
+    for prob in st.problems:
+        line(False, f"project_env {prob}")
+        ok = False
+    return ok
+
+
 def check(r: Runner) -> int:
     cfg = r.cfg
     ok = True
@@ -286,6 +315,7 @@ def check(r: Runner) -> int:
     except SystemExit as e:
         line(False, str(e))
         return 1
+    check_env(cfg, line)
     try:
         commit = gitops.refresh_spec(cfg.spec_dir, cfg.branch)
         r.spec = specmod.load(cfg.spec_dir, commit)

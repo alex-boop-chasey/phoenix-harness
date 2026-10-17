@@ -65,7 +65,9 @@ Python 3.12 stdlib only, no pip dependencies. Dashboard UI is vanilla JS with a 
   github.env                         GH_TOKEN (0600) — read ONLY by create/destroy/plan/approve
   telegram.env                       TG_TOKEN, TG_CHAT_ID — read by the host-side Notifier
   secrets/<slug>/keys/deploy_*       per-project deploy keys (never in ~/.ssh)
-  secrets/<slug>/project.env         dev/test secrets for build containers (coder, acceptance, eval)
+  secrets/<slug>/project.env         dev/test variables for build containers (coder, acceptance, eval)
+  secrets/<slug>/env.json            dashboard metadata for them: secret/public + updated, never values
+  creating/<slug>.pending/           the same two files for a project whose create is still running
   usage.json                         plan usage cache (dashboard header)
   dashboard-login                    single-use login code (0600, 5 min TTL)
   dashboard.lock, usage-refresh.lock|.log, creating/<slug>.{json,lock,log}
@@ -97,7 +99,9 @@ Python 3.12 stdlib only, no pip dependencies. Dashboard UI is vanilla JS with a 
    prompt assembled by `prompts.coder` (spec refs, progress notes, feedback, previous diff) — the agent
    never sees the spec repo itself. Container runs `claude -p --output-format stream-json` with
    `--dangerously-skip-permissions` *inside the container boundary*, coder skills mounted, WebFetch
-   disallowed; claude.env + project.env via `--env-file`. `activity.Tail` follows the stream for the
+   disallowed; claude.env + project.env via `--env-file`, and project.env also bind-mounted read-only at
+   `/run/hands/project.env` (the prompt lists its key names and visibility, from `projectenv.Store`, never
+   values). `activity.Tail` follows the stream for the
    dashboard's live line.
 4. **Export + allowlist**: a `--network none` container re-reads the workspace (mounted read-only) and
    tars `git ls-files -c -o` output to the host (`EXPORT_SCRIPT`); the agent's workspace is then deleted
@@ -157,7 +161,25 @@ git is never run inside an agent-written workspace).
 | GitHub PAT | `~/.config/hands/github.env` | `create`/`destroy`/`plan`/`approve` processes only — never the dashboard server, never any container, never logged; HTTPS-only API client that never follows redirects |
 | Telegram token | `~/.config/hands/telegram.env` | host-side `Notifier` only |
 | Deploy keys | `~/.config/hands/secrets/<slug>/keys/` | host git via per-clone pinned `core.sshCommand` (no agent, IdentitiesOnly, known_hosts from the authenticated /meta API); specs key read-only, app key write |
-| Project dev/test secrets | `~/.config/hands/secrets/<slug>/project.env` | coder, acceptance and evaluator containers |
+| Project dev/test secrets | `~/.config/hands/secrets/<slug>/project.env` | coder, acceptance and evaluator containers (`--env-file` + read-only mount at `/run/hands/project.env`); the dashboard reads it for the Environment panel but never returns secret values; the planner gets key names only |
+
+### Project variables: gates and redaction (0.5, step 08)
+
+`hands/projectenv.py` owns the file format (docker `--env-file`: `KEY=value`, values verbatim) and the
+secret/public metadata. The runner (`loop.py`) reloads it at every attempt and:
+
+- **Allowlist** (`workspace.check_allowlist`): `.env`, `.env.*` and `.dev.vars` at any depth and in any
+  case are always rejected, except `.env.example` and `.env.sample` (names-only templates). Deleting one
+  is allowed.
+- **Secret scan** (`workspace.scan_secrets`): after the allowlist, every added/modified staged file is
+  searched for each secret value of 8+ characters (raw and JSON-escaped). A hit rejects the whole attempt
+  with a reason naming the file and the key, never the value.
+- **Redaction** (`projectenv.Redactor`): secret values are replaced by `[REDACTED:KEY]` in session
+  streams and stderr (rewritten before they are parsed), acceptance logs, diff.patch, the evaluator
+  prompt's diff, reasons, progress notes, the runner log, activity.json and every Telegram message.
+  Values shorter than 8 characters are neither scanned for nor redacted (documented limit).
+- **Preflight / `hands <p> check`**: the file must be a regular 0600 file; `check` reports counts by
+  visibility and fails on lines the dashboard cannot manage.
 | Dashboard login code | `~/.config/hands/dashboard-login` | minted by `hands-dash url`, redeemed once by the dashboard |
 
 Session streams (`coder.json`, `eval-N.json`) can contain tool output including secrets: files are

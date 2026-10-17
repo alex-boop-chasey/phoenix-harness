@@ -33,6 +33,25 @@ will answer questions: decide, act, and finish.
   code, no TODOs for things the step required.
 - Pin exact versions when adding dependencies and keep the lockfile in sync.
 
+## Environment variables
+The user message lists the project's variables by name and visibility (secret or public). Their
+values are in your process environment and in `/run/hands/project.env` (read-only, `KEY=value`
+lines, values verbatim). The runner passes the same file to the acceptance and review containers.
+- The app reads them through a committed, secret-free sync script (for example `scripts/sync-env.mjs`)
+  run from package.json pre-scripts (`predev`, `pretest`, `prebuild`): it reads `/run/hands/project.env`
+  when present (else the process environment) and writes the framework's own gitignored env file
+  (`.env`, `.env.local`, `.dev.vars`, whatever the framework loads), mapping names to the framework's
+  prefixes. Make sure that file is gitignored.
+- Commit `.env.example` with the names only (no values). The runner rejects any `.env`, `.env.*` or
+  `.dev.vars` file in the repo except `.env.example` / `.env.sample`.
+- Public keys may get a client prefix (`PUBLIC_`, `VITE_`, `NEXT_PUBLIC_`, ...). Secret keys never
+  get one and must never reach the client bundle.
+- Never write a secret value into any file, test fixture, log line or commit message. The runner scans
+  the changes and rejects the whole attempt if a secret value appears anywhere; it also redacts
+  secret values from everything it stores.
+- If the step needs a variable that is not in the list, do not invent a value: use the
+  `SPEC_PROBLEM:` line below, naming the missing key.
+
 ## When the spec itself is wrong
 If something you cannot change blocks the step (an acceptance test contradicts the goal or another
 test, a pinned version cannot be installed, a check writes into read-only `acceptance/`, a required

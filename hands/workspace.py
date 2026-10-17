@@ -32,6 +32,14 @@ def _gitlike(seg: str) -> bool:
     s = seg.lower().rstrip(". ")
     return s in (".git", "git~1") or s.startswith(".git::")
 DENY_EXT = {".md", ".mdx", ".markdown", ".txt", ".rst", ".adoc"}
+# Environment files never enter the repo (values come from /run/hands/project.env at run time); only the
+# names-only templates may. Case-insensitive, at any depth.
+ENV_EXAMPLES = {".env.example", ".env.sample"}
+
+
+def is_env_file(basename: str) -> bool:
+    b = basename.lower()
+    return (b == ".env" or b.startswith(".env.") or b == ".dev.vars") and b not in ENV_EXAMPLES
 
 
 class ExportError(Exception):
@@ -232,6 +240,22 @@ def staged_changes(app_dir: Path, base: str) -> list[Change]:
     return changes
 
 
+def scan_secrets(app_dir: Path, changes: list[Change], redactor) -> list[str]:
+    """Which staged files (added/modified) contain a secret value. Names the key, never the value."""
+    import subprocess
+    bad = []
+    for c in changes:
+        if c.status == "D":
+            continue
+        p = subprocess.run(["git", "-C", str(app_dir), "show", f":{c.path}"], capture_output=True, env=gitops.ENV)
+        if p.returncode != 0:
+            continue
+        keys = redactor.found(p.stdout)
+        if keys:
+            bad.append(f"{c.path}: contains the value of {', '.join(keys)}")
+    return bad
+
+
 def check_allowlist(changes: list[Change], allowed: list[str], allow_text: list[str] | tuple = ()) -> list[str]:
     bad = []
     for c in changes:
@@ -242,6 +266,8 @@ def check_allowlist(changes: list[Change], allowed: list[str], allow_text: list[
         why = None
         if c.mode in ("120000", "160000"):
             why = "symlinks and submodules are not allowed"
+        elif c.status != "D" and is_env_file(base):
+            why = "environment files are never committed (values live in /run/hands/project.env); only .env.example with names"
         elif DENY_SEGMENTS_CI.intersection(lsegs) or any(_gitlike(x) for x in segs):
             why = f"'{(DENY_SEGMENTS_CI.intersection(lsegs) or {'.git'}).pop()}/' is runner/human-owned"
         elif base.lower() in DENY_BASENAMES_CI:

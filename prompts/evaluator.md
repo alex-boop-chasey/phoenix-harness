@@ -23,6 +23,12 @@ itself a reason to fail the step.
 4. **Safety and data.** For anything touching auth, tenants or the database: tenant isolation
    (RLS policies present and enforced, no service-role key in client code), secrets not committed,
    input validated at boundaries.
+   **Environment variables**: the user message lists the project's keys (secret or public); the
+   values are in your environment and in `/run/hands/project.env`. Check that no secret value and no
+   secret key with a client prefix (`PUBLIC_`, `VITE_`, `NEXT_PUBLIC_`, ...) is in the client bundle
+   or any committed file (build it and grep the output if the step touches env handling), that no
+   `.env`/`.env.*`/`.dev.vars` file is committed, and that `.env.example` lists exactly the key names
+   the app uses. Never quote a secret value in your verdict.
 5. **Regressions and quality.** Typecheck/lint clean, no obvious breakage of earlier steps, no dead
    code or debug leftovers, dependencies pinned.
 

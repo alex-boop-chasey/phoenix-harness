@@ -206,6 +206,17 @@ def domains(path: Path) -> list[str]:
 
 
 # ---------------------------------------------------------------- session
+def env_names(cfg: Config) -> list[tuple[str, bool]]:
+    """Key names and visibility of the project's variables; the planner never sees values."""
+    from . import projectenv
+    if not cfg.project_env or not cfg.project_env.is_file():
+        return []
+    try:
+        return projectenv.Store(cfg.project_env.parent, cfg.project_env.name).names()
+    except projectenv.EnvError:
+        return []
+
+
 def prompt(cfg: Config, idea: str, feedback: str, errors: list[str], revising: bool) -> str:
     parts = [f"# Plan project `{cfg.name}`", "## The idea (from the human, verbatim)\n" + idea.strip()]
     if revising:
@@ -215,6 +226,13 @@ def prompt(cfg: Config, idea: str, feedback: str, errors: list[str], revising: b
         parts.append("## Reviewer feedback on the previous plan (from the human)\n" + feedback.strip())
     if errors:
         parts.append("## The runner rejected the output; fix all of these\n" + "\n".join(f"- {e}" for e in errors[:40]))
+    names = env_names(cfg)
+    if names:
+        parts.append("## Environment variables already configured for this project (names only; values are never shown to you)\n"
+                     + "\n".join(f"- `{k}` ({'public' if pub else 'secret'})" for k, pub in names)
+                     + "\n\nThe builders get these at build and test time. Plan the app to read them from the environment "
+                       "(public ones may be exposed to the browser with the framework's prefix, secret ones never); "
+                       "do not add human steps for keys that already exist.")
     parts.append(f"Write the output files in /workspace now. Project slug for steps.json: `{cfg.name}`.")
     return "\n\n".join(parts) + "\n"
 

@@ -208,6 +208,65 @@ class Store:
         self.values, self.meta, self.problems = values, meta, []
 
 
+    def secrets(self) -> dict[str, str]:
+        return {k: v for k, v in self.values.items() if not self.meta[k]["public"]}
+
+    def names(self) -> list[tuple[str, bool]]:
+        """[(key, public)] in file order: what the agents and the planner are told (never values)."""
+        return [(k, self.meta[k]["public"]) for k in self.values]
+
+
+# ---------------------------------------------------------------- redaction and leak scanning (runner side)
+MIN_SECRET_LEN = 8          # shorter secret values are neither scanned for nor redacted (too many false matches)
+CONTAINER_ENV_PATH = "/run/hands/project.env"
+
+
+class Redactor:
+    """Replace secret values with [REDACTED:KEY] in text and bytes; find which keys' values occur in data.
+    Matches the raw value and its JSON-string-escaped form (session streams are JSON lines)."""
+
+    def __init__(self, secrets: dict[str, str]):
+        forms: dict[str, str] = {}
+        for key, value in secrets.items():
+            if isinstance(value, str) and len(value) >= MIN_SECRET_LEN:
+                for f in (value, json.dumps(value)[1:-1]):
+                    forms.setdefault(f, key)
+        ordered = sorted(forms, key=len, reverse=True)           # longest alternative first
+        self._map = {f.encode("utf-8"): forms[f] for f in ordered}
+        self._re = re.compile(b"|".join(re.escape(f.encode("utf-8")) for f in ordered)) if ordered else None
+        self.keys = sorted(set(forms.values()))
+
+    def data(self, b: bytes) -> bytes:
+        if not self._re:
+            return b
+        return self._re.sub(lambda m: b"[REDACTED:" + self._map[m.group(0)].encode() + b"]", b)
+
+    def text(self, s: str) -> str:
+        if not self._re or not s:
+            return s
+        return self.data(s.encode("utf-8", errors="surrogateescape")).decode("utf-8", errors="replace")
+
+    def found(self, b: bytes) -> list[str]:
+        if not self._re:
+            return []
+        return sorted({self._map[m.group(0)] for m in self._re.finditer(b)})
+
+    def file(self, path: Path) -> bool:
+        """Rewrite a runner-owned file in place (atomically) if it contains a secret value. True if changed."""
+        if not self._re or not path.is_file() or path.is_symlink():
+            return False
+        data = path.read_bytes()
+        new = self.data(data)
+        if new == data:
+            return False
+        tmp = path.with_name(f".{path.name}.redact.{os.getpid()}")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(new)
+        os.replace(tmp, path)
+        return True
+
+
 # ---------------------------------------------------------------- pending (project still being created)
 def pending_dir(slug: str) -> Path:
     from . import newproject

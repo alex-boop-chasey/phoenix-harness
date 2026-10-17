@@ -29,7 +29,8 @@ Dashboard → "+ New project" (slug + idea), or on the VPS: `echo "idea" | hands
 Creates private repos <slug>-specs (PR + code-owner review required) and <slug>-app (no force-push/deletion),
 deploy keys in ~/.config/hands/secrets/<slug>/keys/ (specs key read-only, verified), clones pinned to those keys
 via core.sshCommand (your ~/.ssh/config, agent and personal keys are never used), GitHub host keys from /meta,
-~/.config/hands/secrets/<slug>/project.env (0600), ~/projects/<slug>/{state,description.txt,created.json}
+~/.config/hands/secrets/<slug>/project.env (0600; edit it in the dashboard's Environment panel, which keeps
+secret/public metadata in env.json next to it), ~/projects/<slug>/{state,description.txt,created.json}
 and the runner config. All project secrets live under ~/.config/hands (dirs 0700), so one deny rule for
 ~/.config/hands keeps them away from an operator Claude session; the project folder holds none.
 Defaults (org, code owner, image, models): ~/.config/hands/new-project.toml.
@@ -104,6 +105,10 @@ token file, ...) escalates immediately. Log: ~/.local/state/hands/watchdog.log.
 - Reference firewall: allows the host /24 and DNS to any resolver (DNS tunnelling possible).
 - Agent-written code runs as the same uid as the evaluator's claude process; the nonce raises the
   bar for forging a verdict but is not a hard boundary. Acceptance exit codes are the hard gate.
-- Coder and evaluator containers hold the Claude token and project_env (use dev-only secrets).
+- Coder and evaluator containers hold the Claude token and project_env (use dev-only secrets). Since 0.5
+  the runner mounts project_env read-only at `/run/hands/project.env` in coder, acceptance and evaluator
+  containers (the planner sees key names only), rejects attempts that commit an env file or a secret
+  value, and redacts secret values (8+ characters) as `[REDACTED:KEY]` in everything it stores, serves
+  or sends. Shorter values are not redacted; the dashboard's Environment panel manages the file.
 - Dashboard: any process running as builder can read state files anyway; the dashboard adds no new
   access beyond start/stop/ack. Keep the SSH tunnel closed when not in use.

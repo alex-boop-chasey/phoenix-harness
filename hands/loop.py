@@ -14,7 +14,7 @@ import signal
 import time
 from pathlib import Path
 
-from . import accview, activity, claude, docker, gitops, prompts, usage, workspace
+from . import accview, activity, claude, docker, gitops, projectenv, prompts, usage, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -73,11 +73,39 @@ class Runner:
         self.spec: specmod.Spec | None = None
         self.acc_view: Path | None = None     # per-step copy of the visible acceptance files
         self.spec_problem = ""
+        self.penv: projectenv.Store | None = None
+        self.redactor = projectenv.Redactor({})
+        self.load_project_env()
 
     # ------------------------------------------------------------------ helpers
     @property
     def stop_file(self) -> Path:
         return self.cfg.state_dir / "STOP"
+
+    def load_project_env(self) -> None:
+        """(Re)read project.env: the dashboard may change it between steps. Secret values feed the redactor,
+        which is applied to everything the runner logs, stores or sends."""
+        self.penv = None
+        p = self.cfg.project_env
+        if p and p.is_file():
+            try:
+                self.penv = projectenv.Store(p.parent, p.name)
+            except projectenv.EnvError as e:
+                self.state.log(f"WARN: project_env unreadable: {e}")
+        self.redactor = projectenv.Redactor(self.penv.secrets() if self.penv else {})
+
+    def env_names(self) -> list[tuple[str, bool]] | None:
+        return self.penv.names() if self.penv else None
+
+    def send(self, msg: str) -> bool:
+        return self.notify.send(self.redactor.text(msg))
+
+    def redact_files(self, *paths: Path) -> None:
+        for p in paths:
+            try:
+                self.redactor.file(p)
+            except OSError as e:
+                self.state.log(f"WARN: could not redact {p.name}: {e}")
 
     @property
     def model(self) -> str:
@@ -88,12 +116,13 @@ class Runner:
         return self.state.data.get("model_override") or self.cfg.eval_model
 
     def log(self, msg: str) -> None:
-        self.state.log(msg)
+        self.state.log(self.redactor.text(msg))
 
     def escalate(self, reason: str) -> None:
+        reason = self.redactor.text(reason)
         self.state.set_status("escalation", reason)
         self.log(f"ESCALATION: {reason}")
-        self.notify.send(f"ESCALATION: {reason[:1500]}\nFix, then: hands {self.cfg.name} ack")
+        self.send(f"ESCALATION: {reason[:1500]}\nFix, then: hands {self.cfg.name} ack")
         raise Stop(reason)
 
     def nap(self, seconds: float) -> None:
@@ -135,6 +164,8 @@ class Runner:
         m.append(Mount(store, "/pnpm-store", ro=False))
         if with_skills and self.cfg.skills_dir and self.cfg.skills_dir.is_dir():
             m.append(Mount(self.cfg.skills_dir, "/home/node/.claude/skills"))
+        if self.cfg.project_env and self.cfg.project_env.is_file():       # coder, acceptance, evaluator
+            m.append(Mount(self.cfg.project_env, projectenv.CONTAINER_ENV_PATH))
         return m
 
     def env_files(self, *, claude_token: bool) -> list[Path]:
@@ -188,6 +219,8 @@ class Runner:
                 problems.append(f"{d} is not a git clone")
         if c.project_env and not c.project_env.is_file():
             problems.append(f"project_env {c.project_env} missing")
+        elif c.project_env and (c.project_env.stat().st_mode & 0o077 or c.project_env.is_symlink()):
+            problems.append(f"project_env {c.project_env} must be a regular file with mode 0600")
         if os.getuid() == 0 and not os.environ.get("HANDS_TEST_ALLOW_ROOT"):
             problems.append("run the runner as builder, not root")
         c.state_dir.mkdir(parents=True, exist_ok=True)
@@ -205,7 +238,7 @@ class Runner:
             # docker not up yet (reboot) is transient: exit and let the watchdog retry (it caps restarts)
             if docker.reachable(self.cfg) and not Lock.held(self.cfg.state_dir / "runner.lock"):
                 self.state.set_status("escalation", str(e)[:1000])
-                self.notify.send(f"ESCALATION: {str(e)[:1000]}\nFix, then: hands {self.cfg.name} ack")
+                self.send(f"ESCALATION: {str(e)[:1000]}\nFix, then: hands {self.cfg.name} ack")
             raise
         old = {s: signal.signal(s, _term) for s in (signal.SIGTERM, signal.SIGHUP)}
         try:
@@ -230,21 +263,21 @@ class Runner:
             docker.cleanup_volumes(self.cfg)
             self.recover()
             self.state.set_status("running", "")
-            self.notify.send(f"runner started (coder {self.model}, image {self.cfg.image})")
+            self.send(f"runner started (coder {self.model}, image {self.cfg.image})")
             while True:
                 if self.stop_file.exists():
                     self.state.set_status("stopped", "STOP file")
                     self.log("STOP file present; stopping")
-                    self.notify.send("stopped: STOP file")
+                    self.send("stopped: STOP file")
                     return 0
                 if self.sessions >= self.cfg.max_sessions:
                     self.state.set_status("stopped", f"session cap {self.cfg.max_sessions}")
                     self.log("session cap reached")
-                    self.notify.send(f"stopped: session cap {self.cfg.max_sessions} reached")
+                    self.send(f"stopped: session cap {self.cfg.max_sessions} reached")
                     return 0
                 if self.cfg.cost_cap_usd and self.cost >= self.cfg.cost_cap_usd:
                     self.state.set_status("stopped", "cost cap")
-                    self.notify.send(f"stopped: cost cap ${self.cfg.cost_cap_usd} reached (estimate)")
+                    self.send(f"stopped: cost cap ${self.cfg.cost_cap_usd} reached (estimate)")
                     return 0
                 if self.free_gb() < self.cfg.min_free_gb:
                     self.escalate(f"disk low: {self.free_gb():.1f} GB free; run docker system prune / clear {self.cfg.state_dir}/attempts")
@@ -252,7 +285,7 @@ class Runner:
                 if step is None:
                     self.state.set_status("done", "all steps passed")
                     self.log("DONE: all steps passed")
-                    self.notify.send("DONE: all steps passed")
+                    self.send("DONE: all steps passed")
                     return 0
                 if max_steps is not None and done_steps >= max_steps:
                     self.state.set_status("idle", f"--steps {max_steps} reached")
@@ -264,12 +297,12 @@ class Runner:
         except KeyboardInterrupt as e:
             self.state.set_status("stopped", f"interrupted ({e})")
             self.log(f"interrupted ({e}); the next run recovers the in-flight attempt")
-            self.notify.send(f"stopped: interrupted ({e})")
+            self.send(f"stopped: interrupted ({e})")
             return 130
         except Exception as e:
             self.state.set_status("escalation", f"runner error: {type(e).__name__}: {e}")
             self.log(f"RUNNER ERROR: {type(e).__name__}: {e}")
-            self.notify.send(f"RUNNER ERROR: {type(e).__name__}: {str(e)[:800]}")
+            self.send(f"RUNNER ERROR: {type(e).__name__}: {str(e)[:800]}")
             raise
 
     def recover(self) -> None:
@@ -352,6 +385,7 @@ class Runner:
         work = c.state_dir / "work"
         self.state.data["current"] = {"step": step.id, "attempt": attempt, "base": base, "phase": "coder"}
         self.state.save()
+        self.load_project_env()
         self.log(f"=== {step.id} attempt {attempt}/{max_attempts}: {step.title} (base {base[:9]}, spec {spec.commit[:9]})")
 
         # ---- acceptance view: shared + passed steps' + this step's files only
@@ -370,7 +404,7 @@ class Runner:
         (adir / "prompt.md").write_text(prompts.coder(
             spec, step, attempt=attempt, max_attempts=max_attempts, progress=progress,
             git_log=gitops.log_oneline(c.app_dir), feedback=st.get("reasons", []), prev_diff=prev_diff,
-            acc_files=acc_files))
+            acc_files=acc_files, env_vars=self.env_names()))
         agents = json.loads((c.runner_home / "prompts" / "agents.json").read_text())
         cmd = self.claude_cmd(model=self.model, system_file="coder.md", max_turns=c.max_turns,
                               extra=["--agents", json.dumps(agents), "--disallowedTools", "WebFetch"])
@@ -383,6 +417,7 @@ class Runner:
                 env_files=self.env_files(claude_token=True),
                 stdin=adir / "prompt.md", stdout=adir / "coder.json", stderr=adir / "coder.stderr",
                 timeout_s=c.session_timeout_min * 60, append_stdout=True))
+        self.redact_files(adir / "coder.json", adir / "coder.stderr")     # before anything parses or serves them
         res = claude.parse(adir / "coder.json", rc, adir / "coder.stderr")
         self.record_session("coder", step.id, attempt, res, time.time() - t0)
 
@@ -432,16 +467,24 @@ class Runner:
                              [f"no file changes were made (coder ended: {res.kind})"], committed=False)
         bad = workspace.check_allowlist(changes, spec.allowed_paths, spec.allow_text_paths)
         if bad:
-            (adir / "diff.patch").write_text(gitops.diff(c.app_dir, "--cached", base))
+            (adir / "diff.patch").write_text(self.redactor.text(gitops.diff(c.app_dir, "--cached", base)))
             gitops.hard_reset(c.app_dir, base)
             return self.fail(step, attempt, max_attempts, base, adir,
                              ["changes outside the allowed paths (whole attempt rejected):", *bad[:40]], committed=False)
+        leaks = workspace.scan_secrets(c.app_dir, changes, self.redactor)
+        if leaks:
+            (adir / "diff.patch").write_text(self.redactor.text(gitops.diff(c.app_dir, "--cached", base)))
+            gitops.hard_reset(c.app_dir, base)
+            return self.fail(step, attempt, max_attempts, base, adir,
+                             ["secret values found in the changes (whole attempt rejected); read them from the "
+                              "environment or /run/hands/project.env at run time, never write them into files:",
+                              *leaks[:40]], committed=False)
         msg = (f"{step.id}: {step.title}\n\n{summary[:1500]}\n\n"
                f"Spec-Commit: {spec.commit}\nHands-Attempt: {attempt}\nHands-Model: {','.join(res.models) or self.model}\n")
         gitops.git(c.app_dir, "-c", "user.name=hands-runner", "-c", "user.email=runner@hands.local",
                    "commit", "-q", "--no-verify", "-F", "-", input=msg.encode())
         commit = gitops.head(c.app_dir)
-        (adir / "diff.patch").write_text(gitops.diff(c.app_dir, base, commit))
+        (adir / "diff.patch").write_text(self.redactor.text(gitops.diff(c.app_dir, base, commit)))
 
         # ---- acceptance: runner-run, fresh clone, fresh package store, one container per command
         self.set_phase("acceptance")
@@ -471,7 +514,7 @@ class Runner:
             "summary": summary[:1500], "risks": verdict.get("risks", [])[:10]})
         self.log(f"PASSED {step.id} @ {commit[:9]} ({pushed})")
         risks = verdict.get("risks") or []
-        self.notify.send(f"PASSED {step.id} {step.title} (attempt {attempt}, {commit[:9]}, {pushed})"
+        self.send(f"PASSED {step.id} {step.title} (attempt {attempt}, {commit[:9]}, {pushed})"
                          + (f"\nrisks: {'; '.join(map(str, risks[:3]))}" if risks else ""))
         return True
 
@@ -490,7 +533,7 @@ class Runner:
         p = self.cfg.state_dir / "activity.json"
         tmp = p.with_name(".activity.json.tmp")
         try:
-            tmp.write_text(json.dumps({"text": item.get("text", "")[:160], "at": item.get("at")}))
+            tmp.write_text(json.dumps({"text": self.redactor.text(item.get("text", ""))[:160], "at": item.get("at")}))
             os.replace(tmp, p)
         except OSError:
             pass
@@ -525,6 +568,7 @@ class Runner:
                     cmd=["bash", "-c", cmd], mounts=self.mounts(verify, store=store),
                     env=self.common_env("accept"), env_files=self.env_files(claude_token=False),
                     stdout=logf, stderr=logf, timeout_s=c.accept_timeout_min * 60, append_stdout=True))
+                self.redact_files(logf)
                 report.append({"cmd": cmd, "rc": rc})
                 self.log(f"acceptance {step.id}#{attempt} [{i}] rc={rc} {time.time() - t0:.0f}s: {cmd}")
                 if rc != 0:
@@ -538,11 +582,12 @@ class Runner:
 
     def run_evaluator(self, step, attempt, adir, base, commit, report, summary) -> dict:
         c, spec = self.cfg, self.spec
-        diff = prompts.truncate(gitops.diff(c.app_dir, base, commit), c.diff_limit_chars)
+        diff = prompts.truncate(self.redactor.text(gitops.diff(c.app_dir, base, commit)), c.diff_limit_chars)
         stat = gitops.git(c.app_dir, "diff", "--stat", "--no-ext-diff", base, commit, check=False)
         nonce = secrets.token_hex(8)
         (adir / "eval-prompt.md").write_text(prompts.evaluator(
-            spec, step, diff=diff, diffstat=stat, accept_report=report, coder_summary=summary, nonce=nonce))
+            spec, step, diff=diff, diffstat=stat, accept_report=report, coder_summary=summary, nonce=nonce,
+            env_vars=self.env_names()))
         tries = 0
         while tries < 3:
             verify = self.fresh_clone("verify", commit)
@@ -563,6 +608,7 @@ class Runner:
             finally:
                 docker.volume_rm(c, store)
                 workspace.rmtree(verify)
+            self.redact_files(adir / f"eval-{n}.json", adir / f"eval-{n}.stderr")
             res = claude.parse(adir / f"eval-{n}.json", rc, adir / f"eval-{n}.stderr")
             self.record_session("eval", step.id, attempt, res, time.time() - t0)
             if res.kind in INFRA:
@@ -592,6 +638,7 @@ class Runner:
     # ------------------------------------------------------------------ outcomes
     def fail(self, step, attempt, max_attempts, base, adir: Path, reasons: list[str], *, committed: bool) -> bool:
         c = self.cfg
+        reasons = [self.redactor.text(r) for r in reasons]
         prev_sig = failure_signature(self.state.step(step.id).get("reasons") or []) if attempt > 1 else ""
         if committed:
             gitops.git(c.app_dir, "tag", "-f", f"hands/failed/{step.id}-{attempt}", "HEAD", check=False)
@@ -615,7 +662,7 @@ class Runner:
         if prev_sig and sig and sig == prev_sig:
             self.escalate(f"{step.id} failed twice in a row with the same error, so another attempt is unlikely to "
                           f"help:\n{' | '.join(reasons[:2])[:900]}\nLogs: {adir}")
-        self.notify.send(f"{step.id} attempt {attempt}/{max_attempts} rejected: {first[:300]}")
+        self.send(f"{step.id} attempt {attempt}/{max_attempts} rejected: {first[:300]}")
         return False
 
     def count_uncounted(self, sid: str, res: claude.Result) -> None:
@@ -634,7 +681,7 @@ class Runner:
                 self.state.data["model_override"] = c.fallback_model
                 self.state.save()
                 self.log(f"model access error ({res.text[:200]}); switching to fallback {c.fallback_model}")
-                self.notify.send(f"model unavailable; switched to {c.fallback_model}. Clear with: hands {c.name} ack --clear-model")
+                self.send(f"model unavailable; switched to {c.fallback_model}. Clear with: hands {c.name} ack --clear-model")
                 return
             self.escalate(f"model access error even on fallback: {res.text[:300]}")
         if res.kind == "overloaded":
@@ -653,7 +700,7 @@ class Runner:
         started = self.clock()
         self.state.set_status("paused_rate_limit", text[:300])
         resets = claude.parse_resets_at(text, tz=c.tz, now=self.clock())
-        self.notify.send(f"usage limit hit; pausing (resets {time.strftime('%H:%M %Z', time.localtime(resets)) if resets else 'unknown'})")
+        self.send(f"usage limit hit; pausing (resets {time.strftime('%H:%M %Z', time.localtime(resets)) if resets else 'unknown'})")
         while True:
             if self.clock() - started > c.rate_limit_max_wait_s:
                 self.escalate(f"usage limit did not clear within {c.rate_limit_max_wait_s // 3600}h")
@@ -668,7 +715,7 @@ class Runner:
             if res.ok:
                 self.state.set_status("running", "")
                 self.log("usage limit cleared; resuming")
-                self.notify.send("usage limit cleared; resuming")
+                self.send("usage limit cleared; resuming")
                 return
             if res.kind == "auth":
                 self.handle_infra(res)

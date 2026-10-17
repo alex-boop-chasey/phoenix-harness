@@ -78,9 +78,11 @@ that partner's preferences):
   path matches `allow_text_paths`. If the app needs content files (e.g. Astro content collections in
   Markdown), list those paths there (e.g. `src/content/**`). Builders can never write `docs/`,
   `acceptance/`, `.github/`, `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.mcp.json`, `.gitattributes`.
-- Secrets: real keys never exist at build time. If the app needs an outside service, the code reads it
-  from env vars, tests mock it, and a `"type": "human"` step tells the human what account/key to set up
-  (they put test keys in the project's env file). Keep human steps rare and late.
+- Secrets: the user message may list environment variables the human already configured (names and
+  visibility only; you never see values). Builders get them at build and test time from
+  `/run/hands/project.env`; the code reads them from env vars and tests mock the service. If the app
+  needs a service whose key is NOT listed, add a `"type": "human"` step telling the human what account
+  to create and which variable to set in the dashboard. Keep human steps rare and late.
 - Each code step must be finishable in one focused session (roughly under 100 tool calls). Typical
   plans have 6-20 steps. Step 1 creates the project skeleton, package.json scripts and tooling so that
   `setup` and `regression` work from step 1 onwards.

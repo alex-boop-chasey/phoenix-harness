@@ -23,8 +23,24 @@ def _bullets(items: list[str]) -> str:
     return "\n".join(f"- `{i}`" for i in items) if items else "- (none)"
 
 
+def env_section(env_vars: list[tuple[str, bool]] | None, *, for_builder: bool) -> str:
+    """Names and visibility of the project's variables (never values). env_vars None = no env file."""
+    names = "\n".join(f"- `{k}` ({'public' if pub else 'secret'})" for k, pub in (env_vars or [])) or "- (none configured)"
+    text = "## Environment variables (project.env)\n" + names
+    if for_builder:
+        text += ("\n\nThe values are in your process environment and in `/run/hands/project.env` (read-only, "
+                 "KEY=value lines). Follow the 'Environment variables' rules in your instructions: a committed, "
+                 "secret-free sync script writes the framework's gitignored env file; commit `.env.example` with "
+                 "names only; never commit a value or an env file.")
+    else:
+        text += ("\n\nValues are in the environment and in `/run/hands/project.env`. Check that no secret value is in "
+                 "the client bundle or in any committed file, and that `.env.example` lists exactly these names.")
+    return text
+
+
 def coder(spec: Spec, step: Step, *, attempt: int, max_attempts: int, progress: list[dict],
-          git_log: str, feedback: list[str], prev_diff: str, acc_files: list[str] | None = None) -> str:
+          git_log: str, feedback: list[str], prev_diff: str, acc_files: list[str] | None = None,
+          env_vars: list[tuple[str, bool]] | None = None) -> str:
     parts = [
         f"# Step {step.id}: {step.title}",
         f"Attempt {attempt} of {max_attempts}. Spec commit {spec.commit[:12]}.",
@@ -45,6 +61,7 @@ def coder(spec: Spec, step: Step, *, attempt: int, max_attempts: int, progress: 
         + ("\nText files allowed only at: " + ", ".join(f"`{p}`" for p in spec.allow_text_paths) if spec.allow_text_paths else "")
     )
     parts.append("## Reference docs\n" + (render_refs(spec, step) or "(none)"))
+    parts.append(env_section(env_vars, for_builder=True))
     if progress:
         lines = [f"- {p['step']} {p.get('title','')} @ {p.get('commit','')[:9]}: {p.get('summary','')}" for p in progress]
         parts.append("## Progress so far (written by the runner from earlier sessions)\n" + "\n".join(lines))
@@ -62,7 +79,7 @@ def coder(spec: Spec, step: Step, *, attempt: int, max_attempts: int, progress: 
 
 
 def evaluator(spec: Spec, step: Step, *, diff: str, diffstat: str, accept_report: list[dict], coder_summary: str,
-              nonce: str) -> str:
+              nonce: str, env_vars: list[tuple[str, bool]] | None = None) -> str:
     acc = "\n".join(f"- exit {r['rc']}: `{r['cmd']}`" for r in accept_report) or "- (none)"
     parts = [
         f"# Review step {step.id}: {step.title}",
@@ -72,6 +89,7 @@ def evaluator(spec: Spec, step: Step, *, diff: str, diffstat: str, accept_report
         parts.append("## Notes from the spec\n" + step.notes)
     parts += [
         "## Reference docs\n" + (render_refs(spec, step) or "(none)"),
+        env_section(env_vars, for_builder=False),
         "## Acceptance commands already run by the runner (all passed)\n" + acc,
         "## E2E specs for this step\n" + (_bullets([f"acceptance/{e}" for e in step.e2e]) if step.e2e else "- (none listed; still exercise user-facing behaviour if any)"),
         "## Builder's own summary (unverified claim)\n" + (coder_summary or "(none)"),
