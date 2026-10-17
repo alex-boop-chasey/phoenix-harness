@@ -62,7 +62,12 @@ MAX_FILE = 2_000_000
 MAX_LOG_BYTES = 1_000_000
 STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8"),
                 "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-                "/app.css": ("app.css", "text/css; charset=utf-8")}
+                "/sessions.js": ("sessions.js", "text/javascript; charset=utf-8"),
+                "/app.css": ("app.css", "text/css; charset=utf-8"),
+                # xterm.js 5.5.0 + fit addon, vendored (no CDN; CSP is script-src 'self')
+                "/vendor/xterm.min.js": ("vendor/xterm.min.js", "text/javascript; charset=utf-8"),
+                "/vendor/addon-fit.min.js": ("vendor/addon-fit.min.js", "text/javascript; charset=utf-8"),
+                "/vendor/xterm.min.css": ("vendor/xterm.min.css", "text/css; charset=utf-8")}
 SECURITY_HEADERS = {
     "Content-Security-Policy": ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
                                 "img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"),
