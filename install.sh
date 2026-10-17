@@ -9,6 +9,15 @@ python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' || { 
 for b in git tmux docker; do command -v $b >/dev/null || { echo "missing: $b"; exit 1; }; done
 docker info >/dev/null 2>&1 || { echo "builder cannot reach docker (docker group?)"; exit 1; }
 
+echo "== self-test of $SRC (fake docker, no Claude usage), before anything is copied"
+if ! TEST_OUT="$(cd "$SRC" && python3 -m unittest discover -s tests 2>&1)"; then
+  printf '%s\n' "$TEST_OUT" | grep -E '^(FAIL|ERROR):' || true
+  printf '%s\n' "$TEST_OUT" | tail -3
+  echo "self-test FAILED: nothing installed"
+  exit 1
+fi
+printf '%s\n' "$TEST_OUT" | tail -3
+
 if [ "$SRC" != "$DEST" ]; then
   mkdir -p "$DEST"
   rm -rf "$DEST/hands" "$DEST/prompts" "$DEST/planner-skills" "$DEST/container" "$DEST/tests" "$DEST/examples" "$DEST/image"
@@ -28,9 +37,6 @@ cat > "$HOME/.local/bin/hands-dash" <<EOF
 PYTHONPATH="$DEST" exec python3 -m hands.dashboard "\$@"
 EOF
 chmod 755 "$HOME/.local/bin/hands-dash"
-
-echo "== self-test (fake docker, no Claude usage)"
-( cd "$DEST" && python3 -m unittest discover -s tests 2>&1 | tail -3 )
 
 IMG_TAG="$(sed -n 's/^CLAUDE_CODE_VERSION=//p' "$SRC/image/versions.env" 2>/dev/null)"
 PW_TAG="$(sed -n 's/^PLAYWRIGHT_VERSION=//p' "$SRC/image/versions.env" 2>/dev/null)"
