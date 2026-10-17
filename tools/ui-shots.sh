@@ -11,6 +11,12 @@
 #             landing (plan ready)  notes (planning)  new (New project form)
 #   Each page is saved as <page>-1440.png and <page>-390.png.
 #
+#   bash tools/ui-shots.sh --mock <label> [page ...]
+#             captures the static design mock in hands/static/mock/ instead of the dashboard, in
+#             light and dark: <page>-light-1440.png, <page>-dark-390.png, ...  Default pages:
+#             builder sessions files files-grid. Served with the dashboard's security headers; any
+#             browser console error (e.g. a CSP violation) fails the run.
+#
 # How it works: one throwaway container (--rm, --network none, no firewall entrypoint needed) from the
 # agent image runs everything: tools/fixtures.py builds a temporary config home + sample projects under
 # /tmp, the dashboard is started from the read-only /src mount against that config home, a login code
@@ -26,8 +32,13 @@ if [ "${1:-}" = "--inner" ]; then
   export HANDS_CONFIG_HOME=/tmp/hands-cfg
   python3 --version >/dev/null                      # the rig needs Python 3 in the image
   node --check /src/tools/shots.js
-  python3 /src/tools/fixtures.py "$HANDS_CONFIG_HOME" /tmp/fixtures
-  PYTHONPATH=/src python3 -m hands.dashboard run --port "$PORT" >/tmp/dash.log 2>&1 &
+  NODE_PATH="$(ls -d /home/node/.npm/_npx/*/node_modules | head -1)"   # playwright lives in the npx cache
+  if [ "${UI_SHOTS_MODE:-}" = "mock" ]; then
+    PYTHONPATH=/src python3 /src/tools/mockserve.py /src/hands/static/mock "$PORT" >/tmp/dash.log 2>&1 &
+  else
+    python3 /src/tools/fixtures.py "$HANDS_CONFIG_HOME" /tmp/fixtures
+    PYTHONPATH=/src python3 -m hands.dashboard run --port "$PORT" >/tmp/dash.log 2>&1 &
+  fi
   DASH=$!
   python3 - <<EOF
 import socket, time, sys
@@ -38,27 +49,31 @@ for _ in range(100):
         time.sleep(0.1)
 sys.exit("dashboard did not start; see /tmp/dash.log")
 EOF
-  CODE="$(PYTHONPATH=/src python3 -c 'from hands.dashboard import mint_login_code; print(mint_login_code())')"
-  # the image ships playwright in its npx cache, not as a global module
-  NODE_PATH="$(ls -d /home/node/.npm/_npx/*/node_modules | head -1)" \
-    node /src/tools/shots.js "http://127.0.0.1:$PORT" "$CODE" /out "$UI_SHOTS_PAGES"
+  if [ "${UI_SHOTS_MODE:-}" = "mock" ]; then
+    NODE_PATH="$NODE_PATH" node /src/tools/shots.js --mock "http://127.0.0.1:$PORT" /out "$UI_SHOTS_PAGES"
+  else
+    CODE="$(PYTHONPATH=/src python3 -c 'from hands.dashboard import mint_login_code; print(mint_login_code())')"
+    NODE_PATH="$NODE_PATH" node /src/tools/shots.js "http://127.0.0.1:$PORT" "$CODE" /out "$UI_SHOTS_PAGES"
+  fi
   kill "$DASH" 2>/dev/null || true
   exit 0
 fi
 
 # ---------------------------------------------------------------- host mode
+MODE=dash
+if [ "${1:-}" = "--mock" ]; then MODE=mock; shift; fi
 LABEL="${1:-}"
 [ -n "$LABEL" ] || { echo "usage: bash tools/ui-shots.sh <label> [page ...]" >&2; exit 2; }
 case "$LABEL" in *[!A-Za-z0-9._-]*) echo "label: letters, digits, . _ - only" >&2; exit 2;; esac
 shift
-PAGES="${*:-bookings crm blog wiki landing notes new}"
+if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new}"; fi
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$HOME/ops/shots/$LABEL"
 mkdir -p "$OUT"
 
 docker run --rm --init --network none --entrypoint bash \
   --shm-size 1g \
-  -e UI_SHOTS_PAGES="$PAGES" \
+  -e UI_SHOTS_PAGES="$PAGES" -e UI_SHOTS_MODE="$MODE" \
   --mount "type=bind,src=$REPO,dst=/src,readonly" \
   --mount "type=bind,src=$OUT,dst=/out" \
   "$IMAGE" /src/tools/ui-shots.sh --inner

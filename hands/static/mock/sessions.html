@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session manager · Phoenix Harness</title>
+<link rel="stylesheet" href="mock.css">
+</head>
+<body>
+<div class="app">
+  <input type="checkbox" id="nav-toggle" class="nav-toggle sr" aria-label="Open navigation">
+  <header class="topbar">
+    <label for="nav-toggle" class="burger" aria-label="Menu">☰</label>
+    <span class="brand"><span class="mark">P</span>Phoenix</span>
+    <span class="section">Session manager</span>
+  </header>
+  <label for="nav-toggle" class="scrim" aria-hidden="true"></label>
+  <aside class="sidebar" aria-label="Sections">
+    <div class="brand"><span class="mark">P</span>Phoenix <span class="ver">0.5.0</span></div>
+    <nav class="nav" aria-label="App sections">
+      <a href="builder.html"><span class="ico">▦</span>Project builder</a>
+      <a href="sessions.html" aria-current="page"><span class="ico">▣</span>Session manager</a>
+      <a href="files.html"><span class="ico">▤</span>File browser</a>
+      <div class="nav-group">Later</div>
+      <span class="soon"><span class="ico">◇</span>Environment variables <span class="tag">soon</span></span>
+      <span class="soon"><span class="ico">◇</span>MCP servers <span class="tag">soon</span></span>
+    </nav>
+    <div class="side-foot">
+      <div class="meter"><span>Session</span><span class="bar"><span class="fill w-42"></span></span><span>42%</span></div>
+      <div class="meter"><span>Week</span><span class="bar"><span class="fill w-31"></span></span><span>32%</span></div>
+      <div class="faint">resets 5:28 PM · as of 3:24 PM</div>
+      <div class="row"><span class="grow">builder@rebirth</span><a href="#" class="small">Log out</a></div>
+    </div>
+  </aside>
+
+  <div class="content">
+    <main class="page" aria-labelledby="stitle">
+      <div class="page-head">
+        <h1 id="stitle">Session manager</h1>
+        <span class="muted">Persistent Claude terminals on this VPS</span>
+        <button class="btn primary">＋ <span class="label">New session</span></button>
+      </div>
+
+      <div class="sessions">
+        <section class="card" aria-labelledby="list-h">
+          <div class="card-head"><h2 id="list-h">Sessions</h2><span class="muted small">3 running</span></div>
+          <div class="slist">
+            <a class="sitem" href="#" aria-current="true"><span class="dot live"></span><span class="smain"><span class="sname">deploy-notes</span><span class="smeta">~/projects/notes · claude-fable-5-1</span></span><span class="when">live</span></a>
+            <a class="sitem" href="#"><span class="dot wait"></span><span class="smain"><span class="sname">crm-fix-pipeline</span><span class="smeta">waiting for your answer</span></span><span class="when">4 min</span></a>
+            <a class="sitem" href="#"><span class="dot live"></span><span class="smain"><span class="sname">research</span><span class="smeta">~/scratch · claude-opus-5-5</span></span><span class="when">live</span></a>
+            <a class="sitem" href="#"><span class="dot"></span><span class="smain"><span class="sname">blog-seo</span><span class="smeta">ended yesterday · 142 turns</span></span><span class="when">1 d</span></a>
+            <a class="sitem" href="#"><span class="dot bad"></span><span class="smain"><span class="sname">import-repo</span><span class="smeta">exited with error</span></span><span class="when">3 d</span></a>
+          </div>
+          <div class="card-body">
+            <div class="empty"><span class="glyph">▣</span><strong>Telegram link</strong><span class="small">Reply to a waiting session from your phone. Set up in step 12.</span><button class="btn sm">Connect Telegram</button></div>
+          </div>
+        </section>
+
+        <section class="term" aria-labelledby="term-h">
+          <div class="term-head">
+            <span class="dot live"></span>
+            <span class="title" id="term-h">deploy-notes</span>
+            <span class="badge b-running pulse">live</span>
+            <span class="muted hide-sm">tmux: claude_deploy-notes · 80×24 · started 2:41 PM</span>
+            <div class="tools">
+              <button class="btn sm">Attach</button>
+              <button class="btn sm quiet">Rename</button>
+              <button class="btn sm danger">Stop</button>
+            </div>
+          </div>
+<pre class="term-body" tabindex="0" aria-label="Terminal output"><span class="d">╭─ Claude Code 2.1.301 · claude-fable-5-1 · ~/projects/notes</span>
+
+<span class="p">❯</span> add a dark-mode toggle to the settings page and keep the tests green
+
+<span class="c">●</span> I'll read the settings page and its tests first.
+  <span class="d">Read</span> src/pages/Settings.tsx
+  <span class="d">Read</span> src/pages/Settings.test.tsx
+<span class="c">●</span> Adding a <span class="m">ThemeToggle</span> component and wiring it to <span class="m">useTheme()</span>.
+  <span class="g">Write</span> src/components/ThemeToggle.tsx
+  <span class="y">Edit</span>  src/pages/Settings.tsx (+14 −2)
+  <span class="d">Bash</span>  pnpm test -- Settings
+  <span class="g">✓</span> 12 passed <span class="d">(1.8s)</span>
+
+<span class="c">●</span> Done. The toggle persists to localStorage and respects the system preference on first load.
+  <span class="r">!</span> One test used a hard-coded light colour; I updated it to read the token.
+
+<span class="p">❯</span> <span class="cur" aria-hidden="true"></span></pre>
+          <div class="term-foot">
+            <span>Keyboard goes straight to the session when the terminal is focused.</span>
+            <span class="keys"><span class="kbd">Esc</span> interrupt <span class="kbd">Ctrl</span>+<span class="kbd">C</span> cancel <span class="kbd">Ctrl</span>+<span class="kbd">D</span> end</span>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<div class="toasts" aria-live="polite">
+  <div class="toast"><span class="dot"></span><span>crm-fix-pipeline is waiting for your answer</span><a href="#" class="x" aria-label="Dismiss">×</a></div>
+</div>
+</body>
+</html>

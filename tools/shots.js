@@ -35,7 +35,48 @@ async function capture(context, name, width) {
   }
 }
 
+// Mock mode: `node shots.js --mock <base-url> <out-dir> <pages>` — static design pages, no login,
+// each captured in light and dark (<page>-<light|dark>-<width>.png). Any console error (CSP
+// violations are reported there) fails the run.
+async function mockMode() {
+  const [mbase, mout, mpagesArg] = process.argv.slice(3);
+  const mpages = (mpagesArg || "").trim().split(/\s+/).filter(Boolean);
+  if (!mbase || !mout || !mpages.length) {
+    console.error("usage: node shots.js --mock <base-url> <out-dir> <pages>");
+    process.exit(2);
+  }
+  const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  const errors = [];
+  try {
+    for (const scheme of ["light", "dark"]) {
+      for (const vp of VIEWPORTS) {
+        const context = await browser.newContext({ viewport: vp, colorScheme: scheme });
+        for (const name of mpages) {
+          const page = await context.newPage();
+          page.on("console", (m) => { if (m.type() === "error") errors.push(`${name}: ${m.text()}`); });
+          page.on("pageerror", (e) => errors.push(`${name}: ${e.message}`));
+          const resp = await page.goto(`${mbase}/${name}.html`, { waitUntil: "networkidle" });
+          if (!resp || resp.status() !== 200) throw new Error(`${name}.html: HTTP ${resp && resp.status()}`);
+          await page.waitForTimeout(300);
+          await page.screenshot({ path: path.join(mout, `${name}-${scheme}-${vp.width}.png`), fullPage: true });
+          console.log(`shot ${name}-${scheme}-${vp.width}.png`);
+          await page.close();
+        }
+        await context.close();
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+  if (errors.length) {
+    console.error("browser console errors:\n  " + errors.join("\n  "));
+    process.exit(1);
+  }
+  console.log("console clean: no errors, no CSP violations");
+}
+
 (async () => {
+  if (base === "--mock") return mockMode();
   if (!base || !code || !out || !pages.length) {
     console.error("usage: node shots.js <base-url> <login-code> <out-dir> <pages>");
     process.exit(2);

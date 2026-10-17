@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project builder · Phoenix Harness</title>
+<link rel="stylesheet" href="mock.css">
+</head>
+<body>
+<div class="app">
+  <input type="checkbox" id="nav-toggle" class="nav-toggle sr" aria-label="Open navigation">
+  <header class="topbar">
+    <label for="nav-toggle" class="burger" aria-label="Menu">☰</label>
+    <span class="brand"><span class="mark">P</span>Phoenix</span>
+    <span class="section">Project builder</span>
+  </header>
+  <label for="nav-toggle" class="scrim" aria-hidden="true"></label>
+  <aside class="sidebar" aria-label="Sections">
+    <div class="brand"><span class="mark">P</span>Phoenix <span class="ver">0.5.0</span></div>
+    <nav class="nav" aria-label="App sections">
+      <a href="builder.html" aria-current="page"><span class="ico">▦</span>Project builder</a>
+      <a href="sessions.html"><span class="ico">▣</span>Session manager</a>
+      <a href="files.html"><span class="ico">▤</span>File browser</a>
+      <div class="nav-group">Later</div>
+      <span class="soon"><span class="ico">◇</span>Environment variables <span class="tag">soon</span></span>
+      <span class="soon"><span class="ico">◇</span>MCP servers <span class="tag">soon</span></span>
+    </nav>
+    <div class="side-foot">
+      <div class="meter"><span>Session</span><span class="bar"><span class="fill w-42"></span></span><span>42%</span></div>
+      <div class="meter"><span>Week</span><span class="bar"><span class="fill w-31"></span></span><span>32%</span></div>
+      <div class="faint">resets 5:28 PM · as of 3:24 PM</div>
+      <div class="row"><span class="grow">builder@rebirth</span><a href="#" class="small">Log out</a></div>
+    </div>
+  </aside>
+
+  <div class="content">
+    <div class="tabs" role="tablist" aria-label="Open projects">
+      <button class="tab" role="tab" aria-selected="true"><span class="tname">bookings</span><span class="badge b-building pulse">building</span><span class="x" aria-label="Close bookings">×</span></button>
+      <button class="tab" role="tab" aria-selected="false"><span class="tname">crm</span><span class="badge b-failed">failed</span><span class="x" aria-label="Close crm">×</span></button>
+      <button class="tab" role="tab" aria-selected="false"><span class="tname">blog</span><span class="badge b-done">done</span><span class="x" aria-label="Close blog">×</span></button>
+      <button class="tab" role="tab" aria-selected="false"><span class="tname">landing</span><span class="badge b-ready">plan ready</span><span class="x" aria-label="Close landing">×</span></button>
+      <button class="tab" role="tab" aria-selected="false"><span class="tname">notes</span><span class="badge b-planning">planning</span><span class="x" aria-label="Close notes">×</span></button>
+      <div class="tab-add-wrap">
+        <button class="tab-add" aria-haspopup="menu" aria-expanded="true" aria-label="Add project">+</button>
+        <div class="menu" role="menu">
+          <a class="menu-item" role="menuitem" href="#" aria-selected="true"><span>＋</span>New project <span class="k">N</span></a>
+          <div class="menu-sep"></div>
+          <div class="menu-head">Reopen</div>
+          <a class="menu-item" role="menuitem" href="#"><span class="badge b-stopped">stopped</span>wiki</a>
+          <a class="menu-item" role="menuitem" href="#"><span class="badge b-done">done</span>smoke</a>
+        </div>
+      </div>
+    </div>
+
+    <main class="page" aria-labelledby="ptitle">
+      <div class="page-head">
+        <h1 id="ptitle">bookings</h1>
+        <span class="badge b-building pulse">building</span>
+        <span class="muted">S03 attempt 1 · coder · runner alive</span>
+        <button class="btn primary" disabled>Start</button>
+        <button class="btn">Stop at next safe point</button>
+        <button class="btn quiet" disabled>Acknowledge</button>
+      </div>
+
+      <div class="with-rail">
+        <div class="stack">
+          <section class="card" aria-label="Now">
+            <div class="card-body">
+              <div class="row"><span class="spinner" aria-hidden="true"></span><strong>Coding S03 · Booking form</strong><span class="muted">attempt 1 of 3 · 4 min</span></div>
+              <div class="mono small muted">editing src/routes/booking.ts</div>
+              <dl class="kv">
+                <dt>Progress</dt><dd>2 of 6 steps passed · 4 sessions · ~$1.06 API-equivalent</dd>
+                <dt>Models</dt><dd>coder claude-fable-5-1 · eval claude-fable-5-1 · fallback claude-opus-5-5</dd>
+                <dt>Image</dt><dd class="mono">hands:cc2.1.301-pw1.64.1</dd>
+                <dt>Repos</dt><dd><a href="#">acme/bookings-specs</a> · <a href="#">acme/bookings-app</a></dd>
+              </dl>
+            </div>
+          </section>
+
+          <div class="grid-2">
+            <section class="card" aria-labelledby="steps-h">
+              <div class="card-head"><h2 id="steps-h">Steps</h2><span class="muted small">2/6</span></div>
+              <div class="card-body tight table-wrap">
+                <table>
+                  <thead><tr><th>Step</th><th>Title</th><th>Status</th><th class="num">Att.</th><th>Commit</th></tr></thead>
+                  <tbody>
+                    <tr><td class="mono">S01</td><td>Project scaffold</td><td><span class="badge b-passed">passed</span></td><td class="num">1</td><td class="mono">a1ee128</td></tr>
+                    <tr><td class="mono">S02</td><td>Data model</td><td><span class="badge b-passed">passed</span></td><td class="num">1</td><td class="mono">0197f12</td></tr>
+                    <tr aria-selected="true"><td class="mono">S03</td><td>Booking form</td><td><span class="badge b-running pulse">running</span></td><td class="num">1</td><td></td></tr>
+                    <tr><td class="mono">S04</td><td>Calendar view</td><td><span class="badge b-pending">pending</span></td><td class="num">0</td><td></td></tr>
+                    <tr><td class="mono">S05</td><td>Email notifications</td><td><span class="badge b-pending">pending</span></td><td class="num">0</td><td></td></tr>
+                    <tr><td class="mono">S06</td><td>Polish and a11y</td><td><span class="badge b-pending">pending</span></td><td class="num">0</td><td></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="card" aria-labelledby="sess-h">
+              <div class="card-head"><h2 id="sess-h">Sessions</h2></div>
+              <div class="card-body tight table-wrap">
+                <table>
+                  <thead><tr><th>Time</th><th>Role</th><th>Step</th><th>Result</th><th class="num">Turns</th><th class="num">$</th></tr></thead>
+                  <tbody>
+                    <tr><td>3:13 PM</td><td>eval</td><td class="mono">S02#1</td><td><span class="badge b-ok">ok</span></td><td class="num">6</td><td class="num">0.11</td></tr>
+                    <tr><td>3:08 PM</td><td>coder</td><td class="mono">S02#1</td><td><span class="badge b-ok">ok</span></td><td class="num">38</td><td class="num">0.42</td></tr>
+                    <tr><td>2:58 PM</td><td>eval</td><td class="mono">S01#1</td><td><span class="badge b-ok">ok</span></td><td class="num">6</td><td class="num">0.11</td></tr>
+                    <tr><td>2:52 PM</td><td>coder</td><td class="mono">S01#1</td><td><span class="badge b-ok">ok</span></td><td class="num">38</td><td class="num">0.42</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          <section class="card" aria-labelledby="log-h">
+            <div class="card-head"><h2 id="log-h">Runner log</h2>
+              <div class="log-tools"><label class="check small"><input type="checkbox" checked> Follow</label><button class="btn sm quiet">Copy</button><button class="btn sm quiet">Open full</button></div>
+            </div>
+            <div class="card-body tight">
+<pre class="log"><span class="t">05:23:19Z</span> runner started (coder claude-fable-5-1, image hands:cc2.1.301-pw1.64.1)
+<span class="t">05:24:19Z</span> === S01 attempt 1/3: Project scaffold (base 1405df66c, spec 078772725)
+<span class="t">05:25:19Z</span> <span class="ok">PASSED S01</span> @ a1ee128fc (pushed)
+<span class="t">05:26:19Z</span> <span class="ok">PASSED S02</span> @ 0197f1280 (pushed)
+<span class="t">05:27:19Z</span> === S03 attempt 1/3: Booking form (base 1405df66c, spec 078772725)
+<span class="t">05:31:02Z</span> <span class="hi">coder S03#1</span>: editing src/routes/booking.ts</pre>
+            </div>
+          </section>
+
+          <div class="grid-2">
+            <section class="card" aria-labelledby="att-h">
+              <div class="card-head"><h2 id="att-h">Attempts</h2></div>
+              <div class="card-body tight table-wrap">
+                <table>
+                  <thead><tr><th>Attempt</th><th>Verdict</th><th>Files</th></tr></thead>
+                  <tbody>
+                    <tr><td class="mono">S02-1</td><td><span class="badge b-passed">passed</span></td><td class="mono small"><a href="#">diff.patch</a> <a href="#">accept-0.log</a> <a href="#">verdict.json</a> <a href="#">prompt.md</a></td></tr>
+                    <tr><td class="mono">S01-1</td><td><span class="badge b-passed">passed</span></td><td class="mono small"><a href="#">diff.patch</a> <a href="#">accept-0.log</a> <a href="#">verdict.json</a> <a href="#">prompt.md</a></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+            <section class="card" aria-labelledby="notes-h">
+              <div class="card-head"><h2 id="notes-h">Progress notes</h2></div>
+              <div class="card-body">
+                <div><strong>S02 Data model</strong> <span class="faint small mono">0197f12</span><p class="small">Implemented data model with tests; all acceptance commands pass.</p></div>
+                <div><strong>S01 Project scaffold</strong> <span class="faint small mono">a1ee128</span><p class="small">Implemented project scaffold with tests; all acceptance commands pass.</p></div>
+              </div>
+            </section>
+          </div>
+
+          <div class="notice bad"><strong>Example of a failed step (from crm)</strong><span class="small">S04 failed 3 attempts. Last: acceptance command failed (exit 1): <code>npm test</code> · 1) pipeline drag and drop — expected stage 'won', got 'lost'.</span><div class="row"><button class="btn sm">Acknowledge escalation</button><button class="btn sm quiet">Open attempt S04-3</button></div></div>
+        </div>
+
+        <aside class="card rail" aria-labelledby="rail-h">
+          <div class="card-head"><h2 id="rail-h">Steps</h2><span class="muted small">2/6</span></div>
+          <div class="card-body">
+            <ol class="steps">
+              <li class="passed"><span class="ic ok">✓</span><span><span class="sid">S01</span>Project scaffold</span></li>
+              <li class="passed"><span class="ic ok">✓</span><span><span class="sid">S02</span>Data model</span></li>
+              <li class="cur"><span class="spinner" aria-label="running"></span><span><span class="sid">S03</span><strong>Booking form</strong><div class="small muted">attempt 1 · coding</div><div class="act">editing src/routes/booking.ts</div></span></li>
+              <li><span class="ic pend">○</span><span><span class="sid">S04</span>Calendar view</span></li>
+              <li><span class="ic pend">○</span><span><span class="sid">S05</span>Email notifications</span></li>
+              <li><span class="ic pend">○</span><span><span class="sid">S06</span>Polish and a11y</span></li>
+            </ol>
+            <h3>Setup</h3>
+            <ul class="checklist">
+              <li><span class="ok">✓</span><span>Plan approved</span></li>
+              <li><span class="ok">✓</span><span>Build started</span></li>
+              <li><span class="todo">○</span><span>Test keys in project.env <span class="faint">(0 set)</span></span></li>
+              <li><span class="todo">○</span><span>Extra network domains <span class="faint">(0)</span></span></li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>
