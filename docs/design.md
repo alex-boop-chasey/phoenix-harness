@@ -29,7 +29,14 @@ Directions considered (step 03 decision):
    reads poorly in daylight on a phone, and a dark-only app clashes with light file previews and
    diffs.
 
-Approval: _pending Alex (step 03)_.
+Approval: **approved by Alex on 2026-10-17** (step 03). Notes from the approval:
+
+- Alex uses **Safari on Mac**, not Chrome. Every UI feature must work in current Safari; the
+  screenshot rig's Chromium is a proxy, not the target.
+- The tab-strip "+" menu in the mock uses CSS anchor positioning (`position-anchor`/`anchor()`).
+  Safari's support for it is recent and not something we rely on: in step 04 the menu is positioned
+  **by JS by default** (`position: fixed`, offset computed from the button's `getBoundingClientRect()`
+  on open/scroll/resize), with anchor positioning at most as a progressive enhancement.
 
 ## Tokens
 
@@ -73,8 +80,9 @@ text label and a dot, step icons use ✓ ✗ ○ plus colour.
 - **Project builder**: `.tabs` strip across the top (sticky), one `.tab` per open project with name,
   stage badge and ×; a dashed `+` at the end opens the `.menu` popover (New project; Reopen: closed
   projects with their last stage). Many tabs scroll horizontally; the selected tab is the page's
-  content. The popover is `position: fixed` + CSS anchor positioning (JS fallback computes the
-  offset) so the scrolling strip cannot clip it.
+  content. The popover is `position: fixed` with its offset computed by JS from the `+` button
+  (so the scrolling strip cannot clip it and it works in Safari); CSS anchor positioning is only an
+  optional enhancement.
 - **Session manager / File browser**: no tabs; page header (`.page-head`) with title and the page's
   own actions.
 
@@ -130,4 +138,7 @@ text label and a dot, step icons use ✓ ✗ ○ plus colour.
 
 ## Approval record
 
-_To be filled in when Alex approves step 03 (date, notes, requested changes)._
+- 2026-10-17 — Alex approved the **Workbench** direction as mocked in `~/ops/shots/03-mock/`
+  (commit `5f3a00e`). No visual changes requested. Requirement added: Safari on Mac is the primary
+  browser; the "+" menu (and anything else that leans on new CSS) must work there, with JS fallbacks
+  used by default where Safari support is uncertain.
