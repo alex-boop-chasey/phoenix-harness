@@ -42,7 +42,7 @@ if [ "${1:-}" = "--inner" ]; then
   node --check /src/hands/static/app.js                # the host has no node; this is the JS syntax check
   NODE_PATH="$(ls -d /home/node/.npm/_npx/*/node_modules | head -1)"   # playwright lives in the npx cache
   if [ "${UI_SHOTS_MODE:-}" = "mock" ]; then
-    PYTHONPATH=/src python3 /src/tools/mockserve.py /src/hands/static/mock "$PORT" >/tmp/dash.log 2>&1 &
+    PYTHONPATH=/src python3 /src/tools/mockserve.py /src/hands/static/mock "$PORT" /vendor=/src/console/static >/tmp/dash.log 2>&1 &
   else
     # shellcheck disable=SC2086  # UI_SHOTS_HIDDEN is a space-separated list on purpose
     python3 /src/tools/fixtures.py "$HANDS_CONFIG_HOME" /tmp/fixtures "${UI_SHOTS_PROJECTS:-}" ${UI_SHOTS_HIDDEN:-}

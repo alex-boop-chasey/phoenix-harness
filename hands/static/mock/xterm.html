@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xterm.js under the dashboard CSP · Phoenix Harness</title>
+<link rel="stylesheet" href="mock.css">
+<link rel="stylesheet" href="/vendor/xterm.min.css">
+<script src="/vendor/xterm.min.js"></script>
+<script src="/vendor/addon-fit.min.js"></script>
+<script src="xterm-test.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <div class="content">
+    <main class="page" aria-labelledby="stitle">
+      <div class="page-head">
+        <h1 id="stitle">xterm.js 5.5.0 under the dashboard CSP (plain)</h1>
+        <span class="muted">style-src 'self', no nonce: xterm's injected &lt;style&gt; elements are expected to be blocked</span>
+      </div>
+      <p id="result" class="muted">running…</p>
+      <section class="term" aria-label="Terminal">
+        <div class="term-head"><span class="title">csp-test</span></div>
+        <div class="term-body" id="term"></div>
+        <div class="term-foot"><span>Expect: rows rendered, but default (Courier) font and no colours if the styles were blocked.</span></div>
+      </section>
+    </main>
+  </div>
+</div>
+</body>
+</html>

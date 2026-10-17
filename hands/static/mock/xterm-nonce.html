@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csp-nonce" content="__NONCE__">
+<title>xterm.js with a style nonce · Phoenix Harness</title>
+<link rel="stylesheet" href="mock.css">
+<link rel="stylesheet" href="/vendor/xterm.min.css">
+<script src="/vendor/xterm.min.js"></script>
+<script src="/vendor/addon-fit.min.js"></script>
+<script src="xterm-test.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <div class="content">
+    <main class="page" aria-labelledby="stitle">
+      <div class="page-head">
+        <h1 id="stitle">xterm.js 5.5.0 with a per-response style nonce</h1>
+        <span class="muted">style-src 'self' 'nonce-…': a documentOverride proxy stamps the nonce on every &lt;style&gt; xterm creates</span>
+      </div>
+      <p id="result" class="muted">running…</p>
+      <section class="term" aria-label="Terminal">
+        <div class="term-head"><span class="title">csp-test-nonce</span></div>
+        <div class="term-body" id="term"></div>
+        <div class="term-foot"><span>Expect: monospace font, ANSI colours, no console errors except the truecolor cell (style attribute).</span></div>
+      </section>
+    </main>
+  </div>
+</div>
+</body>
+</html>

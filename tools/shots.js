@@ -336,9 +336,11 @@ async function mockMode() {
           page.on("pageerror", (e) => errors.push(`${name}: ${e.message}`));
           const resp = await page.goto(`${mbase}/${name}.html`, { waitUntil: "networkidle" });
           if (!resp || resp.status() !== 200) throw new Error(`${name}.html: HTTP ${resp && resp.status()}`);
-          await page.waitForTimeout(300);
+          await page.waitForTimeout(600);
           await page.screenshot({ path: path.join(mout, `${name}-${scheme}-${vp.width}.png`), fullPage: true });
           console.log(`shot ${name}-${scheme}-${vp.width}.png`);
+          const res = page.locator("#result");          // probe pages (xterm CSP test) report here
+          if (await res.count()) console.log(`  ${name} result: ${await res.textContent()}`);
           await page.close();
         }
         await context.close();
