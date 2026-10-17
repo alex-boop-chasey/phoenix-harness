@@ -143,7 +143,7 @@ Full project detail (summary fields plus the below; example truncated to one met
  "spec_commit": "8f8290e547519ebf3aef4e8999778eba49ae3b2b",
  "managed": false,
  "setup": {"spec_ready": true, "project_env": "", "project_env_keys": 0,
-           "allowed_domains": 0, "repo_specs": "", "repo_app": "", "description": ""},
+           "allowed_domains": 0, "repo_specs": "", "repo_app": "", "imported": false, "description": ""},
  "create": null,
  "plan": {"state": "none", "error": null, "pr": null, "pr_url": null, "head_sha": null,
           "summary": null, "files": null, "domains": null, "steps": null, "activity": null,
@@ -157,7 +157,8 @@ mid-refresh or invalid, `spec_error` carries `"Type: message"` and `steps` fall 
 `create` (non-null while a dashboard-started create exists) = `{"state","error","lines"}` (last 200 log
 lines; a dead create process is shown as `failed` after 20 s). `plan.state`:
 `none | planning | ready | approved | failed`; when `ready`, `head_sha`/`pr`/`pr_url`/`summary`/
-`files`/`domains`/`steps` describe the reviewable PR, `plan_md` is the candidate PLAN.md (≤200 kB),
+`files`/`domains`/`steps` describe the reviewable PR (`warnings`, 0.5: strings such as "allowed_paths does
+not cover existing code in: lib/" for imported repos), `plan_md` is the candidate PLAN.md (≤200 kB),
 `step_list` the parsed candidate steps (≤100) and `shared` its spec-wide commands/paths; when
 `planning`, `activity`/`files_written` give live progress; `log` is the last 150 plan.log lines.
 
@@ -235,11 +236,15 @@ Body: none.
 
 ### POST /api/new
 
-Body: `{"slug": "...", "description": "..."}` (JSON; bad JSON → `400 {"error":"bad json"}`).
+Body: `{"slug": "...", "description": "...", "from_repo": "owner/repo", "branch": "...", "ruleset": true}`
+(JSON; bad JSON → `400 {"error":"bad json"}`; `from_repo`, `branch` and `ruleset` are optional, 0.5).
 Validates the slug (`^[a-z][a-z0-9-]{1,30}[a-z0-9]$`, no `--`, not reserved `all/dash/dashboard`) and
-description (1–4000 chars); rejects an existing or in-flight project. Spawns
-`hands <slug> create --then-plan` detached (description on stdin), log
-`~/.config/hands/creating/<slug>.log`. `200 {"ok": true, "slug": "<slug>"}`; errors as `400 {"error": ...}`.
+description (1–4000 chars); `from_repo` must be `owner/repo` (`newproject.parse_repo`), `branch` a git-like
+branch name and only with `from_repo`, `ruleset` exactly `true`; rejects an existing or in-flight project.
+Spawns `hands <slug> create --then-plan [--from-repo O/R [--branch B] [--ruleset]]` detached (description on
+stdin), log `~/.config/hands/creating/<slug>.log`. The existence/archived/access/branch checks on the
+existing repo happen in that process (see its log). `200 {"ok": true, "slug": "<slug>"}`; errors as
+`400 {"error": ...}`.
 
 ### POST /api/p/NAME/action/ACTION  (ACTION ∈ stop, start, ack, ack-clear-model)
 

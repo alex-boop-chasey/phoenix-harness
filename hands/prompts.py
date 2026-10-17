@@ -19,6 +19,15 @@ def acceptance_commands(spec: Spec, step: Step) -> list[str]:
     return out
 
 
+IMPORTED_NOTE = (
+    "## Existing codebase\n"
+    "This codebase existed before this build system started working on it: people wrote it, and they keep "
+    "working with it. Existing conventions win over the ones in your instructions: keep the project's layout, "
+    "language level, style, package manager, test framework and scripts; extend them rather than replacing them. "
+    "Change only what this step needs; do not reformat, rename or rewrite unrelated code, and do not add tooling "
+    "the project does not already use unless the step says so.")
+
+
 def _bullets(items: list[str]) -> str:
     return "\n".join(f"- `{i}`" for i in items) if items else "- (none)"
 
@@ -40,7 +49,7 @@ def env_section(env_vars: list[tuple[str, bool]] | None, *, for_builder: bool) -
 
 def coder(spec: Spec, step: Step, *, attempt: int, max_attempts: int, progress: list[dict],
           git_log: str, feedback: list[str], prev_diff: str, acc_files: list[str] | None = None,
-          env_vars: list[tuple[str, bool]] | None = None) -> str:
+          env_vars: list[tuple[str, bool]] | None = None, imported: bool = False) -> str:
     parts = [
         f"# Step {step.id}: {step.title}",
         f"Attempt {attempt} of {max_attempts}. Spec commit {spec.commit[:12]}.",
@@ -48,6 +57,8 @@ def coder(spec: Spec, step: Step, *, attempt: int, max_attempts: int, progress: 
     ]
     if step.notes:
         parts.append("## Notes from the spec\n" + step.notes)
+    if imported:
+        parts.append(IMPORTED_NOTE)
     parts.append(
         "## Acceptance (the runner runs these, in order, in a clean clone after you finish)\n"
         + _bullets(acceptance_commands(spec, step))

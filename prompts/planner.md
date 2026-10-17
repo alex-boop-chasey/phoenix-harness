@@ -87,6 +87,13 @@ that partner's preferences):
   plans have 6-20 steps. Step 1 creates the project skeleton, package.json scripts and tooling so that
   `setup` and `regression` work from step 1 onwards.
 
+## Building on an existing repo (imported projects)
+When the user message has a section "Existing codebase", the app repo already holds code that people
+wrote and still work with. Plan changes on top of it: no skeleton task; keep its framework, layout,
+package manager, scripts, test framework and style (the builders are told existing conventions win; the
+pnpm rule above applies only to new apps); `allowed_paths` must cover every existing path a step changes
+(the runner warns when existing code is left out); `pins` lists only the dependencies you add or upgrade.
+
 ## Output contract (exactly these files; anything else is discarded)
 1. `steps.json` — the machine spec (schema below).
 2. `PLAN.md` — for the human reviewer, plain and concise: Summary (3 lines); Understanding (what the

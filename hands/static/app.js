@@ -510,16 +510,42 @@ function showNew() {
   const out = el("pre", {}, "");
   const submit = el("button", { class: "act", type: "submit" }, "Create project");
   const envLocal = envEditor({ local: true });
+  // Start from an existing repo (step 15): the app repo already exists; hands only adds a deploy key to it.
+  const fromRepo = el("input", { type: "checkbox", id: "fromrepo" });
+  const repo = el("input", { id: "repo", autocomplete: "off", spellcheck: "false", maxlength: "140",
+    placeholder: "owner/repo", pattern: "[A-Za-z0-9][A-Za-z0-9\\-]{0,38}/[A-Za-z0-9._\\-]{1,100}" });
+  const branch = el("input", { id: "branch", autocomplete: "off", spellcheck: "false", maxlength: "120",
+    placeholder: "default branch", pattern: "[A-Za-z0-9][A-Za-z0-9._\\/\\-]{0,119}" });   // "/" and "-" escaped: v flag
+  const ruleset = el("input", { type: "checkbox", id: "ruleset" });
+  const repoFields = el("div", { class: "subfields hidden" },
+    el("label", { for: "repo" }, "Existing repo"), repo,
+    el("p", { class: "muted" }, "owner/repo on GitHub. The token in github.env needs admin access on it. The repo is never deleted or re-created; Phoenix adds a write deploy key and clones it."),
+    el("label", { for: "branch" }, "Branch (optional)"), branch,
+    el("p", { class: "muted" }, "The runner builds on this branch. Leave empty for the repo's default branch."),
+    el("label", { class: "check" }, ruleset, el("span", {}, "Add Phoenix's branch protection to that repo",
+      el("span", { class: "hint" }, "Ruleset protect-main: no deletion, no force-push. Leave off if the repo has its own rules."))));
+  const syncRepoFields = () => {
+    repoFields.classList.toggle("hidden", !fromRepo.checked);
+    repo.required = fromRepo.checked;
+    if (!fromRepo.checked) { repo.value = ""; branch.value = ""; ruleset.checked = false; }
+  };
+  fromRepo.addEventListener("change", syncRepoFields);
   const form = el("form", { on: { submit: async (ev) => {
     ev.preventDefault();
     let vars;
     try { vars = envLocal.collect(); } catch (e) { out.textContent = e.message; return; }
-    if (!confirm(`Create GitHub repos ${slug.value}-specs and ${slug.value}-app and set everything up?`)) return;
+    const importing = fromRepo.checked;
+    const q = importing
+      ? `Create the GitHub repo ${slug.value}-specs, add a deploy key to ${repo.value} and set everything up? ${repo.value} itself is not changed.`
+      : `Create GitHub repos ${slug.value}-specs and ${slug.value}-app and set everything up?`;
+    if (!confirm(q)) return;
     submit.disabled = true;
     out.textContent = "Starting…";
+    const body = { slug: slug.value, description: desc.value };
+    if (importing) { body.from_repo = repo.value.trim(); body.branch = branch.value.trim(); body.ruleset = ruleset.checked; }
     try {
       await api("/api/new", { method: "POST", headers: { "X-Hands": "1", "Content-Type": "application/json" },
-        body: JSON.stringify({ slug: slug.value, description: desc.value }) });
+        body: JSON.stringify(body) });
     } catch (e) { out.textContent = `failed: ${e.message}`; submit.disabled = false; return; }
     creatingEnvError = "";
     if (vars.length) {
@@ -531,7 +557,10 @@ function showNew() {
     mode = "creating"; creatingSlug = slug.value; refresh(false);
   } } },
     el("label", { for: "slug" }, "Project slug"), slug,
-    el("p", { class: "muted" }, "Lowercase letters, digits and hyphens. Becomes the repo names <slug>-specs and <slug>-app."),
+    el("p", { class: "muted" }, "Lowercase letters, digits and hyphens. Becomes the repo names <slug>-specs and <slug>-app (or just <slug>-specs when starting from an existing repo)."),
+    el("label", { class: "check" }, fromRepo, el("span", {}, "Start from an existing repo",
+      el("span", { class: "hint" }, "Build on a codebase that already exists on GitHub instead of a new, empty app repo."))),
+    repoFields,
     el("label", { for: "desc" }, "Idea"), desc,
     el("label", {}, "Environment variables (optional)"),
     el("p", { class: "muted" }, "Test API keys and service URLs the build containers need. You can also add them later on the project page."),
@@ -539,7 +568,8 @@ function showNew() {
     el("div", { class: "row" }, submit), out);
   $("#main").replaceChildren(el("section", {}, el("h2", {}, "New project"),
     el("p", { class: "muted" }, "Creates two private repos with branch protection, read-only/write deploy keys, " +
-      "clones under ~/projects/<slug>/ and the runner config. Takes about a minute. Nothing is built until a plan is merged."),
+      "clones under ~/projects/<slug>/ and the runner config. Takes about a minute. Nothing is built until a plan is merged. " +
+      "With an existing repo, only the spec repo is created."),
     form));
 }
 
@@ -570,7 +600,7 @@ function setupSection(d) {
     hint ? el("div", { class: "muted" }, hint) : null);
   return el("section", {}, el("h2", {}, "Setup"),
     s.description ? el("p", {}, s.description) : null,
-    s.repo_specs ? el("p", { class: "muted" }, `Repos: ${s.repo_specs} · ${s.repo_app}`) : null,
+    s.repo_specs ? el("p", { class: "muted" }, `Repos: ${s.repo_specs} · ${s.repo_app}${s.imported ? " (existing repo, imported)" : ""}`) : null,
     el("ul", { class: "checklist" },
       item(s.spec_ready, "Plan approved (steps.json merged into the spec repo)",
         s.spec_ready ? null : "See the Plan section: review the plan, then Approve & build."),
@@ -683,6 +713,7 @@ function planSection(d) {
   if (p.error) parts.push(el("p", { class: "reason" }, p.error));
   if (st === "ready") {
     parts.push(el("p", {}, p.summary || ""));
+    (p.warnings || []).forEach((w) => parts.push(el("div", { class: "notice warn" }, el("strong", {}, "Check before approving"), w)));
     if ((p.domains || []).length) {
       const box = el("input", { type: "checkbox", id: "domack" });
       box.checked = domainAck;

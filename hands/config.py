@@ -21,7 +21,8 @@ class Config:
     app_dir: Path
     state_dir: Path
     image: str
-    branch: str = "main"
+    branch: str = "main"                # app repo branch the runner builds on
+    spec_branch: str = ""               # specs repo branch (default: same as branch; imported projects keep main)
     push: bool = True
     coder_model: str = "claude-fable-5-1"
     eval_model: str = "claude-fable-5-1"
@@ -56,6 +57,7 @@ class Config:
     min_release_age_days: float = 3.0    # planned npm pins must be at least this old (pnpm 12 enforces >= 1 day)
     # set by `hands <p> create`; `destroy` only deletes GitHub repos of managed projects
     managed: bool = False
+    imported: bool = False              # app repo existed before hands (never deleted by destroy)
     github_org: str = ""
     repo_specs: str = ""
     repo_app: str = ""
@@ -85,6 +87,8 @@ def load(name: str, path: Path | None = None) -> Config:
     cfg = Config(name=name, **raw)
     if not cfg.pnpm_volume:
         cfg.pnpm_volume = f"hands-{name}-coder-store"
+    if not cfg.spec_branch:
+        cfg.spec_branch = cfg.branch
     for k in ("spec_dir", "app_dir", "state_dir"):
         setattr(cfg, k, getattr(cfg, k).resolve())
     return cfg

@@ -11,7 +11,8 @@
 #             landing (plan ready)  notes (planning)  new (New project form)
 #             sessions, files (sections), nav (phone drawer open)
 #             tabs (builder as it opens), menu ("+" menu open), close (close-tab confirmation)
-#             newbad (New project form with invalid variables), env (blog's Environment panel),
+#             newrepo (New project form: start from an existing repo), newbad (New project form with
+#             invalid variables), env (blog's Environment panel),
 #             envbad (that panel with validation errors)
 #             sessions (Session manager: list + live terminal; phone: the list), sessions-term (phone:
 #             the terminal view), sessions-new (New session dialog), sessions-delete (Delete dialog),
@@ -84,7 +85,7 @@ LABEL="${1:-}"
 [ -n "$LABEL" ] || { echo "usage: bash tools/ui-shots.sh <label> [page ...]" >&2; exit 2; }
 case "$LABEL" in *[!A-Za-z0-9._/-]*|*..*|/*) echo "label: letters, digits, . _ - and / (no .., not absolute) only" >&2; exit 2;; esac
 shift
-if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new newbad env envbad sessions sessions-term sessions-new sessions-delete sessions-telegram files files-grid files-preview files-image files-search files-upload files-settings files-denied nav tabs menu close}"; fi
+if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new newrepo newbad env envbad sessions sessions-term sessions-new sessions-delete sessions-telegram files files-grid files-preview files-image files-search files-upload files-settings files-denied nav tabs menu close}"; fi
 case "${UI_SHOTS_PROJECTS:-}" in ""|[0-9]|1[0-9]|20) ;; *) echo "UI_SHOTS_PROJECTS: 0..20" >&2; exit 2;; esac
 case "${UI_SHOTS_HIDDEN:-}" in *[!A-Za-z0-9_\ -]*) echo "UI_SHOTS_HIDDEN: project names separated by spaces" >&2; exit 2;; esac
 REPO="$(cd "$(dirname "$0")/.." && pwd)"

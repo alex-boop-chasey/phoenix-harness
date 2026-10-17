@@ -521,6 +521,13 @@ async function capture(context, name, width, theme) {
       await page.locator("#desc").fill("Ordering site for a small bakery: menu, opening hours, pre-orders for pickup.");
       await addEnvRow(page, "SUPABASE_URL", "https://abc.supabase.co", true);
       await addEnvRow(page, "SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiJ9.demo");
+    } else if (name === "newrepo") {
+      await openNewForm(page);
+      await page.locator("#slug").fill("bakery");
+      await page.locator("#fromrepo").check();
+      await page.locator("#repo").fill("acme/bakery-site");
+      await page.locator("#branch").fill("develop");
+      await page.locator("#desc").fill("Add online pre-orders for pickup to the existing bakery site.");
     } else if (name === "newbad") {
       await openNewForm(page);
       await page.locator("#slug").fill("bakery");

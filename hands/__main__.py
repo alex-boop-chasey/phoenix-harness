@@ -13,7 +13,11 @@
   watchdog               (cron) restart the loop in tmux if it died; never after escalation/done/STOP
   create                 new project from nothing: repos, protection, deploy keys, clones, config
                          (description on stdin; the dashboard's New project form runs this)
+    --from-repo O/R      build on an existing repo instead of creating <slug>-app: adds a write deploy
+                         key to it (and the protect-main ruleset only with --ruleset); --branch B picks
+                         the branch to build on (default: the repo's default branch)
   destroy --confirm P    delete a hands-created project: GitHub repos, keys, folders, config
+                         (an imported repo is never deleted: only its hands deploy key is removed)
   plan                   run the planner (feedback on stdin): idea -> spec -> PR hands/plan
   approve                merge the reviewed plan PR (sha-pinned), refresh the spec, start the build
 hands all watchdog       (cron) watchdog for every project, and keep the dashboard running
@@ -52,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--clear-model", action="store_true")
     ap.add_argument("--confirm", default="")
     ap.add_argument("--then-plan", action="store_true")
+    ap.add_argument("--from-repo", default="", metavar="OWNER/REPO")
+    ap.add_argument("--branch", default="")
+    ap.add_argument("--ruleset", action="store_true")
     a = ap.parse_args(argv)
     if a.project == "all":
         if a.command == "usage":
@@ -65,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         from . import newproject
         try:
             if a.command == "create":
-                rc = newproject.main_create(a.project)
+                rc = newproject.main_create(a.project, a.from_repo, a.branch, a.ruleset)
                 if rc == 0 and a.then_plan:
                     from . import planner
                     print("starting the planner (log: dashboard Plan section)", flush=True)
@@ -164,6 +171,10 @@ def main(argv: list[str] | None = None) -> int:
         if odd:
             print(f"WARN: files no command names (visible to every step; if one belongs to a step, list it in that "
                   f"step's acceptance_files): {', '.join(odd)}")
+        if cfg.imported:
+            from . import codesummary
+            for w in codesummary.coverage_warnings(sp.allowed_paths, cfg.app_dir):
+                print(f"WARN: {w} (the builders cannot change those files)")
         return 0
 
     if cmd == "prompt":
@@ -317,7 +328,7 @@ def check(r: Runner) -> int:
         return 1
     check_env(cfg, line)
     try:
-        commit = gitops.refresh_spec(cfg.spec_dir, cfg.branch)
+        commit = gitops.refresh_spec(cfg.spec_dir, cfg.spec_branch)
         r.spec = specmod.load(cfg.spec_dir, commit)
         line(True, f"spec valid at {commit[:9]} ({len(r.spec.steps)} steps)")
     except Exception as e:

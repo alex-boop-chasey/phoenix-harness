@@ -119,6 +119,7 @@ text label and a dot, step icons use ✓ ✗ ○ plus colour.
 | New session dialog | `dialog.dialog` with `.field` (label, `.input.mono`, hint, `.error`) + `label.check` (checkbox, text, `.hint`) | working folder, default `~/ops`; "Live on Telegram" checkbox whose hint names the session holding the slot; server errors shown inline under their field (since step 12) |
 | Channel badge | `.badge.s-telegram` (accent on accent-soft, ✈ glyph instead of the dot) | marks the session that is live on Telegram: "Telegram" inline after the title in the session list, "live on Telegram" / "Telegram" (stopped) in the terminal head next to the state badge; one per app at most. Head button `#s-telegram` toggles it ("Go live on Telegram" / "Leave Telegram") through the shared `confirmDialog` (since step 12) |
 | Checkbox | `label.check > input[type=checkbox] + span(.hint)` | accent-coloured native box, label text with an optional muted hint on its own line |
+| Sub-fields | `.subfields` (`.hidden` to collapse) | a group of fields revealed by a checkbox, with a left rule; used by the New project form's "Start from an existing repo" (repo, branch, ruleset) |
 | Breadcrumb | `.crumbs a .sep .here` | clickable ancestors, bold current |
 | View switch | `.seg button[aria-pressed]` | List / Grid |
 | File list | table rows with `.ftype(.dir .code .img .doc)` + `.fname` | type chip, name link, size (`.num`), modified, permissions (hidden on phone) |

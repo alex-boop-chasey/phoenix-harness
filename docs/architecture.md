@@ -16,7 +16,7 @@ Docker containers, with runner-run acceptance checks and an independent AI evalu
 | Runner loop | `hands/loop.py` | tmux session `hands-<slug>`, one per project |
 | Dashboard | `hands/dashboard.py` + `hands/static/{index.html,app.js,app.css}` | tmux session `hands_dashboard`, 127.0.0.1:8090 |
 | Planner | `hands/planner.py` | child process spawned by CLI/dashboard |
-| Project create/destroy | `hands/newproject.py` | child process spawned by CLI/dashboard |
+| Project create/destroy | `hands/newproject.py` (+ `hands/codesummary.py` for imported repos) | child process spawned by CLI/dashboard |
 | Watchdog | `hands <p> watchdog` / `hands all watchdog` | cron, every 10 min |
 | Agent containers | `hands/docker.py`, `container/entry.sh`, image files in `image/` | Docker, image `hands:cc2.1.301-pw1.64.1` |
 
@@ -246,6 +246,18 @@ never follows links. The refusal table lives in `tests/test_v13.py`.
 code-owner review, no force-push/deletion) and `<slug>-app` (ruleset: no force-push/deletion); per-repo
 deploy keys (specs read-only — verified by a push --dry-run that must be refused); clones pinned to
 those keys; `created.json` records repo ids so `destroy` deletes only what this run made.
+`create --from-repo owner/repo` (0.5, "Start from an existing repo" in the form): the app repo already exists.
+Preflight checks it (reachable with the token, not archived, default branch, token has admin, `--branch`
+exists); only `<slug>-specs` is created; the existing repo gets a write deploy key (and the protect-main
+ruleset only with `--ruleset`), nothing is written to it, and it is cloned at the chosen branch.
+`created.json` records it under `imported` (repo, id, deploy_key_id, branch), never under `repos`; `destroy`
+deletes only that deploy key, the specs repo and local folders/secrets, and fails closed (deletes nothing on
+GitHub) if the record names the imported repo as created or vice versa. Config: `imported = true`,
+`repo_app = "owner/repo"`, `branch` = app branch; `spec_branch` (default `branch`) keeps the specs repo
+on `main`. `hands/codesummary.py` gives the planner a bounded summary of the clone (tracked files only,
+package.json and README read with size caps, never through symlinks) and warns when `allowed_paths` leaves
+existing code out (plan state `warnings`, PR body, `hands <p> validate`); the coder prompt says the codebase
+existed before and its conventions win.
 `plan`: untrusted planner session (web search on, WebFetch off) writes into a clone of the spec repo;
 output is exported through a `--network none` container, restricted to the contract
 (`steps.json, PLAN.md, allowed-domains, docs/*.md, acceptance/**`), validated (spec loader, printable-ASCII

@@ -199,6 +199,8 @@ details summary { cursor: pointer; margin: 8px 0; color: var(--ink-2); }
 /* ---------------------------------------------------------------- forms */
 form { display: grid; gap: 6px; max-width: 640px; }
 label { font-weight: 600; margin-top: 6px; font-size: var(--fs-1); }
+.subfields { display: grid; gap: 6px; border-left: 3px solid var(--line-2); padding-left: var(--sp-3); margin: var(--sp-2) 0 var(--sp-3); }
+.subfields.hidden { display: none; }
 label.inline { display: inline; font-weight: 600; margin: 0; }
 section > label { display: block; }
 input, textarea { font: inherit; padding: 7px 10px; border: 1px solid var(--line-2); border-radius: var(--r-1); background: var(--surface); color: var(--ink); }

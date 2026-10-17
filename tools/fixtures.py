@@ -12,7 +12,8 @@ dashboard shows:
   crm       failed step + escalation
   blog      done (all steps passed); project.env with 2 secret + 1 public variable
   wiki      stopped (STOP file); project_env configured but no file (the rig's env flow writes it)
-  landing   plan ready for review (managed; candidate plan + PR metadata)
+  landing   plan ready for review (managed, imported from an existing repo; candidate plan + PR metadata,
+            an allowed_paths coverage warning)
   notes     planning right now (managed; planner lock held, live activity)
 
 [count] (default 6) = how many projects: 0..6 takes the first N of the list above; above 6 adds
@@ -126,10 +127,13 @@ def runner_log(state: Path, lines: list[str]) -> None:
     (state / "runner.log").write_text("".join(f"{iso(NOW - 60 * (len(lines) - i))} {l}\n" for i, l in enumerate(lines)))
 
 
-def write_toml(cfg_home: Path, slug: str, root: Path, managed: bool = False, project_env: bool = False) -> None:
+def write_toml(cfg_home: Path, slug: str, root: Path, managed: bool = False, project_env: bool = False,
+               imported: str = "") -> None:
     extra = ""
     if managed:
-        extra = (f'managed = true\ngithub_org = "acme"\nrepo_specs = "{slug}-specs"\nrepo_app = "{slug}-app"\n')
+        app = imported or f"{slug}-app"
+        extra = (f'managed = true\ngithub_org = "acme"\nrepo_specs = "{slug}-specs"\nrepo_app = "{app}"\n'
+                 + ("imported = true\n" if imported else ""))
     if managed or project_env:
         extra += f'project_env = "{cfg_home}/secrets/{slug}/project.env"\n'
     (cfg_home / "projects" / f"{slug}.toml").write_text(
@@ -284,6 +288,7 @@ def p_landing(cfg_home: Path, root: Path) -> None:
         "state": "ready", "error": "", "summary": "6 steps: Astro static site with menu, hours and order form.",
         "files": ["steps.json", "PLAN.md", "docs/design.md"], "steps": 6,
         "domains": ["formspree.io"], "pr": 3, "pr_url": "https://github.com/acme/landing-specs/pull/3",
+        "warnings": ["allowed_paths does not cover existing code in: lib/, scripts/"],
         "head_sha": sha("landing-head"), "base_sha": sha("landing-base"),
         "started": NOW - 1500, "updated": NOW - 60}))
     (plan / "plan.log").write_text("".join(f"{time.strftime('%H:%M:%S', time.gmtime(NOW - 1500 + i * 120))} {l}\n" for i, l in enumerate([
@@ -293,7 +298,7 @@ def p_landing(cfg_home: Path, root: Path) -> None:
         "PR #3 https://github.com/acme/landing-specs/pull/3 @ " + sha("landing-head")[:9],
         "READY: 6 steps: Astro static site with menu, hours and order form.",
     ])))
-    write_toml(cfg_home, "landing", r, managed=True)
+    write_toml(cfg_home, "landing", r, managed=True, imported="acme/landing-site")
 
 
 def p_notes(cfg_home: Path, root: Path) -> None:

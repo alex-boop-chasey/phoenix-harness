@@ -38,6 +38,21 @@ Defaults (org, code owner, image, models): ~/.config/hands/new-project.toml.
 Remove a hands-created project (CLI only): `hands <slug> destroy --confirm <slug>`; it deletes only the repos
 recorded in created.json and only if their GitHub id still matches.
 
+### Start from an existing repo (0.5)
+Tick "Start from an existing repo" in the form (owner/repo, optional branch, optional ruleset), or on the VPS:
+`echo "idea" | hands <slug> create --from-repo <owner>/<repo> [--branch B] [--ruleset]`. Checks first: the repo
+is reachable with the token, not archived, has a default branch, the token has admin on it (deploy keys need
+it) and the branch exists. Then only <slug>-specs is created; the existing repo gets a write deploy key (and
+the protect-main ruleset only with --ruleset; it may have its own rules), nothing else is written to it, and it
+is cloned at the chosen branch. created.json records it under "imported" (repo, id, deploy_key_id, branch),
+never under "repos": `destroy` removes that deploy key, the specs repo and the local folders/secrets, and
+leaves the imported repo untouched (it never deletes, force-pushes or re-creates it). The config gets
+`imported = true`, `repo_app = "owner/repo"`, `branch` = the app branch and `spec_branch = main` stays implicit
+(the specs repo is always on main). The planner gets a bounded summary of the existing code (file tree,
+package.json, framework and test setup, README start) and plans changes on top of it; builders are told the
+codebase existed before and its conventions win; `allowed_paths` that leave existing code out produce a
+warning in the plan (PR body, dashboard, `hands <p> validate`).
+
 ## Planner (0.4.2): idea -> plan -> one-click approve -> build
 New projects from the dashboard are planned automatically; or press "Plan it" / run `hands <p> plan`.
 The planner is one unattended `claude -p` session (Fable) in the same locked-down container, with the

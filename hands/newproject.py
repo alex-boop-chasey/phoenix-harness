@@ -21,6 +21,12 @@ For slug S in org O (settings: ~/.config/hands/new-project.toml) create makes:
 created.json records exactly what this run made (repo ids); destroy deletes only those, and only if the
 repo on GitHub still has the recorded id. The GitHub token (~/.config/hands/github.env, GH_TOKEN=...) is
 read only by this process: never by the dashboard server, never by a container, never logged.
+
+  hands <slug> create --from-repo <owner>/<repo> [--branch B] [--ruleset]      (0.5: import an existing repo)
+Same as above, but the app repo already exists: no app repo is created, nothing is written to it; Phoenix
+only adds a write deploy key (and the protect-main ruleset only with --ruleset) and clones it. created.json
+records it under "imported" (repo, id, deploy_key_id, branch), never under "repos": destroy removes the
+deploy key it added, the specs repo and the local folders/secrets, and leaves the imported repo untouched.
 """
 from __future__ import annotations
 
@@ -44,6 +50,8 @@ from . import gitops
 SLUG = re.compile(r"^[a-z][a-z0-9-]{1,30}[a-z0-9]$")
 RESERVED = {"all", "dash", "dashboard"}
 GH_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+REPO_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+BRANCH_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$")
 DEFAULT_API = "https://api.github.com"
 GITIGNORE = "node_modules/\n/acceptance/\n.env\n.env.*\n!.env.example\ndist/\nbuild/\n.next/\ncoverage/\n" \
             "playwright-report/\ntest-results/\n*.log\n.DS_Store\n"
@@ -236,6 +244,22 @@ def validate_slug(slug: str) -> None:
                           f"(reserved: {', '.join(sorted(RESERVED))})")
 
 
+def parse_repo(ref: str) -> tuple[str, str]:
+    """'owner/repo' of an existing GitHub repo -> (owner, repo). Raises CreateError."""
+    ref = (ref or "").strip()
+    owner, sep, repo = ref.partition("/")
+    if not sep or not GH_NAME.match(owner) or not REPO_NAME.match(repo) or repo in (".", "..") \
+            or repo.lower().endswith(".git"):
+        raise CreateError("existing repo: use owner/repo (GitHub owner name, then the repository name)")
+    return owner, repo
+
+
+def validate_branch(name: str) -> None:
+    if not BRANCH_NAME.match(name or "") or ".." in name or "//" in name or name.endswith(("/", ".lock")) \
+            or "@{" in name or name.endswith("."):
+        raise CreateError("branch: letters, digits, '.', '_', '-' and '/' (max 120 chars), like git allows")
+
+
 def toml_str(v: str) -> str:
     return json.dumps(v)        # JSON string escapes are valid TOML basic strings
 
@@ -265,11 +289,45 @@ class Ctx:
         os.replace(tmp, p)
 
 
-def preflight(slug: str, description: str) -> tuple[dict, "GitHub", list[str]]:
+def inspect_repo(gh: "GitHub", owner: str, repo: str, branch: str) -> dict:
+    """The existing repo to import: must be reachable with the token, not archived, with a default branch and
+    admin access (deploy keys need it). Returns {"repo": "owner/name", "id", "branch"}."""
+    full = f"{owner}/{repo}"
+    code, data = gh.call("GET", f"/repos/{owner}/{repo}", ok=(200, 404))
+    if code == 404:
+        raise CreateError(f"repo {full} not found, or the GitHub token cannot access it")
+    if data.get("archived"):
+        raise CreateError(f"repo {full} is archived (unarchive it on GitHub first)")
+    if data.get("disabled"):
+        raise CreateError(f"repo {full} is disabled on GitHub")
+    rid = data.get("id")
+    if not isinstance(rid, int):
+        raise CreateError(f"GitHub returned no id for {full}")
+    default = data.get("default_branch")
+    if not isinstance(default, str) or not default:
+        raise CreateError(f"repo {full} has no default branch (empty repo?); push a first commit")
+    perms = data.get("permissions")
+    if isinstance(perms, dict) and not perms.get("admin"):
+        raise CreateError(f"the GitHub token needs admin access on {full} to add a deploy key")
+    if branch:
+        validate_branch(branch)
+        if branch != default:
+            code, _ = gh.call("GET", f"/repos/{owner}/{repo}/branches/{branch}", ok=(200, 404))
+            if code == 404:
+                raise CreateError(f"branch {branch!r} does not exist in {full}")
+    else:
+        validate_branch(default)
+    return {"repo": full, "id": rid, "branch": branch or default}
+
+
+def preflight(slug: str, description: str, from_repo: str = "", branch: str = "") -> tuple[dict, "GitHub", list[str], dict | None]:
     """All checks that need no side effects. Raises CreateError."""
     validate_slug(slug)
     if not description.strip():
         raise CreateError("description required")
+    imp_ref = parse_repo(from_repo) if from_repo else None
+    if branch and not imp_ref:
+        raise CreateError("--branch is only used with --from-repo")
     s = settings()
     cfg_path = cfgmod.CONFIG_HOME / "projects" / f"{slug}.toml"
     root = projects_root() / slug
@@ -282,9 +340,12 @@ def preflight(slug: str, description: str) -> tuple[dict, "GitHub", list[str]]:
         raise CreateError(f"{sec} already exists")
     gh = GitHub(token())
     org = s["org"]
-    for r in (f"{slug}-specs", f"{slug}-app"):
+    imp = inspect_repo(gh, imp_ref[0], imp_ref[1], branch) if imp_ref else None
+    for r in ([f"{slug}-specs"] if imp else [f"{slug}-specs", f"{slug}-app"]):
         if gh.repo_id(org, r) is not None:
             raise CreateError(f"repo {org}/{r} already exists")
+    if imp and imp["repo"].lower() == f"{org}/{slug}-specs".lower():
+        raise CreateError("the existing repo cannot be the new specs repo")
     _, o = gh.call("GET", f"/orgs/{org}")
     plan = (o.get("plan") or {}).get("name", "")
     if plan == "free":
@@ -293,27 +354,38 @@ def preflight(slug: str, description: str) -> tuple[dict, "GitHub", list[str]]:
     host_keys = [k for k in meta.get("ssh_keys", []) if isinstance(k, str) and re.match(r"^ssh-[\w-]+ [A-Za-z0-9+/=]+$", k)]
     if not host_keys and not testing():
         raise CreateError("could not read GitHub's SSH host keys from /meta")
-    return s, gh, host_keys
+    return s, gh, host_keys, imp
 
 
-def create(slug: str, description: str, ctx_holder: list) -> int:
+def create(slug: str, description: str, ctx_holder: list, from_repo: str = "", branch: str = "",
+           ruleset_on_import: bool = False) -> int:
     description = description.strip()
-    s, gh, host_keys = preflight(slug, description)
+    s, gh, host_keys, imp = preflight(slug, description, from_repo, branch)
     org, owner = s["org"], s["codeowner"]
     cfg_path = cfgmod.CONFIG_HOME / "projects" / f"{slug}.toml"
     root = projects_root() / slug
     sec = secrets_root(slug)
-    specs, app = f"{slug}-specs", f"{slug}-app"
-    say(f"[..] creating project {slug} in {org}")
+    specs = f"{slug}-specs"
+    if imp:
+        app_owner, app = imp["repo"].split("/", 1)
+        repo_app_cfg = imp["repo"]              # owner/name: the app repo may live outside the specs org
+        say(f"[..] creating project {slug} in {org} from existing repo {imp['repo']} (branch {imp['branch']})")
+    else:
+        app_owner, app = org, f"{slug}-app"
+        repo_app_cfg = app
+        say(f"[..] creating project {slug} in {org}")
 
     ctx = Ctx(root, org)
     ctx_holder.append(ctx)
+    if imp:
+        ctx.data["imported"] = {"repo": imp["repo"], "id": imp["id"], "branch": imp["branch"]}
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(cfg_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     with os.fdopen(fd, "w") as f:
         f.write(
             f"# created by hands {time.strftime('%Y-%m-%d %H:%M')}\nmanaged = true\n"
-            f"github_org = {toml_str(org)}\nrepo_specs = {toml_str(specs)}\nrepo_app = {toml_str(app)}\n"
+            + ("imported = true\n" if imp else "")
+            + f"github_org = {toml_str(org)}\nrepo_specs = {toml_str(specs)}\nrepo_app = {toml_str(repo_app_cfg)}\n"
             f"spec_dir = {toml_str(str(root / 'specs'))}\napp_dir = {toml_str(str(root / 'app'))}\n"
             f"state_dir = {toml_str(str(root / 'state'))}\nproject_env = {toml_str(str(sec / 'project.env'))}\n"
             f"image = {toml_str(s['image'])}\n"
@@ -334,7 +406,8 @@ def create(slug: str, description: str, ctx_holder: list) -> int:
     kh.write_text("".join(f"github.com {k}\n" for k in host_keys))
 
     branches = {}
-    for repo, is_spec in ((specs, True), (app, False)):
+    to_create = [(specs, True)] if imp else [(specs, True), (app, False)]
+    for repo, is_spec in to_create:
         _, data = gh.call("POST", f"/orgs/{org}/repos", {
             "name": repo, "private": True, "auto_init": True, "has_wiki": False, "has_projects": False,
             "has_issues": False, "delete_branch_on_merge": True,
@@ -344,7 +417,11 @@ def create(slug: str, description: str, ctx_holder: list) -> int:
         ctx.record_repo(repo, data["id"])
         branches[repo] = data.get("default_branch") or "main"
         say(f"[ok] repo {org}/{repo} (default branch {branches[repo]})")
-    if branches[specs] != branches[app]:
+    if imp:
+        branches[app] = imp["branch"]
+        if branches[specs] != "main":
+            raise CreateError(f"specs repo default branch is {branches[specs]!r}; expected main")
+    elif branches[specs] != branches[app]:
         raise CreateError(f"default branches differ: {branches}")
     settle(2)
 
@@ -354,24 +431,35 @@ def create(slug: str, description: str, ctx_holder: list) -> int:
         say(f"[ok] {repo}: {path}")
 
     put(specs, ".github/CODEOWNERS", f"* @{owner}\n", "codeowners")
-    put(app, ".gitignore", GITIGNORE, "gitignore")
-    for repo, is_spec in ((specs, True), (app, False)):
-        gh.call("POST", f"/repos/{org}/{repo}/rulesets", ruleset(is_spec), retry=(404, 409))
-        say(f"[ok] {repo}: ruleset protect-main")
+    if not imp:
+        put(app, ".gitignore", GITIGNORE, "gitignore")
+    protect = [(org, specs, True)]
+    if not imp or ruleset_on_import:
+        protect.append((app_owner, app, False))
+    for r_owner, repo, is_spec in protect:
+        gh.call("POST", f"/repos/{r_owner}/{repo}/rulesets", ruleset(is_spec), retry=(404, 409))
+        say(f"[ok] {r_owner}/{repo}: ruleset protect-main")
 
     key_for = {}
-    for repo, ro in ((specs, True), (app, False)):
+    for r_owner, repo, ro in ((org, specs, True), (app_owner, app, False)):
         key_for[repo] = keys / f"deploy_{repo}"
         pub = keygen(key_for[repo], f"hands {repo}")
-        gh.call("POST", f"/repos/{org}/{repo}/keys", {"title": f"hands-runner {repo}", "key": pub, "read_only": ro},
-                retry=(404, 409))
-        say(f"[ok] {repo}: deploy key ({'read-only' if ro else 'write'})")
+        _, kdata = gh.call("POST", f"/repos/{r_owner}/{repo}/keys",
+                           {"title": f"hands-runner {slug}", "key": pub, "read_only": ro}, retry=(404, 409))
+        if imp and not ro:
+            if not isinstance(kdata.get("id"), int):
+                raise CreateError(f"GitHub returned no id for the deploy key on {imp['repo']}")
+            ctx.data["imported"]["deploy_key_id"] = kdata["id"]
+            ctx.save()
+        say(f"[ok] {r_owner}/{repo}: deploy key ({'read-only' if ro else 'write'})")
 
-    for repo, sub in ((specs, "specs"), (app, "app")):
+    for r_owner, repo, sub in ((org, specs, "specs"), (app_owner, app, "app")):
         sshc = ssh_command(key_for[repo], kh)
+        extra = ["-b", branches[app]] if (imp and sub == "app") else []
         for n in range(1, 4):
             try:
-                gitops.git(root, "clone", "-q", "-c", f"core.sshCommand={sshc}", remote_url(org, repo), sub, timeout=300)
+                gitops.git(root, "clone", "-q", "-c", f"core.sshCommand={sshc}", *extra, remote_url(r_owner, repo), sub,
+                           timeout=1800 if imp else 300)
                 break
             except gitops.GitError as e:
                 if n == 3:
@@ -380,9 +468,9 @@ def create(slug: str, description: str, ctx_holder: list) -> int:
                 settle(10 * n)
         if not os.environ.get("HANDS_TEST_REMOTE_ROOT"):
             url = gitops.git(root / sub, "remote", "get-url", "--push", "origin").strip()
-            if url != f"git@github.com:{org}/{repo}.git":
+            if url != f"git@github.com:{r_owner}/{repo}.git":
                 raise CreateError(f"{sub} push URL resolves to {url!r}, expected ssh to github.com")
-        say(f"[ok] cloned {repo} -> {root / sub} (pinned to its deploy key)")
+        say(f"[ok] cloned {r_owner}/{repo} -> {root / sub} (pinned to its deploy key)")
     (root / "state").mkdir()
     fd = os.open(sec / "project.env", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     os.write(fd, b"# dev/test secrets for this project (KEY=value, no quotes). Seen by coder, acceptance, evaluator.\n")
@@ -402,7 +490,7 @@ def create(slug: str, description: str, ctx_holder: list) -> int:
     return 0
 
 
-def run_create(slug: str, description: str) -> int:
+def run_create(slug: str, description: str, from_repo: str = "", branch: str = "", ruleset: bool = False) -> int:
     from .state import Lock
     try:
         validate_slug(slug)
@@ -422,7 +510,7 @@ def run_create(slug: str, description: str) -> int:
         holder: list[Ctx] = []
         from . import projectenv
         try:
-            rc = create(slug, description, holder)
+            rc = create(slug, description, holder, from_repo, branch, ruleset)
             try:
                 n = projectenv.adopt_pending(slug, secrets_root(slug))      # variables set while creating
                 if n:
@@ -479,11 +567,14 @@ def destroy(slug: str, confirm: str) -> int:
         say("[warn] no created.json: GitHub repos are left alone (delete them by hand if needed)")
     else:
         repos = rec.get("repos") or {}
+        imported = rec.get("imported") if isinstance(rec.get("imported"), dict) else None
+        imp_repo = str(imported.get("repo", "")) if imported else ""
+        gh = GitHub(token()) if (repos or imported) else None
         if repos:
-            gh = GitHub(token())
             org = rec.get("org")
             for repo, rid in repos.items():
-                if repo not in (f"{slug}-specs", f"{slug}-app") or not isinstance(rid, int) or not org:
+                if repo not in (f"{slug}-specs", f"{slug}-app") or not isinstance(rid, int) or not org \
+                        or (imp_repo and f"{org}/{repo}".lower() == imp_repo.lower()):
                     say(f"[warn] skipping unexpected record {repo}")
                     continue
                 cur = gh.repo_id(org, repo)
@@ -494,6 +585,19 @@ def destroy(slug: str, confirm: str) -> int:
                 else:
                     gh.call("DELETE", f"/repos/{org}/{repo}", ok=(204, 404))
                     say(f"[ok] {org}/{repo}: deleted")
+        if imported:
+            kid = imported.get("deploy_key_id")
+            try:
+                owner, name = parse_repo(imp_repo)
+            except CreateError:
+                owner = name = ""
+            if owner and name not in (f"{slug}-specs", f"{slug}-app") and isinstance(kid, int) and kid > 0:
+                gh.call("DELETE", f"/repos/{owner}/{name}/keys/{kid}", ok=(204, 404))
+                say(f"[ok] {imp_repo}: removed the deploy key hands added (id {kid}); the repo itself is untouched")
+            elif owner and name not in (f"{slug}-specs", f"{slug}-app"):
+                say(f"[ok] {imp_repo}: imported repo left untouched (no deploy key recorded)")
+            else:
+                say(f"[warn] skipping unexpected imported record {imp_repo!r}")
     try:
         cfg = cfgmod.load(slug)
         docker.cleanup_orphans(cfg)
@@ -518,6 +622,6 @@ def destroy(slug: str, confirm: str) -> int:
     return 0
 
 
-def main_create(slug: str) -> int:
+def main_create(slug: str, from_repo: str = "", branch: str = "", ruleset: bool = False) -> int:
     desc = sys.stdin.read() if not sys.stdin.isatty() else input("One-line description: ")
-    return run_create(slug, desc)
+    return run_create(slug, desc, from_repo, branch, ruleset)

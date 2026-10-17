@@ -60,6 +60,16 @@ def refresh_spec(spec_dir: Path, branch: str) -> str:
     return head(spec_dir)
 
 
+def refresh_app(app_dir: Path, branch: str) -> str:
+    """Pin the runner's app clone to origin/<branch> (used before planning an imported repo, when no build
+    has run yet, so there is nothing local to lose). Returns commit sha."""
+    git(app_dir, "fetch", "-q", "origin", branch)
+    git(app_dir, "checkout", "-q", "-B", branch, "FETCH_HEAD")
+    git(app_dir, "reset", "-q", "--hard", "FETCH_HEAD")
+    git(app_dir, "clean", "-qfdx")
+    return head(app_dir)
+
+
 def sync_app(app_dir: Path, branch: str, push: bool) -> tuple[str, str]:
     """Make the runner's app clone consistent with origin. Returns (state, detail):
     ok | pushed (local commits were unpushed and are now pushed) | diverged | push_failed."""

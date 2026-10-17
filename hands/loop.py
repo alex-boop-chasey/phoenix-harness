@@ -334,7 +334,7 @@ class Runner:
 
     def next_step(self) -> specmod.Step | None:
         c = self.cfg
-        commit = self._net("spec fetch", lambda: gitops.refresh_spec(c.spec_dir, c.branch))
+        commit = self._net("spec fetch", lambda: gitops.refresh_spec(c.spec_dir, c.spec_branch))
         try:
             self.spec = specmod.load(c.spec_dir, commit)
         except specmod.SpecError as e:
@@ -404,7 +404,7 @@ class Runner:
         (adir / "prompt.md").write_text(prompts.coder(
             spec, step, attempt=attempt, max_attempts=max_attempts, progress=progress,
             git_log=gitops.log_oneline(c.app_dir), feedback=st.get("reasons", []), prev_diff=prev_diff,
-            acc_files=acc_files, env_vars=self.env_names()))
+            acc_files=acc_files, env_vars=self.env_names(), imported=c.imported))
         agents = json.loads((c.runner_home / "prompts" / "agents.json").read_text())
         cmd = self.claude_cmd(model=self.model, system_file="coder.md", max_turns=c.max_turns,
                               extra=["--agents", json.dumps(agents), "--disallowedTools", "WebFetch"])

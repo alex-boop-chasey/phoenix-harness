@@ -355,7 +355,8 @@ def setup_info(cfg) -> dict:
             "project_env": str(cfg.project_env or ""), "project_env_keys": env_keys,
             "allowed_domains": _count_lines(cfg.spec_dir / "allowed-domains", lambda l: l and not l.startswith("#")),
             "repo_specs": f"{cfg.github_org}/{cfg.repo_specs}" if cfg.repo_specs else "",
-            "repo_app": f"{cfg.github_org}/{cfg.repo_app}" if cfg.repo_app else "",
+            "repo_app": (cfg.repo_app if "/" in cfg.repo_app else f"{cfg.github_org}/{cfg.repo_app}") if cfg.repo_app else "",
+            "imported": bool(cfg.imported),
             "description": desc}
 
 
@@ -372,7 +373,7 @@ def plan_info(cfg) -> dict:
     if st.get("state") == "planning" and not running and time.time() - int(st.get("updated") or 0) > 20:
         st = {**st, "state": "failed", "error": st.get("error") or "the planner process ended unexpectedly; see the log"}
     out = {k: st.get(k) for k in ("state", "error", "pr", "pr_url", "head_sha", "summary", "files", "domains", "steps",
-                                  "activity", "files_written", "started")}
+                                  "activity", "files_written", "started", "warnings")}
     out["running"] = running
     act = read_json(d / "plan-activity.json", None)
     if isinstance(act, dict) and st.get("state") == "planning":
@@ -471,15 +472,30 @@ def create_info(slug: str) -> dict | None:
     return {"state": st.get("state"), "error": st.get("error", ""), "lines": text.splitlines()[-200:]}
 
 
-def start_create(slug: str, description: str) -> dict:
+def start_create(slug: str, description: str, from_repo: str = "", branch: str = "", ruleset: bool = False) -> dict:
     from . import newproject
     try:
         newproject.validate_slug(slug)
+        from_repo = (from_repo or "").strip()
+        branch = (branch or "").strip()
+        if from_repo:
+            from_repo = "/".join(newproject.parse_repo(from_repo))
+        if branch:
+            if not from_repo:
+                raise newproject.CreateError("branch is only used with an existing repo")
+            newproject.validate_branch(branch)
     except newproject.CreateError as e:
         raise ValueError(str(e))
     description = (description or "").strip()
     if not description or len(description) > 4000:
         raise ValueError("description: 1-4000 characters")
+    extra = []
+    if from_repo:
+        extra += ["--from-repo", from_repo]
+        if branch:
+            extra += ["--branch", branch]
+        if ruleset:
+            extra.append("--ruleset")
     with _CREATE_MUTEX:
         if (config_home() / "projects" / f"{slug}.toml").exists():
             raise ValueError(f"project {slug} already exists")
@@ -501,7 +517,7 @@ def start_create(slug: str, description: str) -> dict:
             out.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} create {slug}\n")
             out.flush()
             try:
-                p = subprocess.Popen(hands_argv(slug, "create", "--then-plan"), stdin=subprocess.PIPE, stdout=out,
+                p = subprocess.Popen(hands_argv(slug, "create", "--then-plan", *extra), stdin=subprocess.PIPE, stdout=out,
                                      stderr=subprocess.STDOUT, env=env, start_new_session=True, text=True)
                 p.stdin.write(description)
                 p.stdin.close()
@@ -793,7 +809,9 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("bad json")
             if not isinstance(req, dict):
                 raise ValueError("bad json")
-            return self._json(200, start_create(str(req.get("slug", "")), str(req.get("description", ""))))
+            return self._json(200, start_create(str(req.get("slug", "")), str(req.get("description", "")),
+                                                str(req.get("from_repo", "") or ""), str(req.get("branch", "") or ""),
+                                                req.get("ruleset") is True))
         if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "action" and parts[4] in ("plan", "approve"):
             try:
                 req = json.loads(body or b"{}")
