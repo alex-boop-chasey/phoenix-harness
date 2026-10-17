@@ -74,11 +74,36 @@ def _home() -> str:
 
 
 def denied_paths() -> list[str]:
-    """Real paths that are never served, even inside an allowed root."""
+    """Real paths that are never served, even inside an allowed root: the secret folders plus every
+    project's state dir (attempt files and session streams hold tool output, possibly secret values,
+    until the runner has redacted them)."""
     home = _home()
     out = [os.path.realpath(os.path.join(home, d)) for d in DENIED_UNDER_HOME]
     out.append(os.path.realpath(str(cfgmod.CONFIG_HOME)))
     out.append(os.path.realpath(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(home, ".claude")))
+    for d in project_state_dirs():
+        if d not in out:
+            out.append(d)
+    return out
+
+
+def project_state_dirs() -> list[str]:
+    """state_dir of every project config (parsed leniently: a broken config still yields its state_dir)."""
+    import tomllib
+    out = []
+    pdir = cfgmod.CONFIG_HOME / "projects"
+    try:
+        tomls = sorted(pdir.glob("*.toml"))
+    except OSError:
+        return out
+    for t in tomls[:500]:
+        try:
+            raw = tomllib.loads(t.read_text())
+            sd = raw.get("state_dir")
+        except (OSError, ValueError, tomllib.TOMLDecodeError):
+            continue
+        if isinstance(sd, str) and sd:
+            out.append(os.path.realpath(os.path.expanduser(sd)))
     return out
 
 
@@ -99,6 +124,14 @@ def _expand(raw) -> str:
     if not raw.startswith("/"):
         raise ValueError(f"root {raw!r} must be an absolute path (or start with ~/)")
     return raw
+
+
+def _root_allowed(real: str) -> bool:
+    """The one rule for roots, used on save AND on every load of files.json: inside home, not home itself,
+    not a hidden top-level folder (~/.config, ~/.local, ...), not a denied place."""
+    home = _home()
+    return (real != home and _within(real, home) and not real[len(home) + 1:].split("/")[0].startswith(".")
+            and not _denied(real))
 
 
 def validate_root(raw) -> str:
@@ -150,7 +183,7 @@ def settings() -> dict:
         except ValueError:
             continue
         real = os.path.realpath(r)
-        if _denied(real) or real == _home() or not _within(real, _home()):
+        if not _root_allowed(real):
             continue
         if real not in out:
             out.append(real)
@@ -273,12 +306,40 @@ def canonical(real: Path, prefer: str, s: dict) -> tuple[str, str]:
     return root, r[len(root) + 1:]
 
 
-def _git_guard(root: str, parent_real: str, name: str, s: dict) -> None:
+def _git_guard(root: str, parent_real: str, name: str, s: dict, whole_dir: bool = False) -> None:
+    """With git_writes off: nothing inside a .git folder may change, and (whole_dir) a folder that contains
+    a .git anywhere below it may not be moved or deleted (that would take a clone's history with it)."""
     if s["git_writes"]:
         return
     rel = canonical(Path(os.path.join(parent_real, name)), root, s)[1]
     if ".git" in rel.split("/"):
         raise PermissionError("writing inside a .git folder is off (File browser settings)")
+    if whole_dir and _contains_git(os.path.join(parent_real, name)):
+        raise PermissionError("that folder contains a git repository (.git); moving or deleting it is off "
+                              "(File browser settings)")
+
+
+def _contains_git(path: str, budget: int = 200_000) -> bool:
+    stack = [path]
+    while stack and budget > 0:
+        d = stack.pop()
+        try:
+            it = os.scandir(d)
+        except OSError:
+            continue
+        with it:
+            for de in it:
+                budget -= 1
+                try:
+                    if de.is_dir(follow_symlinks=False):
+                        if de.name == ".git":
+                            return True
+                        stack.append(de.path)
+                    elif de.name == ".git":           # a .git file (worktree/submodule pointer)
+                        return True
+                except OSError:
+                    continue
+    return False
 
 
 def resolve_new(root, rel, s: dict | None = None) -> tuple[Path, str]:
@@ -320,7 +381,7 @@ def resolve_entry(root, rel, s: dict | None = None) -> tuple[Path, os.stat_resul
         raise LookupError("not found")
     if stat.S_ISLNK(st.st_mode):
         _check_bounds(os.path.realpath(entry), s)
-    _git_guard(root, str(parent), name, s)
+    _git_guard(root, str(parent), name, s, whole_dir=stat.S_ISDIR(st.st_mode))
     return entry, st
 
 
@@ -364,6 +425,8 @@ def listing(root, rel) -> dict:
                 truncated = True
                 break
             try:
+                if de.is_dir(follow_symlinks=False) and _denied(os.path.realpath(de.path)):
+                    continue                      # protected places are not even named
                 rows.append(_entry(de, s))
             except OSError:
                 continue
@@ -512,7 +575,8 @@ class Upload:
             if not overwrite:
                 raise Conflict("a file with that name already exists; confirm to replace it")
         self.croot, self.crel = canonical(self.target, root, s)
-        self.tmp = self.parent / f".{self.name[:200]}.upload-{os.getpid()}-{secrets.token_hex(4)}"
+        prefix = self.name.encode("utf-8")[:120].decode("utf-8", errors="ignore")      # NAME_MAX is in bytes
+        self.tmp = self.parent / f".{prefix}.upload-{os.getpid()}-{secrets.token_hex(4)}"
         self.fd = os.open(self.tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         self.size = 0
 

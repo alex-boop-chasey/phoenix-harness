@@ -1,4 +1,8 @@
-# hands runner 0.4.3
+# Phoenix Harness 0.5.0 (hands runner)
+
+One app behind one login: Project builder, Session manager and File browser. What changed since 0.4.3:
+`CHANGELOG.md`; architecture `docs/architecture.md`; HTTP API `docs/api.md`; design system `docs/design.md`;
+security review `docs/review-0.5.md`; install plan `docs/install-0.5.md`.
 
 Outer loop for unattended builds: one spec step per fresh `claude -p` session in the `hands`
 container, then runner-run acceptance and an independent evaluator, then commit + push.
@@ -14,16 +18,21 @@ hands <project> prompt [STEP]    # show the prompt a step would get (no session)
 hands <project> mark-done STEP   # human steps
 hands <project> watchdog         # restarts the loop if it crashed (not after escalation/done/STOP/Ctrl-C)
 hands all watchdog               # cron (installed every 10 min): every project's watchdog + keeps dashboard up
-hands-dash url                   # single-use login link for the dashboard (5 min)
-hands-dash start | stop          # dashboard in tmux session hands-dash, 127.0.0.1:8090
+hands <slug> create [--from-repo O/R [--branch B] [--ruleset]]   # new project (description on stdin)
+hands <slug> destroy --confirm <slug>                             # remove what create made
+hands-dash url                   # single-use login link for the app (5 min)
+hands-dash start | stop          # dashboard in tmux session hands_dashboard, 127.0.0.1:8090
 ```
 
-## Dashboard
+## The app (dashboard)
 From the Mac: `ssh -N -L 8090:127.0.0.1:8090 builder`, then on the VPS `hands-dash url` and open the link
 (must be http://127.0.0.1:8090, not localhost). Shows status, steps, sessions, runner log, attempts
 (prompt, diff, acceptance logs, verdict) and progress notes; buttons: Start, Stop, Ack, Ack + clear model.
 Login codes are single use; sessions live in memory for 12 h (restart = log in again).
-Session manager (0.5): persistent Claude terminals in tmux; one can be live on Telegram (setup: docs/telegram.md).
+Sections (0.5): Project builder (all of the above, projects as closable tabs), Session manager (persistent Claude
+Code terminals in tmux; one can be live on Telegram, setup: docs/telegram.md) and File browser (allowed roots under
+the home directory, secret folders always denied). Everything is served from the same process with the same
+login, Host/Origin/CSRF checks and CSP.
 
 ## New projects (0.4.1)
 Dashboard → "+ New project" (slug + idea), or on the VPS: `echo "idea" | hands <slug> create`.
@@ -97,6 +106,9 @@ Restarts a project only if its status is running/paused (crashed, OOM-killed, re
 SIGTERM. After 3 restarts within an hour it escalates instead. A preflight failure (missing image,
 token file, ...) escalates immediately. Log: ~/.local/state/hands/watchdog.log.
 
+## 0.5.0
+See CHANGELOG.md.
+
 ## 0.4.3
 - Dashboard: steps sidebar (current step highlighted with a spinner and live activity), planner progress
   (spinner, current document and phase checklist), usage meter (5-hour session and weekly usage with reset
@@ -125,6 +137,9 @@ token file, ...) escalates immediately. Log: ~/.local/state/hands/watchdog.log.
   the runner mounts project_env read-only at `/run/hands/project.env` in coder, acceptance and evaluator
   containers (the planner sees key names only), rejects attempts that commit an env file or a secret
   value, and redacts secret values (8+ characters) as `[REDACTED:KEY]` in everything it stores, serves
-  or sends. Shorter values are not redacted; the dashboard's Environment panel manages the file.
+  or sends (raw, JSON-escaped, URL-encoded and base64 forms); files it serves (attempts, runner.log) are
+  redacted again at read time, and the File browser never shows a project's state folder. Shorter values
+  and other encodings (hex, custom) are not redacted; the dashboard's Environment panel manages the file.
+  Details and the 0.5.0 review: `docs/review-0.5.md`.
 - Dashboard: any process running as builder can read state files anyway; the dashboard adds no new
   access beyond start/stop/ack. Keep the SSH tunnel closed when not in use.

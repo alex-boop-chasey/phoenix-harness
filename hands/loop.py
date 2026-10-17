@@ -221,6 +221,13 @@ class Runner:
             problems.append(f"project_env {c.project_env} missing")
         elif c.project_env and (c.project_env.stat().st_mode & 0o077 or c.project_env.is_symlink()):
             problems.append(f"project_env {c.project_env} must be a regular file with mode 0600")
+        elif c.project_env:
+            try:
+                for prob in projectenv.Store(c.project_env.parent, c.project_env.name).problems:
+                    if "reserved" in prob:          # e.g. GH_TOKEN=... written by hand: never ship it to containers
+                        problems.append(f"project_env {c.project_env}: {prob}")
+            except projectenv.EnvError as e:
+                problems.append(f"project_env {c.project_env}: {e}")
         if os.getuid() == 0 and not os.environ.get("HANDS_TEST_ALLOW_ROOT"):
             problems.append("run the runner as builder, not root")
         c.state_dir.mkdir(parents=True, exist_ok=True)
@@ -317,6 +324,9 @@ class Runner:
         gitops.hard_reset(app, cur["base"])
         for d in ("work", "verify"):
             workspace.rmtree(self.cfg.state_dir / d)
+        adir = self.cfg.state_dir / "attempts" / f"{cur['step']}-{cur['attempt']}"
+        if adir.is_dir() and not adir.is_symlink():       # the session died before its files were redacted
+            self.redact_files(*(p for p in adir.iterdir() if p.is_file() and not p.is_symlink()))
         self.state.data.pop("current", None)
         self.state.save()
         self.log(f"recovered from interrupted {cur['step']} attempt {cur['attempt']} (phase {cur.get('phase')}); reset to {cur['base'][:9]}")

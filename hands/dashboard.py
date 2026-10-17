@@ -56,7 +56,9 @@ ATTEMPT = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,40}-\d{1,4}(?:\.\d{1,12})?$")
 ATTEMPT_FILE = re.compile(
     r"^(?:prompt\.md|eval-prompt\.md|reasons\.txt|verdict\.json|changes\.txt|diff\.patch|acceptance-files\.txt"
     r"|accept-\d{1,3}\.log|coder\.stderr|export\.stderr|eval-\d\.stderr|spec-problem\.txt)$")
-# coder.json / eval-N.json are full session streams (every tool result, possibly secrets): not served
+# coder.json / eval-N.json are full session streams (every tool result, possibly secrets): not served.
+# Everything served from attempts/ and runner.log is passed through the project's Redactor again at read
+# time (redactor_for), because the runner redacts attempt files only after each session ends.
 LOCAL_HOST = re.compile(r"^127\.0\.0\.1(?::\d{1,5})?$")
 SESSION_TTL = 12 * 3600
 LOGIN_TTL = 300
@@ -541,6 +543,19 @@ def usage_refresh() -> dict:
     return {"ok": True}
 
 
+def redactor_for(cfg):
+    """The project's secret values as a Redactor: served files are redacted again at read time, because the
+    runner redacts attempt files only after a session ends (and not at all if it died mid-session)."""
+    from . import projectenv
+    p = cfg.project_env
+    if not p or not p.is_file():
+        return projectenv.Redactor({})
+    try:
+        return projectenv.Redactor(projectenv.Store(p.parent, p.name).secrets())
+    except projectenv.EnvError:
+        return projectenv.Redactor({})
+
+
 def log_tail(name: str, lines: int) -> dict:
     cfg = load_cfg(name)
     lines = max(1, min(lines, 2000))
@@ -548,7 +563,7 @@ def log_tail(name: str, lines: int) -> dict:
         text, cut = read_file(cfg.state_dir / "runner.log", MAX_LOG_BYTES, tail=True)
     except OSError:
         return {"lines": []}
-    return {"lines": text.splitlines()[-lines:]}
+    return {"lines": redactor_for(cfg).text(text).splitlines()[-lines:]}
 
 
 def attempts(name: str) -> list[dict]:
@@ -557,6 +572,7 @@ def attempts(name: str) -> list[dict]:
     if not root.is_dir() or root.is_symlink():
         return []
     rows = []
+    red = redactor_for(cfg)
     for d in root.iterdir():
         if not ATTEMPT.match(d.name) or d.is_symlink() or not d.is_dir():
             continue
@@ -567,7 +583,7 @@ def attempts(name: str) -> list[dict]:
         reasons = ""
         if (d / "reasons.txt").is_file():
             try:
-                reasons = read_file(d / "reasons.txt", 4000)[0].strip().splitlines()[0][:300]
+                reasons = red.text(read_file(d / "reasons.txt", 4000)[0]).strip().splitlines()[0][:300]
             except (OSError, IndexError):
                 pass
         verdict = read_json(d / "verdict.json", None) if (d / "verdict.json").is_file() else None
@@ -585,7 +601,8 @@ def attempt_file(name: str, attempt: str, fname: str) -> tuple[str, bool]:
     d = root / attempt
     if root.is_symlink() or d.is_symlink() or not d.is_dir():
         raise LookupError(attempt)
-    return read_file(d / fname)
+    text, cut = read_file(d / fname)
+    return redactor_for(cfg).text(text), cut
 
 
 def _sid(s: str) -> str:
@@ -645,6 +662,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        if self.close_connection:                 # e.g. a refused upload whose body was never read
+            self.send_header("Connection", "close")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -915,7 +934,11 @@ class Handler(BaseHTTPRequestHandler):
         if n > files.MAX_UPLOAD:
             self.close_connection = True
             return self._json(413, {"error": f"too large (max {files.MAX_UPLOAD // (1024 * 1024)} MB)"})
-        up = files.Upload((q.get("root") or [""])[0], (q.get("path") or [""])[0], (q.get("overwrite") or [""])[0] == "1")
+        try:
+            up = files.Upload((q.get("root") or [""])[0], (q.get("path") or [""])[0], (q.get("overwrite") or [""])[0] == "1")
+        except Exception:
+            self.close_connection = True         # the unread body must never be parsed as the next request
+            raise
         try:
             left = n
             while left > 0:

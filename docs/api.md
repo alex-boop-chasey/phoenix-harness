@@ -1,6 +1,6 @@
-# Phoenix Harness 0.4.3 — dashboard HTTP API
+# Phoenix Harness 0.5.0 — dashboard HTTP API
 
-Baseline written 2026-10-17 (step 01). Server: `hands/dashboard.py` (`hands-dash`), stdlib
+Baseline written 2026-10-17 (step 01), updated through step 16 (0.5.0). Server: `hands/dashboard.py` (`hands-dash`), stdlib
 `ThreadingHTTPServer` bound to **127.0.0.1:8090** only. Reach it through an SSH tunnel:
 `ssh -N -L 8090:127.0.0.1:8090 builder`.
 
@@ -31,7 +31,11 @@ Baseline written 2026-10-17 (step 01). Server: `hands/dashboard.py` (`hands-dash
 - **Limits:** max 32 concurrent connections (excess dropped), 10 s socket timeout, file reads capped
   (2 MB per file, logs tail-read at 1 MB), symlinks never followed, path segments are allowlisted by
   regex (`NAME`, `ATTEMPT`, `ATTEMPT_FILE`, `PLAN_PATH`). `coder.json` / `eval-N.json` (full session
-  streams, possibly containing secrets) are **never served**.
+  streams, possibly containing secrets) are **never served**. Attempt files, the attempt list's reasons and
+  `runner.log` are passed through the project's secret Redactor again when served (since 0.5.0, review
+  finding 1): the runner redacts files only after each session ends.
+- **Refused uploads** (409/400/403 before the body is read) answer with `Connection: close` and close the
+  socket; the unread body is never parsed as a next request (review finding 4).
 - **Errors:** unknown path/name → `404 {"error": "not found"}`; invalid input → `400 {"error": "<msg>"}`
   (message capped at 500 chars); anything unexpected → `500 {"error": "<ExceptionName>"}` — never a traceback.
 
@@ -399,7 +403,8 @@ listed with `exists: false` and answers `404`; a root that is (or resolves into)
 dropped from the listing even if the file names it.
 
 **Always denied, whatever the settings say:** `~/.config/hands` (and `HANDS_CONFIG_HOME`), `~/.ssh`,
-`~/.config/gh`, `~/.git-credentials`, `~/.claude` (and `CLAUDE_CONFIG_DIR`), and any path whose real
+`~/.config/gh`, `~/.git-credentials`, `~/.claude` (and `CLAUDE_CONFIG_DIR`), every project's `state_dir`
+(from `~/.config/hands/projects/*.toml`; attempt files and session streams, since 0.5.0), and any path whose real
 location (after `os.path.realpath`) is outside the allowed roots. Every request path is relative to a
 root (`root` = one of the configured roots, exactly; `path` = relative, `/`-separated); `..`, NUL,
 absolute paths, names over 255 bytes and paths over 4096 chars are refused before resolution

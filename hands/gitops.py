@@ -62,7 +62,12 @@ def refresh_spec(spec_dir: Path, branch: str) -> str:
 
 def refresh_app(app_dir: Path, branch: str) -> str:
     """Pin the runner's app clone to origin/<branch> (used before planning an imported repo, when no build
-    has run yet, so there is nothing local to lose). Returns commit sha."""
+    has run yet). Refuses when the clone has local changes (someone may be working there in a Session
+    manager session): nothing is ever discarded. Returns commit sha."""
+    dirty = git(app_dir, "status", "--porcelain", "--untracked-files=all").strip()
+    if dirty:
+        raise GitError(f"{app_dir} has local changes; commit, stash or remove them first: "
+                       + " | ".join(dirty.splitlines()[:5]))
     git(app_dir, "fetch", "-q", "origin", branch)
     git(app_dir, "checkout", "-q", "-B", branch, "FETCH_HEAD")
     git(app_dir, "reset", "-q", "--hard", "FETCH_HEAD")

@@ -223,14 +223,22 @@ CONTAINER_ENV_PATH = "/run/hands/project.env"
 
 class Redactor:
     """Replace secret values with [REDACTED:KEY] in text and bytes; find which keys' values occur in data.
-    Matches the raw value and its JSON-string-escaped form (session streams are JSON lines)."""
+    Matches the raw value, its JSON-string-escaped form (session streams are JSON lines), its URL-encoded
+    form and its base64 form (Authorization headers, data URLs) — encoded copies are the common way a
+    value slips through a scan."""
 
     def __init__(self, secrets: dict[str, str]):
+        from base64 import b64encode
+        from urllib.parse import quote
         forms: dict[str, str] = {}
         for key, value in secrets.items():
             if isinstance(value, str) and len(value) >= MIN_SECRET_LEN:
-                for f in (value, json.dumps(value)[1:-1]):
-                    forms.setdefault(f, key)
+                raw = value.encode("utf-8")
+                b64 = b64encode(raw).decode().rstrip("=")
+                for f in (value, json.dumps(value)[1:-1], quote(value, safe=""), b64,
+                          b64encode(b" " + raw).decode()[2:].rstrip("="), b64encode(b"  " + raw).decode()[3:].rstrip("=")):
+                    if len(f) >= MIN_SECRET_LEN:
+                        forms.setdefault(f, key)
         ordered = sorted(forms, key=len, reverse=True)           # longest alternative first
         self._map = {f.encode("utf-8"): forms[f] for f in ordered}
         self._re = re.compile(b"|".join(re.escape(f.encode("utf-8")) for f in ordered)) if ordered else None

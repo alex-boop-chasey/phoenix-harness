@@ -349,6 +349,12 @@ class Store:
                 os.unlink(t)                    # a symlink is unlinked, never followed
         except OSError:
             pass
+        sub = t.with_suffix("")                  # Claude Code keeps subagent transcripts in <uuid>/
+        try:
+            if stat.S_ISDIR(os.lstat(sub).st_mode):      # a symlink named like it is left alone
+                shutil.rmtree(sub)
+        except OSError:
+            pass
         self._path(sid).unlink(missing_ok=True)
 
 

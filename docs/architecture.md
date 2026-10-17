@@ -1,8 +1,8 @@
-# Phoenix Harness 0.4.3 — architecture
+# Phoenix Harness 0.5.0 — architecture
 
-Baseline written 2026-10-17 (step 01 of the 0.5 work), from the code on branch `phoenix-0.5`
-(= `main` at the time). Everything here was read from the source in `~/harness`; the live install
-in `~/.local/share/hands/runner` is an identical copy (see "Install and live copy").
+Baseline written 2026-10-17 (step 01 of the 0.5 work) and updated by every step up to 16 (release 0.5.0),
+from the code on branch `phoenix-0.5`. Everything here was read from the source in `~/harness`; the live install
+in `~/.local/share/hands/runner` is 0.4.3 until Alex installs 0.5.0 (see "Install and live copy" and `docs/install-0.5.md`).
 
 Phoenix ("hands") is an autonomous build harness: a human writes an idea, a planner turns it into a
 reviewed spec, and a runner loop has Claude Code build the app one spec step at a time inside locked-down
@@ -229,7 +229,10 @@ The dashboard's only window onto the host file system, and the one place it writ
 login, Host and CSRF checks. The boundary is a list of **allowed roots** in `~/.config/hands/files.json`
 (default `~/harness ~/projects ~/ops ~/claude-harness`; each must be an existing non-hidden folder inside
 home) plus a **deny list that no setting can override**: `~/.config/hands`, `~/.ssh`, `~/.config/gh`,
-`~/.git-credentials`, `~/.claude` (and `HANDS_CONFIG_HOME` / `CLAUDE_CONFIG_DIR`), compared by real path.
+`~/.git-credentials`, `~/.claude` (and `HANDS_CONFIG_HOME` / `CLAUDE_CONFIG_DIR`) and every project's
+`state_dir` (attempt files and session streams), compared by real path; roots from `files.json` go through
+the same rule as on save (inside home, not hidden, not denied); a folder containing a `.git` cannot be
+moved or deleted with `git_writes` off.
 Every request names a root and a relative path; `..`, NUL and absolute paths are refused before resolving,
 then `os.path.realpath` decides: a result outside every root or inside a denied folder is 403 whether it
 got there by symlink or otherwise, a loop or missing path is 404. Writes (mkdir, rename, delete, upload)
@@ -272,12 +275,13 @@ displayed, and highlights risky acceptance commands and new network domains for 
 `bash install.sh` (only Alex runs it): checks python ≥ 3.12, git/tmux/docker, copies the source dirs to
 `~/.local/share/hands/runner`, writes the `hands`/`hands-dash` launchers, seeds `ra.toml` and
 `new-project.toml` if missing, installs the watchdog cron line, runs the test suite, restarts the
-dashboard. As of this baseline `diff -rq` shows the install is identical to source (both VERSION 0.4.3);
+dashboard. Until 0.5.0 is installed the live copy is 0.4.3 (see `docs/install-0.5.md`); at the 0.4.3 baseline
+`diff -rq` showed the install identical to source;
 only repo-side files that install.sh does not copy differ (`.git`, `.gitignore`, `.claude`, `.mcp.json`,
 `CLAUDE.md`, `install.sh` itself).
 
 ## Tests
 
-`python3 -m unittest discover -s tests`: 108 tests, 1 skipped
+`python3 -m unittest discover -s tests`: 248 tests at 0.5.0, 2 skipped
 (`test_runner.TestSmokeSpec.test_smoke_spec` — node is not installed on the host; it runs inside the
-image). `tests/fake_docker.py` stands in for Docker, so the suite runs without containers or Claude usage.
+image — and the tmux integration test, which the sandbox cannot run; it passes outside it). `tests/fake_docker.py` stands in for Docker, so the suite runs without containers or Claude usage.
