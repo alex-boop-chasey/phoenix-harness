@@ -215,7 +215,7 @@ function menuKey(ev) {
 }
 
 // ---- confirmation dialog (<dialog>; falls back to window.confirm where showModal is missing)
-function confirmDialog({ title, body, warn, ok }) {
+function confirmDialog({ title, body, warn, ok, okClass }) {
   if (typeof HTMLDialogElement !== "function" || !HTMLDialogElement.prototype.showModal) {
     return Promise.resolve(confirm(`${title}\n\n${warn ? warn + "\n\n" : ""}${body}`));
   }
@@ -223,7 +223,7 @@ function confirmDialog({ title, body, warn, ok }) {
     let done = false;
     const finish = (v) => { if (done) return; done = true; resolve(v); dlg.close(); dlg.remove(); };
     const cancel = el("button", { class: "btn", type: "button", on: { click: () => finish(false) } }, "Cancel");
-    const okBtn = el("button", { class: "btn danger", type: "button", on: { click: () => finish(true) } }, ok || "OK");
+    const okBtn = el("button", { class: okClass || "btn danger", type: "button", on: { click: () => finish(true) } }, ok || "OK");
     const dlg = el("dialog", { class: "dialog", "aria-labelledby": "dlg-title", on: { close: () => finish(false) } },
       el("h2", { id: "dlg-title" }, title),
       warn ? el("div", { class: "notice warn" }, warn) : null,
@@ -806,7 +806,9 @@ let ticks = 0;
 function tick() {
   if (document.hidden) return;
   const a = document.activeElement;
-  if (a && (a.tagName === "TEXTAREA" || a.tagName === "INPUT")) return;   // don't redraw while typing
+  const typing = a && (a.tagName === "TEXTAREA" || a.tagName === "INPUT") && !(a.closest && a.closest(".xterm"));
+  if (typing) return;   // don't redraw while typing in a form (the terminal's own textarea is fine)
+  if (sectionFromHash() === "sessions") { if (window.hands && window.hands.sessions) window.hands.sessions.poll(); ticks += 1; return; }
   loadProjects().catch(() => {});
   if (ticks % 4 === 0) loadUsage();
   ticks += 1;
@@ -831,6 +833,10 @@ function route() {
   $("#topsection").textContent = SECTIONS[sec];
   document.title = `${SECTIONS[sec]} · Phoenix Harness`;
   setNav(false);
+  if (sec === "sessions" && window.hands && window.hands.sessions) {
+    const m = /^#\/sessions\/([0-9a-f-]{36})$/.exec(location.hash || "");
+    window.hands.sessions.show(m ? m[1] : null);
+  }
 }
 function setNav(open) {
   document.body.classList.toggle("nav-open", open);
@@ -844,6 +850,7 @@ function initShell() {
   window.addEventListener("hashchange", route);
   $("#tabs").addEventListener("scroll", updateTabShadows);
   window.addEventListener("resize", updateTabShadows);
+  if (window.hands && window.hands.sessions) window.hands.sessions.init();   // sessions.js loads after this file
   route();
 }
 

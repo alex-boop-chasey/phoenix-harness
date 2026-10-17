@@ -255,6 +255,46 @@ ol.phases li.cur { color: var(--ink); font-weight: 600; }
 ol.phases li.done { color: var(--ok); }
 .dot { width: 14px; text-align: center; display: inline-block; }
 
+/* ---------------------------------------------------------------- cards with head/body (design.md "Cards") */
+.card { padding: 0; }
+.card-head { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.card-head h2 { margin: 0 auto 0 0; }
+.card-body { padding: var(--sp-4); display: grid; gap: var(--sp-3); min-width: 0; }
+.page-head .btn { margin-left: auto; }
+.show-sm { display: none; }
+.badge.pulse::before { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .badge.pulse::before { animation: none; } }
+
+/* ---------------------------------------------------------------- session manager (step 11) */
+.sessions { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: var(--sp-4); align-items: start; }
+.slist { display: grid; gap: 2px; padding: 6px; }
+.slist > .muted { padding: 8px 10px; }
+.sitem { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px; border-radius: var(--r-2);
+         color: var(--ink); background: none; border: 0; font: inherit; text-align: left; width: 100%; cursor: pointer; }
+.sitem .smain { display: grid; min-width: 0; }
+.sitem:hover { background: var(--surface-2); }
+.sitem[aria-current="true"] { background: var(--accent-soft); }
+.sitem .dot, .term-head .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; padding: 0; }
+.dot.live { background: var(--ok); } .dot.wait { background: var(--warn); } .dot.bad { background: var(--bad); }
+.sitem .sname { font-weight: 600; font-size: var(--fs-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sitem .smeta { font-size: var(--fs-0); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sitem .when { font-size: var(--fs-0); color: var(--ink-3); white-space: nowrap; }
+.sitem .when.live { color: var(--ok); font-weight: 600; }
+.term { background: var(--term-bg); color: var(--term-fg); border: 1px solid var(--line); border-radius: var(--r-3); overflow: hidden; padding: 0;
+        display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: calc(100vh - 120px); min-height: 420px; box-shadow: var(--shadow-1); }
+.term-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--surface); color: var(--ink); font-size: var(--fs-1); flex-wrap: wrap; min-width: 0; }
+.term-head .title { font-weight: 600; font-family: var(--mono); font-size: var(--fs-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
+.term-head .tools { margin-left: auto; display: flex; gap: 6px; }
+.term-body { position: relative; min-height: 0; padding: var(--sp-2) var(--sp-3); overflow: hidden; }
+.term-body .xterm { height: 100%; }
+.term-foot { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line); background: var(--surface); color: var(--ink-2); font-size: var(--fs-0); flex-wrap: wrap; }
+.term-foot .keys { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; align-items: center; }
+.term-foot .conn.bad { color: var(--bad); } .term-foot .conn.ok { color: var(--ok); } .term-foot .conn.warn { color: var(--warn); }
+.kbd { font: 11px var(--mono); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; color: var(--ink-2); background: var(--surface); }
+dialog.dialog .field { display: grid; gap: 4px; margin-bottom: var(--sp-2); }
+dialog.dialog .field label { margin: 0; }
+
 /* ---------------------------------------------------------------- small screens */
 @media (max-width: 1100px) {
   .layout { grid-template-columns: minmax(0, 1fr); }
@@ -275,4 +315,13 @@ ol.phases li.done { color: var(--ok); }
   .envrow.removed { grid-template-columns: 1fr auto; grid-template-areas: "key rm" "val val"; }
   .tabs { padding: var(--sp-2) var(--sp-4) 0; }
   .tab { max-width: 260px; padding-left: 10px; gap: 6px; }
+  /* session manager on a phone: the list and the terminal are two views */
+  .sessions { grid-template-columns: minmax(0, 1fr); }
+  .sessions.show-term > .card, .sessions:not(.show-term) > .term { display: none; }
+  .show-sm { display: inline-flex; }
+  .hide-sm { display: none; }
+  .term { height: calc(100vh - var(--topbar-h) - 24px); min-height: 360px; }
+  .term-head .title { max-width: none; }
+  .term-head .tools { width: 100%; margin-left: 0; }
+  .page-head .btn { margin-left: auto; }
 }

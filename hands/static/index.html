@@ -4,8 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Phoenix Harness</title>
+<link rel="stylesheet" href="/vendor/xterm.min.css">
 <link rel="stylesheet" href="/app.css">
+<script src="/vendor/xterm.min.js" defer></script>
+<script src="/vendor/addon-fit.min.js" defer></script>
 <script src="/app.js" defer></script>
+<script src="/sessions.js" defer></script>
 </head>
 <body>
 <div class="app">
@@ -37,8 +41,36 @@
     </div>
 
     <section id="page-sessions" class="page" aria-label="Session manager" hidden>
-      <div class="page-head"><h1>Session manager</h1></div>
-      <div class="card"><div class="empty"><span class="glyph">▣</span><strong>Coming soon</strong><span class="small">Persistent Claude terminals on this VPS: start, attach, stop and answer them from here or from Telegram.</span></div></div>
+      <div class="page-head">
+        <h1>Session manager</h1>
+        <span class="muted">Persistent Claude terminals on this VPS</span>
+        <button id="s-new" class="btn primary" type="button">＋ New session</button>
+      </div>
+      <div id="sessions" class="sessions">
+        <section class="card" aria-labelledby="s-list-h">
+          <div class="card-head"><h2 id="s-list-h">Sessions</h2><span id="s-count" class="muted small"></span></div>
+          <div id="slist" class="slist" role="list" aria-label="Sessions"><p class="muted small">Loading…</p></div>
+        </section>
+        <section class="term" aria-labelledby="s-term-h">
+          <div class="term-head">
+            <button id="s-back" class="btn sm quiet show-sm" type="button" aria-label="Back to the session list">‹ Sessions</button>
+            <span id="s-dot" class="dot" aria-hidden="true"></span>
+            <span class="title" id="s-term-h">No session selected</span>
+            <span id="s-badge" class="badge s-idle">idle</span>
+            <span id="s-meta" class="muted hide-sm"></span>
+            <div class="tools">
+              <button id="s-resume" class="btn sm" type="button" disabled>Resume</button>
+              <button id="s-stop" class="btn sm" type="button" disabled>Stop</button>
+              <button id="s-delete" class="btn sm danger" type="button" disabled>Delete</button>
+            </div>
+          </div>
+          <div id="xterm" class="term-body" aria-label="Terminal: keys go to the Claude session"></div>
+          <div class="term-foot">
+            <span id="s-conn" class="conn" role="status">Pick a session or start a new one.</span>
+            <span class="keys"><span class="kbd">Ctrl</span>+<span class="kbd">C</span> interrupt <span class="kbd">Esc</span> back <span class="kbd">Ctrl</span>+<span class="kbd">D</span> end</span>
+          </div>
+        </section>
+      </div>
     </section>
 
     <section id="page-files" class="page" aria-label="File browser" hidden>
