@@ -597,6 +597,27 @@ class TestSessionsAPI(unittest.TestCase):
         self.clients.append(c)
         return c
 
+    def test_page_assets_served_locally(self):
+        # step 11: xterm.js is vendored (no CDN) and the page's scripts/styles are all same-origin files
+        st, _, html = self.d.req("GET", "/")
+        self.assertEqual(st, 200)
+        for ref in (b"/vendor/xterm.min.js", b"/vendor/addon-fit.min.js", b"/vendor/xterm.min.css", b"/sessions.js", b"/app.js"):
+            self.assertIn(ref, html)
+        self.assertNotIn(b"http://", html)
+        self.assertNotIn(b"https://", html)
+        for p, ct in (("/vendor/xterm.min.js", "text/javascript"), ("/vendor/addon-fit.min.js", "text/javascript"),
+                      ("/vendor/xterm.min.css", "text/css"), ("/sessions.js", "text/javascript")):
+            st, hdr, body = self.d.req("GET", p)
+            self.assertEqual(st, 200, p)
+            self.assertIn(ct, hdr["Content-Type"])
+            self.assertGreater(len(body), 1000)
+            self.assertIn("default-src 'none'", hdr["Content-Security-Policy"])
+        self.assertEqual(self.d.req("GET", "/vendor/../app.js")[0], 404)
+        # the Session manager page code carries no colour or font literals: everything comes from the CSS tokens
+        js = (ROOT / "hands" / "static" / "sessions.js").read_text()
+        import re
+        self.assertEqual(re.findall(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsl\(|font-family\s*:|fontFamily:\s*\"|fontSize:\s*\d", js), [])
+
     def test_bind_address_is_loopback(self):
         self.assertEqual(self.d.srv.server_address[0], "127.0.0.1")
         self.assertEqual(dashboard.Server.__init__.__code__.co_consts.count("127.0.0.1"), 1)

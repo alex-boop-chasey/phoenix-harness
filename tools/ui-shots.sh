@@ -13,6 +13,9 @@
 #             tabs (builder as it opens), menu ("+" menu open), close (close-tab confirmation)
 #             newbad (New project form with invalid variables), env (blog's Environment panel),
 #             envbad (that panel with validation errors)
+#             sessions (Session manager: list + live terminal; phone: the list), sessions-term (phone:
+#             the terminal view), sessions-new (New session dialog), sessions-delete (Delete dialog)
+#   Also writes compare-<theme>-<width>.png: Project builder and Session manager side by side.
 #   Each page is saved as <page>-light-1440.png, <page>-dark-390.png, ...
 #
 #   Environment: UI_SHOTS_PROJECTS=N   how many sample projects (0..20, default 6; see fixtures.py)
@@ -40,13 +43,15 @@ if [ "${1:-}" = "--inner" ]; then
   python3 --version >/dev/null                      # the rig needs Python 3 in the image
   node --check /src/tools/shots.js
   node --check /src/hands/static/app.js                # the host has no node; this is the JS syntax check
+  node --check /src/hands/static/sessions.js
   NODE_PATH="$(ls -d /home/node/.npm/_npx/*/node_modules | head -1)"   # playwright lives in the npx cache
   if [ "${UI_SHOTS_MODE:-}" = "mock" ]; then
     PYTHONPATH=/src python3 /src/tools/mockserve.py /src/hands/static/mock "$PORT" /vendor=/src/console/static >/tmp/dash.log 2>&1 &
   else
     # shellcheck disable=SC2086  # UI_SHOTS_HIDDEN is a space-separated list on purpose
     python3 /src/tools/fixtures.py "$HANDS_CONFIG_HOME" /tmp/fixtures "${UI_SHOTS_PROJECTS:-}" ${UI_SHOTS_HIDDEN:-}
-    PYTHONPATH=/src python3 -m hands.dashboard run --port "$PORT" >/tmp/dash.log 2>&1 &
+    # rigdash = the real dashboard with a stand-in session backend (no tmux in the image) + fake claude
+    CLAUDE_CONFIG_DIR=/tmp/claude-home PYTHONPATH=/src python3 /src/tools/rigdash.py run --port "$PORT" >/tmp/dash.log 2>&1 &
   fi
   DASH=$!
   python3 - <<EOF
@@ -62,7 +67,7 @@ EOF
     NODE_PATH="$NODE_PATH" node /src/tools/shots.js --mock "http://127.0.0.1:$PORT" /out "$UI_SHOTS_PAGES"
   else
     CODE="$(PYTHONPATH=/src python3 -c 'from hands.dashboard import mint_login_code; print(mint_login_code())')"
-    NODE_PATH="$NODE_PATH" node /src/tools/shots.js "http://127.0.0.1:$PORT" "$CODE" /out "$UI_SHOTS_PAGES"
+    NODE_PATH="$NODE_PATH" node /src/tools/shots.js "http://127.0.0.1:$PORT" "$CODE" /out "$UI_SHOTS_PAGES" || { echo "--- dashboard log:"; grep -n "dashboard error\|Error:" /tmp/dash.log | head -20; tail -12 /tmp/dash.log; exit 1; }
   fi
   kill "$DASH" 2>/dev/null || true
   exit 0
@@ -75,7 +80,7 @@ LABEL="${1:-}"
 [ -n "$LABEL" ] || { echo "usage: bash tools/ui-shots.sh <label> [page ...]" >&2; exit 2; }
 case "$LABEL" in *[!A-Za-z0-9._/-]*|*..*|/*) echo "label: letters, digits, . _ - and / (no .., not absolute) only" >&2; exit 2;; esac
 shift
-if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new newbad env envbad sessions files nav tabs menu close}"; fi
+if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new newbad env envbad sessions sessions-term sessions-new sessions-delete files nav tabs menu close}"; fi
 case "${UI_SHOTS_PROJECTS:-}" in ""|[0-9]|1[0-9]|20) ;; *) echo "UI_SHOTS_PROJECTS: 0..20" >&2; exit 2;; esac
 case "${UI_SHOTS_HIDDEN:-}" in *[!A-Za-z0-9_\ -]*) echo "UI_SHOTS_HIDDEN: project names separated by spaces" >&2; exit 2;; esac
 REPO="$(cd "$(dirname "$0")/.." && pwd)"

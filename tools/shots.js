@@ -24,6 +24,9 @@ const errors = [];
 function watch(page, label) {
   page.on("console", (m) => { if (m.type() === "error") errors.push(`${label}: ${m.text()}`); });
   page.on("pageerror", (e) => errors.push(`${label}: ${e.message}`));
+  // unhandled promise rejections are not always surfaced as pageerror: log them as console errors
+  page.addInitScript(() => window.addEventListener("unhandledrejection", (ev) => {
+    const r = ev.reason; console.error(`unhandled rejection: ${r && r.stack ? r.stack : r}`); }));
 }
 
 const tab = (page, name) => page.locator(`#tabs .tab[data-name="${name}"]`);
@@ -71,6 +74,146 @@ async function saveEnv(page) {
   return (await status.textContent()) || "";
 }
 
+// ---- session manager helpers (step 11). The rig's backend is a stand-in (tools/rigdash.py): the
+// terminal runs a fake claude that echoes lines, so the flow covers the page, the WebSocket and the
+// actions without tmux or real Claude.
+const conn = (page) => page.locator("#s-conn");
+async function termLines(page) {
+  return page.evaluate(() => {
+    const t = window.hands.sessions.state.term;
+    if (!t) return [];
+    const b = t.buffer.active, out = [];
+    for (let i = 0; i < b.length; i++) { const l = b.getLine(i); if (l) out.push(l.translateToString(true)); }
+    return out;
+  });
+}
+async function waitTermText(page, text, timeout = 10000) {
+  const end = Date.now() + timeout;
+  while (Date.now() < end) {
+    const lines = await termLines(page);
+    if (lines.some((l) => l.includes(text))) return lines;
+    await page.waitForTimeout(150);
+  }
+  throw new Error(`terminal never showed ${JSON.stringify(text)}; last lines: ${JSON.stringify((await termLines(page)).filter(Boolean).slice(-6))}`);
+}
+async function waitConnected(page) {
+  try { await conn(page).filter({ hasText: /^Connected/ }).waitFor({ timeout: 15000 }); }
+  catch (e) {
+    const st = await page.evaluate(() => ({ conn: document.getElementById("s-conn").textContent, badge: document.getElementById("s-badge").textContent,
+      state: window.hands && window.hands.sessions ? window.hands.sessions.state.state : "?", term: !!(window.hands && window.hands.sessions.state.term),
+      xterm: typeof Terminal, fit: typeof FitAddon, selected: window.hands.sessions.state.selected, rows: window.hands.sessions.state.rows.length,
+      list: document.getElementById("slist").textContent.slice(0, 80), dialogs: document.querySelectorAll("dialog").length }));
+    throw new Error(`not connected: ${JSON.stringify(st)}; console: ${errors.slice(-3).join(" | ")}`);
+  }
+}
+async function newSession(page, folder) {
+  await page.locator("#s-new").click();
+  const dlg = page.locator("dialog.dialog[open]");
+  await dlg.waitFor({ timeout: 5000 });
+  if (folder !== undefined) await dlg.locator("#s-cwd").fill(folder);
+  await dlg.locator("button[type=submit]").click();
+  return dlg;
+}
+async function sessionsFlow(page) {
+  await page.locator('#nav a[data-section="sessions"]').click();
+  await page.locator("#page-sessions:not([hidden])").waitFor({ timeout: 5000 });
+  await page.locator("#slist .empty").waitFor({ timeout: 10000 });
+  if ((await page.locator("#slist .sitem").count()) !== 0) throw new Error("sessions: expected an empty list at start");
+
+  // an empty folder is refused inline, the dialog stays open (server-side validation is unit-tested;
+  // a deliberate 400 here would count as a console error and fail the rig)
+  let dlg = await newSession(page, "");
+  await dlg.locator(".error", { hasText: /folder/ }).waitFor({ timeout: 5000 });
+  await dlg.locator("button", { hasText: "Cancel" }).click();
+  await dlg.waitFor({ state: "detached", timeout: 5000 });
+
+  // new session in the default folder (~/ops), live, output arrives, typing echoes back
+  await page.locator("#s-new").click();
+  dlg = page.locator("dialog.dialog[open]");
+  await dlg.waitFor({ timeout: 5000 });
+  const def = await dlg.locator("#s-cwd").inputValue();
+  await dlg.locator("button[type=submit]").click();
+  await dlg.waitFor({ state: "detached", timeout: 10000 });
+  await waitConnected(page);
+  if (!(await page.locator("#s-badge", { hasText: "live" }).count())) throw new Error("sessions: badge is not live after New session");
+  await waitTermText(page, "ready");
+  await page.locator("#xterm").click();
+  await page.keyboard.type("hello phoenix");
+  await page.keyboard.press("Enter");
+  await waitTermText(page, "fake claude: hello phoenix");
+  const styles = await page.evaluate(() => ({
+    shim: document.querySelectorAll(".xterm-style-shim").length, adopted: document.adoptedStyleSheets.length,
+    blocked: Array.from(document.querySelectorAll("#xterm style")).length,
+    rowFont: (() => { const s = document.querySelector("#xterm .xterm-rows span"); return s ? getComputedStyle(s).fontFamily : ""; })(),
+    bg: getComputedStyle(document.querySelector("#xterm .xterm-screen") || document.body).backgroundColor,
+  }));
+  if (styles.blocked || styles.adopted < 2) throw new Error(`sessions: xterm styles not via adopted sheets: ${JSON.stringify(styles)}`);
+  await page.evaluate(() => window.hands.sessions.poll());
+  await page.locator("#slist .sitem .sname", { hasText: "hello phoenix" }).waitFor({ timeout: 10000 });   // title from the transcript
+  const sid = await page.locator("#slist .sitem").first().getAttribute("data-id");
+
+  // network blip: drop the socket from the client side; the page reconnects with a fresh ticket
+  await page.evaluate(() => window.hands.sessions.state.ws.close());
+  await conn(page).filter({ hasText: /Reconnecting/ }).waitFor({ timeout: 5000 });
+  await waitConnected(page);
+  await page.locator("#xterm").click();
+  await page.keyboard.type("after blip");
+  await page.keyboard.press("Enter");
+  await waitTermText(page, "fake claude: after blip");
+
+  // leave and come back: the session is still there and reconnects by itself (hash keeps the selection)
+  await page.reload({ waitUntil: "networkidle" });
+  if (!location_is_session(page.url(), sid)) throw new Error(`sessions: url after reload ${page.url()}`);
+  await waitConnected(page);
+  await waitTermText(page, "ready");
+
+  // stop, resume, stop again; a second session to show a stopped row next to a live one
+  await page.locator("#s-stop").click();
+  dlg = page.locator("dialog.dialog[open]");
+  await dlg.locator("button", { hasText: "Stop session" }).click();
+  await page.locator("#s-badge", { hasText: "stopped" }).waitFor({ timeout: 10000 });
+  await conn(page).filter({ hasText: /stopped/ }).waitFor({ timeout: 5000 });
+  if (!(await page.locator("#s-resume").isEnabled())) throw new Error("sessions: Resume disabled after stop");
+  await page.locator("#s-resume").click();
+  await waitConnected(page);
+  await waitTermText(page, "ready");
+  await page.locator("#xterm").click();
+  await page.keyboard.type("resumed");
+  await page.keyboard.press("Enter");
+  await waitTermText(page, "fake claude: resumed");
+
+  dlg = await newSession(page, def.replace(/\/ops$/, "/projects/demo"));
+  await dlg.waitFor({ state: "detached", timeout: 10000 });
+  await waitConnected(page);
+  await page.locator("#xterm").click();
+  await page.keyboard.type("second session, stopped on purpose");
+  await page.keyboard.press("Enter");
+  await waitTermText(page, "fake claude: second");
+  await page.locator("#s-stop").click();
+  await page.locator("dialog.dialog[open] button", { hasText: "Stop session" }).click();
+  await page.locator("#s-badge", { hasText: "stopped" }).waitFor({ timeout: 10000 });
+  if ((await page.locator("#slist .sitem").count()) !== 2) throw new Error("sessions: expected 2 sessions");
+
+  // delete a third one (confirmation), list goes back to 2
+  dlg = await newSession(page);
+  await dlg.waitFor({ state: "detached", timeout: 10000 });
+  await waitConnected(page);
+  await page.locator("#s-delete").click();
+  dlg = page.locator("dialog.dialog[open]");
+  await dlg.locator("button", { hasText: "Cancel" }).click();
+  if ((await page.locator("#slist .sitem").count()) !== 3) throw new Error("sessions: Cancel deleted the session");
+  await page.locator("#s-delete").click();
+  await page.locator("dialog.dialog[open] button", { hasText: "Delete session" }).click();
+  await page.locator("#slist .sitem").nth(2).waitFor({ state: "detached", timeout: 10000 });
+  await conn(page).filter({ hasText: /deleted/ }).waitFor({ timeout: 5000 });
+
+  // back to the live one (first in the list), so captures find it
+  await page.locator("#slist .sitem", { hasText: "hello phoenix" }).click();
+  await waitConnected(page);
+  return `, sessions (new, type, reconnect, reload, stop, resume, 2nd stopped, delete; xterm via ${styles.adopted} adopted sheets, font ${styles.rowFont.split(",")[0]})`;
+}
+const location_is_session = (url, sid) => url.endsWith(`#/sessions/${sid}`);
+
 async function waitBuilder(page) {
   // the builder settles on: a selected tab, the New project form (no projects) or the empty state (all closed)
   await page.locator('#tabs .tab[aria-selected="true"], #slug, main .empty').first().waitFor({ timeout: 10000 });
@@ -80,9 +223,25 @@ async function capture(context, name, width, theme) {
   const page = await context.newPage();
   watch(page, `${name}-${theme}-${width}`);
   try {
-    const sec = name === "sessions" || name === "files" ? name : "builder";
+    const sec = name.startsWith("sessions") ? "sessions" : name === "files" ? name : "builder";
     await page.goto(`${base}/#/${sec}`, { waitUntil: "networkidle" });
-    if (sec !== "builder") {
+    if (sec === "sessions") {
+      await page.locator("#page-sessions h1").waitFor({ timeout: 10000 });
+      const live = page.locator("#slist .sitem", { hasText: "hello phoenix" });
+      if (await live.count()) {
+        // desktop: list + terminal side by side; phone: "sessions" is the list, "sessions-term" the terminal view
+        if (width > 900 || name !== "sessions") {
+          await live.click();
+          await waitConnected(page);
+          await waitTermText(page, "ready");
+          if (width <= 900 && !(await page.locator("#sessions.show-term").count())) throw new Error("phone: terminal view not shown");
+          if (width <= 900 && !(await page.locator("#s-back").isVisible())) throw new Error("phone: back button hidden");
+        } else if (await page.locator("#sessions.show-term").count()) throw new Error("phone: list view expected");
+        if (name === "sessions-new") await page.locator("#s-new").click();
+        if (name === "sessions-delete") await page.locator("#s-delete").click();
+        if (name !== "sessions" && name !== "sessions-term") await page.locator("dialog.dialog[open]").waitFor({ timeout: 5000 });
+      }
+    } else if (sec !== "builder") {
       await page.locator(`#page-${sec} h1`).waitFor({ timeout: 10000 });
     } else if (name === "new") {
       await openNewForm(page);
@@ -222,6 +381,9 @@ async function tour(context) {
 
   let envNote = "";
   if (names.includes("wiki")) envNote = await envFlow(page);
+  envNote += await sessionsFlow(page);
+  await page.locator('#nav a[data-section="builder"]').click();
+  await waitBuilder(page);
 
   await openNewForm(page);
   // the New project form: local rows, paste, validation blocks the submit (no request is sent)
@@ -314,6 +476,36 @@ async function envFlow(page) {
   return `, env flow (add 3, reload, replace, delete, paste; ${seen.length} responses checked, no secret leaked)`;
 }
 
+// Side-by-side sheets: the Project builder (bookings) next to the Session manager, per theme and width,
+// so the two pages can be compared for sidebar, header, buttons, fonts and colours at a glance.
+async function compareShots(browser) {
+  const fs = require("fs");
+  const context = await browser.newContext();
+  try {
+    for (const theme of ["light", "dark"]) {
+      for (const vp of VIEWPORTS) {
+        const a = path.join(out, `bookings-${theme}-${vp.width}.png`), b = path.join(out, `sessions-${theme}-${vp.width}.png`);
+        if (!fs.existsSync(a) || !fs.existsSync(b)) continue;
+        const html = `<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#888;font:13px system-ui;display:flex;gap:12px;padding:12px;align-items:flex-start}` +
+          `figure{margin:0}figcaption{color:#fff;padding:4px 0}img{display:block;width:${vp.width}px;max-height:900px;object-fit:cover;object-position:top}</style>` +
+          `<figure><figcaption>Project builder · ${theme} · ${vp.width}</figcaption><img src="file://${a}"></figure>` +
+          `<figure><figcaption>Session manager · ${theme} · ${vp.width}</figcaption><img src="file://${b}"></figure>`;
+        const f = path.join(out, `compare-${theme}-${vp.width}.html`);
+        fs.writeFileSync(f, html);
+        const page = await context.newPage();
+        await page.setViewportSize({ width: vp.width * 2 + 36, height: 940 });
+        await page.goto(`file://${f}`, { waitUntil: "load" });
+        await page.screenshot({ path: path.join(out, `compare-${theme}-${vp.width}.png`), fullPage: true });
+        await page.close();
+        fs.unlinkSync(f);
+        console.log(`shot compare-${theme}-${vp.width}.png`);
+      }
+    }
+  } finally {
+    await context.close();
+  }
+}
+
 // Mock mode: `node shots.js --mock <base-url> <out-dir> <pages>` — static design pages, no login,
 // each captured in light and dark (<page>-<light|dark>-<width>.png). Any console error (CSP
 // violations are reported there) fails the run.
@@ -384,6 +576,7 @@ async function mockMode() {
         await context.close();
       }
     }
+    await compareShots(browser);
   } finally {
     await browser.close();
   }
@@ -392,4 +585,8 @@ async function mockMode() {
     process.exit(1);
   }
   console.log("console clean: no errors, no CSP violations");
-})().catch((e) => { console.error(`shots.js failed: ${e.message}`); process.exit(1); });
+})().catch((e) => {
+  console.error(`shots.js failed: ${e.message}`);
+  if (errors.length) console.error("browser console errors so far:\n  " + errors.join("\n  "));
+  process.exit(1);
+});

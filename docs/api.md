@@ -65,6 +65,8 @@ project, captured 2026-10-17 (long lists truncated to one element).
 | `/` | `static/index.html` (`text/html`) |
 | `/app.js` | `static/app.js` (`text/javascript`) |
 | `/app.css` | `static/app.css` (`text/css`) |
+| `/sessions.js` | `static/sessions.js` (Session manager page, since step 11) |
+| `/vendor/xterm.min.js`, `/vendor/addon-fit.min.js`, `/vendor/xterm.min.css` | vendored xterm.js 5.5.0 + fit addon (`static/vendor/`, no CDN) |
 
 ### GET /login?c=CODE
 
@@ -371,7 +373,7 @@ lock `~/.config/hands/dashboard.lock`). The watchdog cron keeps it running via
 
 ## Route inventory (for the coverage check)
 
-`/` `/app.js` `/app.css` `/login` ·
+`/` `/app.js` `/sessions.js` `/app.css` `/vendor/xterm.min.js` `/vendor/addon-fit.min.js` `/vendor/xterm.min.css` `/login` ·
 GET `/api/projects` `/api/usage` `/api/creating/<slug>` `/api/p/<name>` `/api/p/<name>/log`
 `/api/p/<name>/attempts` `/api/p/<name>/attempts/<attempt>/<file>` `/api/p/<name>/planfile`
 `/api/p/<name>/env` `/api/sessions` `/api/sessions/defaults` ·

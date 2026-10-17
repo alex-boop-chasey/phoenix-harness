@@ -11,6 +11,13 @@ Hard rules (from the dashboard CSP): no inline scripts, no `style` attributes, n
 images (`default-src 'none'`). Styles come from the stylesheet; dynamic values go through CSS classes
 or `element.style` from JS. All agent/user text is rendered with `textContent`.
 
+xterm.js (Session manager, step 11) injects two `<style>` elements, which the CSP blocks. The CSP is
+unchanged: the terminal is opened with xterm's `documentOverride` whose `createElement("style")`
+returns a hidden holder element that forwards its `textContent` into a constructed `CSSStyleSheet`
+adopted by the document (CSSOM, not governed by `style-src`). Browsers without constructable
+stylesheets (Safari < 16.4) get a readable but uncoloured terminal and a note in the footer.
+Truecolor cells would need style attributes, so the session environment never sets `COLORTERM`.
+
 ## Direction: "Workbench"
 
 Quiet, warm-neutral surfaces, a single blue accent for selection and primary actions, semantic
@@ -107,8 +114,9 @@ text label and a dot, step icons use ✓ ✗ ○ plus colour.
 | Empty states | `.empty .glyph` | glyph, one-line title, hint, optional action |
 | Toasts | `.toasts .toast(.bad) .dot .x` | bottom-right (full-width on phone), inverted colours, `aria-live=polite` |
 | Loading | `.spinner`, `.btn.loading`, `.skeleton` | spinner in buttons/rows; skeleton bars for first paint |
-| Session list | `.slist .sitem[aria-current] .dot(.live .wait .bad) .smain .sname .smeta .when` | status dot, name, meta, relative time |
-| Terminal frame | `.term .term-head .title .tools`, `pre.term-body` (`.p .d .g .r .y .m .c .cur`), `.term-foot .kbd` | theme from `--term-*`; head = name, live badge, tmux/size/started, Attach / Rename / Stop; foot = focus hint and key legend |
+| Session list | `.slist .sitem[aria-current] .dot(.live .wait .bad) .smain .sname .smeta .when(.live)` | `button.sitem` per session: status dot, title (first prompt), folder · state, "live" or relative time; empty state inside the list (since step 11) |
+| Terminal frame | `.term .term-head .title .badge .tools`, `div.term-body` (xterm.js host), `.term-foot .conn(.ok .warn .bad) .keys .kbd` | theme from `--term-*`: `sessions.js` builds the xterm theme from the tokens at run time and again when the colour scheme changes (ANSI black/white = `--term-fg`/`--term-bg`, bright black = `--term-dim`, selection = `--accent-soft`); font = `--mono` at `--fs-1`. Head = dot, title, state badge, folder · started, Resume / Stop / Delete; foot = connection state (`role=status`) and key legend. Phone: `.sessions.show-term` swaps the list for the terminal, `.show-sm` back button (since step 11) |
+| New session dialog | `dialog.dialog` with `.field` (label, `.input.mono`, hint, `.error`) | working folder, default `~/ops`; server errors shown inline under the field |
 | Breadcrumb | `.crumbs a .sep .here` | clickable ancestors, bold current |
 | View switch | `.seg button[aria-pressed]` | List / Grid |
 | File list | table rows with `.ftype(.dir .code .img .doc)` + `.fname` | type chip, name link, size (`.num`), modified, permissions (hidden on phone) |
