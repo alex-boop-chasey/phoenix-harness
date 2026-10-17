@@ -5,12 +5,16 @@
 # Usage (on the host, as builder):
 #   bash tools/ui-shots.sh <label> [page ...]
 #
-#   <label>   output folder: ~/ops/shots/<label>/   (e.g. 02-before)
+#   <label>   output folder: ~/ops/shots/<label>/   (e.g. 02-before, or a subfolder like 05/p20)
 #   [page]    what to capture; default: every sample project plus the New-project form:
 #             bookings (building)  crm (failed step)  blog (done)  wiki (stopped)
 #             landing (plan ready)  notes (planning)  new (New project form)
 #             sessions, files (sections), nav (phone drawer open)
+#             tabs (builder as it opens), menu ("+" menu open), close (close-tab confirmation)
 #   Each page is saved as <page>-light-1440.png, <page>-dark-390.png, ...
+#
+#   Environment: UI_SHOTS_PROJECTS=N   how many sample projects (0..20, default 6; see fixtures.py)
+#                UI_SHOTS_HIDDEN="a b"  sample projects that start as closed tabs
 #
 #   bash tools/ui-shots.sh --mock <label> [page ...]
 #             captures the static design mock in hands/static/mock/ instead of the dashboard, in
@@ -33,11 +37,13 @@ if [ "${1:-}" = "--inner" ]; then
   export HANDS_CONFIG_HOME=/tmp/hands-cfg
   python3 --version >/dev/null                      # the rig needs Python 3 in the image
   node --check /src/tools/shots.js
+  node --check /src/hands/static/app.js                # the host has no node; this is the JS syntax check
   NODE_PATH="$(ls -d /home/node/.npm/_npx/*/node_modules | head -1)"   # playwright lives in the npx cache
   if [ "${UI_SHOTS_MODE:-}" = "mock" ]; then
     PYTHONPATH=/src python3 /src/tools/mockserve.py /src/hands/static/mock "$PORT" >/tmp/dash.log 2>&1 &
   else
-    python3 /src/tools/fixtures.py "$HANDS_CONFIG_HOME" /tmp/fixtures
+    # shellcheck disable=SC2086  # UI_SHOTS_HIDDEN is a space-separated list on purpose
+    python3 /src/tools/fixtures.py "$HANDS_CONFIG_HOME" /tmp/fixtures "${UI_SHOTS_PROJECTS:-}" ${UI_SHOTS_HIDDEN:-}
     PYTHONPATH=/src python3 -m hands.dashboard run --port "$PORT" >/tmp/dash.log 2>&1 &
   fi
   DASH=$!
@@ -65,9 +71,11 @@ MODE=dash
 if [ "${1:-}" = "--mock" ]; then MODE=mock; shift; fi
 LABEL="${1:-}"
 [ -n "$LABEL" ] || { echo "usage: bash tools/ui-shots.sh <label> [page ...]" >&2; exit 2; }
-case "$LABEL" in *[!A-Za-z0-9._-]*) echo "label: letters, digits, . _ - only" >&2; exit 2;; esac
+case "$LABEL" in *[!A-Za-z0-9._/-]*|*..*|/*) echo "label: letters, digits, . _ - and / (no .., not absolute) only" >&2; exit 2;; esac
 shift
-if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new sessions files nav}"; fi
+if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new sessions files nav tabs menu close}"; fi
+case "${UI_SHOTS_PROJECTS:-}" in ""|[0-9]|1[0-9]|20) ;; *) echo "UI_SHOTS_PROJECTS: 0..20" >&2; exit 2;; esac
+case "${UI_SHOTS_HIDDEN:-}" in *[!A-Za-z0-9_\ -]*) echo "UI_SHOTS_HIDDEN: project names separated by spaces" >&2; exit 2;; esac
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$HOME/ops/shots/$LABEL"
 mkdir -p "$OUT"
@@ -75,6 +83,7 @@ mkdir -p "$OUT"
 docker run --rm --init --network none --entrypoint bash \
   --shm-size 1g \
   -e UI_SHOTS_PAGES="$PAGES" -e UI_SHOTS_MODE="$MODE" \
+  -e UI_SHOTS_PROJECTS="${UI_SHOTS_PROJECTS:-}" -e UI_SHOTS_HIDDEN="${UI_SHOTS_HIDDEN:-}" \
   --mount "type=bind,src=$REPO,dst=/src,readonly" \
   --mount "type=bind,src=$OUT,dst=/out" \
   "$IMAGE" /src/tools/ui-shots.sh --inner

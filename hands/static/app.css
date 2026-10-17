@@ -71,9 +71,7 @@ code, pre, .mono { font-family: var(--mono); }
 .content { min-width: 0; display: flex; flex-direction: column; }
 .page { padding: var(--sp-4) var(--sp-5); display: grid; gap: var(--sp-4); align-content: start; min-width: 0; }
 .page-head { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
-.page.builder { grid-template-columns: 220px minmax(0, 1fr); align-items: start; }
-.plist-col { position: sticky; top: var(--sp-4); max-height: calc(100vh - 32px); overflow: auto; display: flex; flex-direction: column; gap: 6px; }
-.plist { display: flex; flex-direction: column; gap: 6px; }
+.builder { display: flex; flex-direction: column; min-width: 0; }
 main#main { display: grid; gap: var(--sp-4); min-width: 0; }
 
 /* ---------------------------------------------------------------- usage meters */
@@ -88,16 +86,54 @@ main#main { display: grid; gap: var(--sp-4); min-width: 0; }
 .linkbtn { background: none; border: 1px solid var(--line-2); border-radius: var(--r-1); color: var(--ink); cursor: pointer; font: inherit; padding: 0 6px; justify-self: start; }
 .linkbtn:hover { background: var(--surface-2); }
 
-/* ---------------------------------------------------------------- project list */
-.pcard { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; text-align: left;
-         border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: var(--r-2);
-         padding: 8px 10px; cursor: pointer; font: inherit; }
-.pcard:hover { border-color: var(--line-2); background: var(--surface-2); }
-.pcard[aria-current="true"] { border-color: var(--accent); background: var(--accent-soft); }
-.pcard[aria-current="true"] .pname { font-weight: 600; }
-.pname { overflow-wrap: anywhere; }
-.pnew { color: var(--ink-2); align-items: center; border-style: dashed; border-color: var(--line-2); background: transparent; }
-.pnew[aria-current="true"] { color: var(--accent); border-style: solid; }
+/* ---------------------------------------------------------------- project tabs (builder) */
+.tabs-wrap { position: sticky; top: 0; z-index: 3; background: var(--surface); border-bottom: 1px solid var(--line); }
+.tabs-wrap::before, .tabs-wrap::after { content: ""; position: absolute; top: 0; bottom: 0; width: 36px; pointer-events: none; opacity: 0; transition: opacity .15s; z-index: 1; }
+.tabs-wrap::before { left: 0; background: linear-gradient(to right, var(--surface), transparent); }
+.tabs-wrap::after { right: 0; background: linear-gradient(to left, var(--surface), transparent); }
+.tabs-wrap.scroll-l::before, .tabs-wrap.scroll-r::after { opacity: 1; }
+.tabs { display: flex; align-items: flex-end; gap: 2px; padding: var(--sp-3) var(--sp-5) 0; overflow-x: auto; scrollbar-width: thin; }
+.tab { display: inline-flex; align-items: center; gap: 8px; flex: none; max-width: 240px; min-width: 0; padding: 7px 8px 7px 12px;
+       border: 1px solid transparent; border-bottom: 0; border-radius: var(--r-2) var(--r-2) 0 0; color: var(--ink-2);
+       background: transparent; font: inherit; cursor: pointer; position: relative; top: 1px; }
+.tab:hover { background: var(--surface-2); color: var(--ink); }
+.tab[aria-selected="true"] { background: var(--bg); border-color: var(--line); color: var(--ink); font-weight: 600; }
+.tab[aria-selected="true"]::after { content: ""; position: absolute; left: 10px; right: 10px; top: -1px; height: 2px; background: var(--accent); border-radius: 2px; }
+.tab:focus-visible { box-shadow: var(--focus); border-radius: var(--r-2) var(--r-2) 0 0; z-index: 1; }
+.tab .tname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab .x { width: 18px; height: 18px; border-radius: 4px; display: inline-grid; place-items: center; color: var(--ink-3); font-size: 13px; line-height: 1; flex: none; }
+.tab:hover .x, .tab[aria-selected="true"] .x { color: var(--ink-2); }
+.tab .x:hover { background: var(--line); color: var(--ink); }
+.tab .badge { padding: 0 7px; }
+.tab-add { flex: none; width: 32px; height: 32px; margin: 0 0 4px 4px; border-radius: var(--r-2); border: 1px dashed var(--line-2);
+           background: transparent; color: var(--ink-2); font: 18px/1 var(--sans); cursor: pointer; }
+.tab-add:hover, .tab-add[aria-expanded="true"], .tab-add[aria-current="true"] { border-style: solid; color: var(--ink); background: var(--surface-2); }
+.tab-add[aria-current="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.tabs .tabs-hint { align-self: center; color: var(--ink-3); font-size: var(--fs-1); padding: 0 6px 4px; white-space: nowrap; }
+
+/* popover menu: position: fixed, offset set by JS from the "+" button (works in Safari, never clipped by the strip) */
+.menu { position: fixed; min-width: 240px; max-width: min(360px, calc(100vw - 32px)); max-height: min(70vh, 480px); overflow: auto;
+        background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-2); box-shadow: var(--shadow-2);
+        padding: 6px; display: grid; gap: 2px; z-index: 20; text-align: left; }
+.menu-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--r-1); color: var(--ink); font: inherit;
+             font-size: var(--fs-2); background: none; border: 0; cursor: pointer; text-align: left; width: 100%; min-width: 0; }
+.menu-item:hover, .menu-item:focus-visible { background: var(--surface-2); }
+.menu-item .k { margin-left: auto; color: var(--ink-3); font-size: var(--fs-0); font-family: var(--mono); }
+.menu-item .mname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-item .mwhen { margin-left: auto; color: var(--ink-3); font-size: var(--fs-0); white-space: nowrap; }
+.menu-sep { height: 1px; background: var(--line); margin: 4px 0; }
+.menu-head { padding: 4px 10px 2px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+.menu .muted { padding: 6px 10px; font-size: var(--fs-1); }
+
+/* ---------------------------------------------------------------- dialog (confirmations) */
+dialog.dialog { border: 1px solid var(--line); border-radius: var(--r-3); background: var(--surface); color: var(--ink); padding: var(--sp-4) var(--sp-5);
+                max-width: min(440px, calc(100vw - 32px)); box-shadow: var(--shadow-2); font: inherit; }
+dialog.dialog::backdrop { background: rgba(0, 0, 0, .35); }
+dialog.dialog h2 { margin-bottom: var(--sp-2); }
+dialog.dialog p { margin-bottom: var(--sp-2); }
+dialog.dialog .row { justify-content: flex-end; margin-top: var(--sp-3); }
+.notice { border: 1px solid var(--line-2); border-left-width: 3px; border-radius: var(--r-2); padding: var(--sp-2) var(--sp-3); background: var(--surface-2); }
+.notice.warn { border-color: var(--warn); background: var(--warn-soft); }
 
 /* ---------------------------------------------------------------- cards (sections) */
 section, .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-3); padding: var(--sp-3) var(--sp-4); min-width: 0; box-shadow: var(--shadow-1); }
@@ -206,8 +242,7 @@ ol.phases li.done { color: var(--ok); }
   body.nav-open .sidebar { transform: none; }
   .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, .35); z-index: 7; }
   .page { padding: var(--sp-3) var(--sp-4); }
-  .page.builder { grid-template-columns: minmax(0, 1fr); }
-  .plist-col { position: static; max-height: none; flex-direction: row; flex-wrap: wrap; }
-  .plist { flex-direction: row; flex-wrap: wrap; }
-  .pcard { width: auto; flex-direction: row; align-items: center; gap: 8px; padding: 6px 10px; }
+  .tabs-wrap { top: var(--topbar-h); }
+  .tabs { padding: var(--sp-2) var(--sp-4) 0; }
+  .tab { max-width: 260px; padding-left: 10px; gap: 6px; }
 }

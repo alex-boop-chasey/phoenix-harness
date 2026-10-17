@@ -27,21 +27,20 @@ async function api(path, opts) {
 const badge = (s) => el("span", { class: `badge s-${String(s || "").replace(/[^a-z_]/g, "")}` }, s || "?");
 const when = (t) => (t ? new Date(t * 1000).toLocaleString() : "");
 const localTs = (iso) => { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleString() : (iso || ""); };
-let mode = "project";        // "project" | "new" | "creating"
+let mode = "project";        // "project" | "new" | "creating" | "empty" (every project closed)
 let creatingSlug = null;
+let projects = [];           // last /api/projects result (open and closed)
 
 async function loadProjects() {
   const list = await api("/api/projects");
-  if (current && !list.some((p) => p.name === current)) current = null;
-  const nav = $("#projects");
-  nav.replaceChildren(...list.map((p) =>
-    el("button", { class: "pcard", type: "button", "aria-current": String(mode === "project" && p.name === current),
-                   on: { click: () => select(p.name) } },
-      el("span", { class: "pname" }, p.name), badge(p.error ? "error" : p.status))));
-  $("#newproject").setAttribute("aria-current", String(mode !== "project"));
+  projects = list;
+  const open = list.filter((p) => !p.hidden);
+  if (current && !open.some((p) => p.name === current)) current = null;
+  renderTabs(open, list.filter((p) => p.hidden));
+  if (mode === "empty" && open.length) return select(open[0].name);
   if (mode !== "project") return;
-  if (!current && list.length) select(list[0].name);
-  if (!list.length) showNew();
+  if (!current && open.length) return select(open[0].name);
+  if (!open.length) { if (list.length) showEmpty(); else showNew(); }
 }
 
 function select(name) {
@@ -53,6 +52,186 @@ function select(name) {
   viewerTitle.textContent = "File";
   viewer.textContent = "Pick an attempt file.";
   refresh(true);
+  loadProjects().catch(() => {});      // tab highlight at once, not on the next tick
+}
+
+// ---- project tabs (WAI-ARIA tabs: roving tabindex, arrows move, Enter opens, Delete closes)
+let lastScrolledTo = null;
+function renderTabs(open, hidden) {
+  const strip = $("#tabs");
+  const active = document.activeElement;
+  const focused = active && strip.contains(active) ? active.dataset.name : null;
+  const selected = mode === "project" ? current : null;
+  const tabs = open.map((p, i) => el("button", {
+    class: "tab", type: "button", role: "tab", "data-name": p.name, title: p.name,
+    "aria-selected": String(p.name === selected), tabindex: (selected ? p.name === selected : i === 0) ? "0" : "-1",
+    on: { click: (ev) => { if (ev.target.closest(".x")) closeTab(p); else select(p.name); }, keydown: (ev) => tabKey(ev, p) } },
+    el("span", { class: "tname" }, p.name), badge(p.error ? "error" : p.status),
+    el("span", { class: "x", "aria-label": `Close ${p.name}`, title: "Close tab (Delete)" }, "×")));
+  const add = el("button", { class: "tab-add", type: "button", "data-name": "+", "aria-haspopup": "menu",
+    "aria-expanded": String(!!menuEl), "aria-current": String(mode === "new" || mode === "creating"),
+    "aria-label": "New project or reopen a closed one", title: "New project or reopen a closed one",
+    on: { click: () => toggleMenu() } }, "+");
+  strip.replaceChildren(...tabs, add,
+    ...(open.length ? [] : [el("span", { class: "tabs-hint" }, hidden.length ? `${hidden.length} closed` : "No projects yet")]));
+  if (focused) { const t = strip.querySelector(`[data-name="${CSS.escape(focused)}"]`); if (t) t.focus(); }
+  if (selected && selected !== lastScrolledTo) {
+    lastScrolledTo = selected;
+    const t = strip.querySelector('.tab[aria-selected="true"]');
+    if (t) try { t.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch (e) { /* old Safari */ }
+  }
+  updateTabShadows();
+}
+
+function updateTabShadows() {
+  const s = $("#tabs"), w = $("#tabswrap");
+  w.classList.toggle("scroll-l", s.scrollLeft > 2);
+  w.classList.toggle("scroll-r", s.scrollLeft + s.clientWidth < s.scrollWidth - 2);
+}
+
+function tabKey(ev, p) {
+  const tabs = [...$("#tabs").querySelectorAll(".tab")];
+  const i = tabs.findIndex((t) => t.dataset.name === p.name);
+  const go = (j) => { ev.preventDefault(); const t = tabs[(j + tabs.length) % tabs.length]; t.focus(); t.scrollIntoView && t.scrollIntoView({ block: "nearest", inline: "nearest" }); };
+  if (ev.key === "ArrowRight") go(i + 1);
+  else if (ev.key === "ArrowLeft") go(i - 1);
+  else if (ev.key === "Home") go(0);
+  else if (ev.key === "End") go(tabs.length - 1);
+  else if (ev.key === "Delete" || ev.key === "Backspace") { ev.preventDefault(); closeTab(p); }
+}
+
+async function closeTab(p) {
+  const live = p.alive || p.status === "planning";
+  const what = p.status === "planning" ? "planning" : "building";
+  const ok = await confirmDialog({
+    title: `Close ${p.name}?`,
+    warn: live ? `${p.name} is ${what} right now. Closing the tab does not stop it: the ${what === "planning" ? "planner" : "runner"} ` +
+                 "keeps going in the background and you will not see it until you reopen the tab." : "",
+    body: "Closing a tab only hides the project here. Nothing is deleted: its repos, state and settings stay, " +
+          "and you can reopen it any time from the + button.",
+    ok: "Close tab" });
+  if (!ok) return;
+  try { await api(`/api/p/${encodeURIComponent(p.name)}/hide`, { method: "POST", headers: { "X-Hands": "1" } }); }
+  catch (e) { alert(`failed: ${e.message}`); return; }
+  const open = projects.filter((x) => !x.hidden);
+  const i = open.findIndex((x) => x.name === p.name);
+  const next = open[i + 1] || open[i - 1];
+  projects = projects.map((x) => (x.name === p.name ? { ...x, hidden: true } : x));
+  if (current === p.name) {
+    current = null;
+    try { localStorage.removeItem("hands.project"); } catch (e) { /* ignore */ }
+    if (next) select(next.name);
+  }
+  await loadProjects().catch(() => {});
+  const t = $("#tabs .tab[aria-selected='true']") || $("#tabs .tab-add");
+  if (t) t.focus();
+}
+
+async function reopen(name) {
+  closeMenu(false);
+  try { await api(`/api/p/${encodeURIComponent(name)}/unhide`, { method: "POST", headers: { "X-Hands": "1" } }); }
+  catch (e) { alert(`failed: ${e.message}`); return; }
+  projects = projects.map((x) => (x.name === name ? { ...x, hidden: false } : x));
+  select(name);
+}
+
+function showEmpty() {
+  mode = "empty";
+  $("#main").replaceChildren(el("section", {}, el("div", { class: "empty" }, el("span", { class: "glyph" }, "▦"),
+    el("strong", {}, "No open projects"),
+    el("span", { class: "small" }, "Every project is closed. Reopen one from the + button, or start a new one."),
+    el("div", { class: "row" },
+      el("button", { class: "btn primary", type: "button", on: { click: showNew } }, "New project"),
+      el("button", { class: "btn", type: "button", on: { click: () => toggleMenu() } }, "Reopen a closed project…")))));
+}
+
+// ---- "+" menu: position: fixed, offset computed from the button (Safari-safe; the scrolling strip cannot clip it)
+let menuEl = null;
+function ago(iso) {
+  const d = iso ? new Date(iso) : null;
+  if (!d || isNaN(d)) return "";
+  const s = Math.max(0, (Date.now() - d) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
+function positionMenu() {
+  const add = $("#tabs .tab-add");
+  if (!menuEl || !add) return;
+  const r = add.getBoundingClientRect();
+  const left = Math.max(8, Math.min(r.left, window.innerWidth - menuEl.offsetWidth - 8));
+  menuEl.style.left = `${left}px`;            // CSSOM, allowed by the CSP (style attributes are not)
+  menuEl.style.top = `${r.bottom + 6}px`;
+}
+function onDocPointer(ev) {
+  if (menuEl && !menuEl.contains(ev.target) && !ev.target.closest(".tab-add")) closeMenu(false);
+}
+function closeMenu(refocus) {
+  if (!menuEl) return;
+  menuEl.remove();
+  menuEl = null;
+  const add = $("#tabs .tab-add");
+  if (add) { add.setAttribute("aria-expanded", "false"); if (refocus) add.focus(); }
+  document.removeEventListener("pointerdown", onDocPointer, true);
+  window.removeEventListener("resize", positionMenu);
+  window.removeEventListener("scroll", positionMenu, true);
+}
+function toggleMenu() {
+  if (menuEl) return closeMenu(true);
+  const add = $("#tabs .tab-add");
+  if (!add) return;
+  const hidden = projects.filter((p) => p.hidden);
+  const item = (kids, onclick, attrs) =>
+    el("button", { class: "menu-item", type: "button", role: "menuitem", on: { click: onclick }, ...(attrs || {}) }, ...kids);
+  menuEl = el("div", { class: "menu", role: "menu", "aria-label": "Add project", on: { keydown: menuKey } },
+    item(["＋ New project", el("span", { class: "k" }, "N")], () => { closeMenu(false); showNew(); }),
+    el("div", { class: "menu-sep" }),
+    el("div", { class: "menu-head" }, "Reopen a closed project"),
+    hidden.length ? hidden.map((p) => item(
+      [badge(p.error ? "error" : p.status), el("span", { class: "mname" }, p.name), el("span", { class: "mwhen" }, ago(p.updated_at))],
+      () => reopen(p.name), { title: `${p.name} · ${p.status}${p.updated_at ? ` · last activity ${localTs(p.updated_at)}` : ""}` }))
+      : el("div", { class: "muted" }, "No closed projects."));
+  document.body.append(menuEl);
+  add.setAttribute("aria-expanded", "true");
+  positionMenu();
+  menuEl.querySelector(".menu-item").focus();
+  setTimeout(() => document.addEventListener("pointerdown", onDocPointer, true), 0);
+  window.addEventListener("resize", positionMenu);
+  window.addEventListener("scroll", positionMenu, true);
+}
+function menuKey(ev) {
+  const items = [...menuEl.querySelectorAll(".menu-item")];
+  const i = items.indexOf(document.activeElement);
+  const go = (j) => { ev.preventDefault(); items[(j + items.length) % items.length].focus(); };
+  if (ev.key === "ArrowDown") go(i + 1);
+  else if (ev.key === "ArrowUp") go(i - 1);
+  else if (ev.key === "Home") go(0);
+  else if (ev.key === "End") go(items.length - 1);
+  else if (ev.key === "Escape") { ev.preventDefault(); closeMenu(true); }
+  else if (ev.key === "Tab") closeMenu(false);
+  else if (ev.key === "n" || ev.key === "N") { ev.preventDefault(); closeMenu(false); showNew(); }
+}
+
+// ---- confirmation dialog (<dialog>; falls back to window.confirm where showModal is missing)
+function confirmDialog({ title, body, warn, ok }) {
+  if (typeof HTMLDialogElement !== "function" || !HTMLDialogElement.prototype.showModal) {
+    return Promise.resolve(confirm(`${title}\n\n${warn ? warn + "\n\n" : ""}${body}`));
+  }
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; resolve(v); dlg.close(); dlg.remove(); };
+    const cancel = el("button", { class: "btn", type: "button", on: { click: () => finish(false) } }, "Cancel");
+    const okBtn = el("button", { class: "btn danger", type: "button", on: { click: () => finish(true) } }, ok || "OK");
+    const dlg = el("dialog", { class: "dialog", "aria-labelledby": "dlg-title", on: { close: () => finish(false) } },
+      el("h2", { id: "dlg-title" }, title),
+      warn ? el("div", { class: "notice warn" }, warn) : null,
+      el("p", { class: "muted" }, body),
+      el("div", { class: "row" }, cancel, okBtn));
+    document.body.append(dlg);
+    dlg.showModal();
+    cancel.focus();
+  });
 }
 
 async function action(name, act, label) {
@@ -358,7 +537,7 @@ function planSection(d) {
 }
 
 async function refresh(full) {
-  if (mode === "new") return;
+  if (mode === "new" || mode === "empty") return;
   if (mode === "creating") return refreshCreating();
   const name = current;
   if (!name) return;
@@ -468,6 +647,8 @@ function initShell() {
   $("#scrim").addEventListener("click", () => setNav(false));
   document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && document.body.classList.contains("nav-open")) { setNav(false); $("#navtoggle").focus(); } });
   window.addEventListener("hashchange", route);
+  $("#tabs").addEventListener("scroll", updateTabShadows);
+  window.addEventListener("resize", updateTabShadows);
   route();
 }
 
@@ -476,7 +657,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   let saved = null;
   try { saved = localStorage.getItem("hands.project"); } catch (e) { saved = null; }
   current = saved;
-  $("#newproject").addEventListener("click", showNew);
   await loadProjects().catch(() => {});
   loadUsage();
   if (current && current === saved) select(current);

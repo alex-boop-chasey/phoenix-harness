@@ -5,9 +5,13 @@
 //   node shots.js <base-url> <login-code> <out-dir> <pages>
 //
 // <pages>: space-separated. A project name screenshots that project's view; "new" the New project
-// form; "sessions" / "files" those sections; "nav" the phone drawer open. Files: <out>/<page>-<theme>-<width>.png
-// Before the screenshots a tour clicks every section and every view-only control (projects, New
-// project, attempt files, plan files, planner log) and fails on any console error.
+// form; "sessions" / "files" those sections; "nav" the phone drawer open; "tabs" the builder as it
+// opens (first open tab, or the empty state / New project form when nothing is open); "menu" the
+// "+" menu open (with the reopen list when projects are closed); "close" the close-tab confirmation.
+// Files: <out>/<page>-<theme>-<width>.png
+// Before the screenshots a tour clicks every section and every view-only control (tabs, New
+// project, attempt files, plan files, planner log), closes a tab and reopens it from "+", walks the
+// tabs with the keyboard, and fails on any console error.
 "use strict";
 const path = require("path");
 const { chromium } = require("playwright");
@@ -22,11 +26,28 @@ function watch(page, label) {
   page.on("pageerror", (e) => errors.push(`${label}: ${e.message}`));
 }
 
+const tab = (page, name) => page.locator(`#tabs .tab[data-name="${name}"]`);
+
 async function selectProject(page, name) {
-  await page.locator("#projects .pcard", { hasText: name }).first().click();
+  await tab(page, name).click();
   await page.locator("main h2", { hasText: name }).first().waitFor({ timeout: 10000 });
-  // the project list highlight catches up on the app's 4 s refresh tick
-  await page.locator('#projects .pcard[aria-current="true"]', { hasText: name }).waitFor({ timeout: 8000 });
+  await page.locator(`#tabs .tab[data-name="${name}"][aria-selected="true"]`).waitFor({ timeout: 8000 });
+}
+
+async function openMenu(page) {
+  await page.locator("#tabs .tab-add").click();
+  await page.locator(".menu[role=menu]").waitFor({ timeout: 5000 });
+}
+
+async function openNewForm(page) {
+  await openMenu(page);
+  await page.locator(".menu .menu-item", { hasText: "New project" }).click();
+  await page.locator("#slug").waitFor({ timeout: 10000 });
+}
+
+async function waitBuilder(page) {
+  // the builder settles on: a selected tab, the New project form (no projects) or the empty state (all closed)
+  await page.locator('#tabs .tab[aria-selected="true"], #slug, main .empty').first().waitFor({ timeout: 10000 });
 }
 
 async function capture(context, name, width, theme) {
@@ -38,10 +59,18 @@ async function capture(context, name, width, theme) {
     if (sec !== "builder") {
       await page.locator(`#page-${sec} h1`).waitFor({ timeout: 10000 });
     } else if (name === "new") {
-      await page.locator("#newproject").click();
-      await page.locator("#slug").waitFor({ timeout: 10000 });
+      await openNewForm(page);
     } else if (name === "nav") {
       if (width <= 900) { await page.locator("#navtoggle").click(); await page.locator("body.nav-open").waitFor({ timeout: 5000 }); }
+    } else if (name === "tabs") {
+      await waitBuilder(page);
+    } else if (name === "menu") {
+      await waitBuilder(page);
+      await openMenu(page);
+    } else if (name === "close") {
+      await waitBuilder(page);
+      await page.locator('#tabs .tab[aria-selected="true"] .x').click();
+      await page.locator("dialog.dialog[open]").waitFor({ timeout: 5000 });
     } else {
       await selectProject(page, name);
     }
@@ -65,11 +94,32 @@ async function tour(context) {
     await page.locator(`#page-${sec}:not([hidden])`).waitFor({ timeout: 5000 });
     await page.locator(`#nav a[data-section="${sec}"][aria-current="page"]`).waitFor({ timeout: 5000 });
   }
-  const names = await page.locator("#projects .pcard .pname").allTextContents();
-  if (!names.length) throw new Error("tour: no projects listed");
+  await waitBuilder(page);
+  const names = await page.locator("#tabs .tab .tname").allTextContents();
+  const closedBefore = (await page.locator("#tabs .tabs-hint").textContent().catch(() => "")) || "";
+  if (!names.length) {
+    // nothing open: either no projects at all (New project form) or everything closed (empty state + reopen)
+    if (await page.locator("main .empty").count()) {
+      await page.locator("main .empty button", { hasText: "Reopen" }).click();
+      await page.locator(".menu[role=menu]").waitFor({ timeout: 5000 });
+      const n = await page.locator(".menu .menu-item .mname").count();
+      if (!n) throw new Error("tour: all projects closed but the reopen list is empty");
+      await page.keyboard.press("Escape");
+      await page.locator(".menu[role=menu]").waitFor({ state: "detached", timeout: 5000 });
+    } else {
+      await page.locator("#slug").waitFor({ timeout: 10000 });
+      await openMenu(page);
+      if (!(await page.locator(".menu .muted", { hasText: "No closed projects" }).count())) throw new Error("tour: expected 'No closed projects'");
+      await page.keyboard.press("Escape");
+    }
+    console.log(`tour ok: 0 open projects (${closedBefore || "none"}), + menu works`);
+    await page.close();
+    return;
+  }
   let attemptFiles = 0, planFiles = 0, logs = 0;
   for (const name of names) {
     await selectProject(page, name);
+    await page.locator("#attempts-wrap section").waitFor({ timeout: 5000 }).catch(() => {});   // loads async
     const f = page.locator("#attempts-wrap .files button").first();
     if (await f.count()) {
       await f.click();
@@ -81,10 +131,49 @@ async function tour(context) {
     const sum = page.locator("details summary", { hasText: "Planner log" }).first();
     if (await sum.count()) { await sum.click(); logs++; }
   }
-  await page.locator("#newproject").click();
-  await page.locator("#slug").waitFor({ timeout: 10000 });
+
+  // keyboard: focus the first tab, ArrowRight, Enter opens the second (if any); Escape closes the menu
+  await tab(page, names[0]).focus();
+  if (names.length > 1) {
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Enter");
+    await page.locator(`#tabs .tab[data-name="${names[1]}"][aria-selected="true"]`).waitFor({ timeout: 8000 });
+    await page.locator("main h2", { hasText: names[1] }).first().waitFor({ timeout: 10000 });
+  }
+
+  // close a tab (confirmation dialog), then reopen it from "+" and check it comes back with its data
+  const victim = names[0];
+  await selectProject(page, victim);
+  await page.waitForTimeout(700);
+  const h2Before = (await page.locator("main section h2").allTextContents()).join("|");
+  await tab(page, victim).locator(".x").click();
+  const dlg = page.locator("dialog.dialog[open]");
+  await dlg.waitFor({ timeout: 5000 });
+  await dlg.locator("button", { hasText: "Cancel" }).click();                      // cancel keeps the tab
+  await dlg.waitFor({ state: "detached", timeout: 5000 });
+  if (!(await tab(page, victim).count())) throw new Error("tour: Cancel removed the tab");
+  await tab(page, victim).focus();
+  await page.keyboard.press("Delete");                                            // Delete closes too
+  await dlg.waitFor({ timeout: 5000 });
+  await dlg.locator("button", { hasText: "Close tab" }).click();
+  await tab(page, victim).waitFor({ state: "detached", timeout: 8000 });
+  if (names.length > 1) await page.locator('#tabs .tab[aria-selected="true"]').waitFor({ timeout: 8000 });
+  else await page.locator("main .empty").waitFor({ timeout: 8000 });
+  await page.reload({ waitUntil: "networkidle" });                                // hidden status survives a reload
+  await waitBuilder(page);
+  if (await tab(page, victim).count()) throw new Error("tour: closed tab came back after reload");
+  await openMenu(page);
+  await page.locator(".menu .menu-item", { has: page.locator(".mname", { hasText: new RegExp(`^${victim}$`) }) }).click();
+  await page.locator(`#tabs .tab[data-name="${victim}"][aria-selected="true"]`).waitFor({ timeout: 8000 });
+  await page.locator("main h2", { hasText: victim }).first().waitFor({ timeout: 10000 });
+  await page.waitForTimeout(700);
+  const h2After = (await page.locator("main section h2").allTextContents()).join("|");
+  if (h2After !== h2Before) throw new Error(`tour: reopened ${victim} shows different sections: ${h2Before} vs ${h2After}`);
+
+  await openNewForm(page);
   await page.locator("#navtoggle").click().catch(() => {});   // desktop: hidden, that's fine
-  console.log(`tour ok: ${names.length} projects, ${attemptFiles} attempt files, ${planFiles} plan files, ${logs} planner logs, sections + new project`);
+  console.log(`tour ok: ${names.length} projects, ${attemptFiles} attempt files, ${planFiles} plan files, ${logs} planner logs, ` +
+              `keyboard, close/reopen ${victim}, sections + new project`);
   await page.close();
 }
 

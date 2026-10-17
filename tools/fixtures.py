@@ -2,7 +2,7 @@
 """Sample projects for the UI screenshot rig (tools/ui-shots.sh). Stdlib only, no network, no Docker,
 no Claude, nothing real: everything is written under the two directories given on the command line.
 
-  python3 fixtures.py <config_home> <fixtures_root>
+  python3 fixtures.py <config_home> <fixtures_root> [count] [hidden...]
 
 Creates <config_home>/projects/<slug>.toml + usage.json, and per project under <fixtures_root>/<slug>/:
 specs/ (git repo), app/ (git repo), state/ (state.json, logs, attempts). Covers every state the
@@ -14,6 +14,10 @@ dashboard shows:
   wiki      stopped (STOP file)
   landing   plan ready for review (managed; candidate plan + PR metadata)
   notes     planning right now (managed; planner lock held, live activity)
+
+[count] (default 6) = how many projects: 0..6 takes the first N of the list above; above 6 adds
+simple extra projects (done / idle / stopped / paused) named from EXTRA, up to 20. [hidden...] =
+project names written to <config_home>/ui.json as closed tabs.
 
 "alive"/"planning" need a held flock, so this script leaves one small sleeping child per lock
 (they die with the container; the rig runs this inside a --rm container only).
@@ -146,16 +150,9 @@ def passed(sid: str) -> dict:
             "passed_at": iso(NOW - 3600)}
 
 
-def main() -> int:
-    cfg_home, root = Path(sys.argv[1]), Path(sys.argv[2])
-    (cfg_home / "projects").mkdir(parents=True, exist_ok=True)
-    (cfg_home / "usage.json").write_text(json.dumps(
-        {"status": "allowed", "at": NOW - 240,
-         "five_hour": {"used_pct": 42.0, "resets_at": NOW + 2 * 3600},
-         "seven_day": {"used_pct": 31.5, "resets_at": NOW + 4 * 86400}}))
-
-    # ---- bookings: building right now
-    steps = [("S01", "Project scaffold"), ("S02", "Data model"), ("S03", "Booking form"),
+def p_bookings(cfg_home: Path, root: Path) -> None:
+    """building right now"""
+    steps =[("S01", "Project scaffold"), ("S02", "Data model"), ("S03", "Booking form"),
              ("S04", "Calendar view"), ("S05", "Email notifications"), ("S06", "Polish and a11y")]
     r = root / "bookings"
     make_repo(r / "specs", {"steps.json": steps_json("bookings", steps)})
@@ -176,8 +173,10 @@ def main() -> int:
     hold_lock(st / "runner.lock")
     write_toml(cfg_home, "bookings", r)
 
-    # ---- crm: a step failed, escalated
-    steps = [("S01", "Project scaffold"), ("S02", "Contacts table"), ("S03", "Import CSV"),
+
+def p_crm(cfg_home: Path, root: Path) -> None:
+    """a step failed, escalated"""
+    steps =[("S01", "Project scaffold"), ("S02", "Contacts table"), ("S03", "Import CSV"),
              ("S04", "Deal pipeline"), ("S05", "Reports")]
     r = root / "crm"
     make_repo(r / "specs", {"steps.json": steps_json("crm", steps)})
@@ -200,8 +199,10 @@ def main() -> int:
         attempt_dir(st, f"S04-{n}", passed=False, reasons=reasons)
     write_toml(cfg_home, "crm", r)
 
-    # ---- blog: done
-    steps = [("S01", "Project scaffold"), ("S02", "Posts and tags"), ("S03", "RSS feed"), ("S04", "Dark mode")]
+
+def p_blog(cfg_home: Path, root: Path) -> None:
+    """done"""
+    steps =[("S01", "Project scaffold"), ("S02", "Posts and tags"), ("S03", "RSS feed"), ("S04", "Dark mode")]
     r = root / "blog"
     make_repo(r / "specs", {"steps.json": steps_json("blog", steps)})
     make_repo(r / "app", {"src/app.ts": "export {}\n"})
@@ -214,8 +215,10 @@ def main() -> int:
         attempt_dir(st, f"{s}-1", passed=True)
     write_toml(cfg_home, "blog", r)
 
-    # ---- wiki: stopped by the STOP file
-    steps = [("S01", "Project scaffold"), ("S02", "Page editor"), ("S03", "Search"),
+
+def p_wiki(cfg_home: Path, root: Path) -> None:
+    """stopped by the STOP file"""
+    steps =[("S01", "Project scaffold"), ("S02", "Page editor"), ("S03", "Search"),
              ("S04", "History"), ("S05", "Permissions")]
     r = root / "wiki"
     make_repo(r / "specs", {"steps.json": steps_json("wiki", steps)})
@@ -230,7 +233,9 @@ def main() -> int:
         attempt_dir(st, f"{s}-1", passed=True)
     write_toml(cfg_home, "wiki", r)
 
-    # ---- landing: managed, plan ready for review (no steps.json on main yet)
+
+def p_landing(cfg_home: Path, root: Path) -> None:
+    """managed, plan ready for review (no steps.json on main yet)"""
     r = root / "landing"
     make_repo(r / "specs", {"README.md": "# landing-specs\n"})
     make_repo(r / "app", {"README.md": "# landing-app\n"})
@@ -270,7 +275,9 @@ def main() -> int:
     ])))
     write_toml(cfg_home, "landing", r, managed=True)
 
-    # ---- notes: managed, planner running right now
+
+def p_notes(cfg_home: Path, root: Path) -> None:
+    """managed, planner running right now"""
     r = root / "notes"
     make_repo(r / "specs", {"README.md": "# notes-specs\n"})
     make_repo(r / "app", {"README.md": "# notes-app\n"})
@@ -291,7 +298,56 @@ def main() -> int:
     hold_lock(plan / "plan.lock")
     write_toml(cfg_home, "notes", r, managed=True)
 
-    print(f"fixtures ready: {', '.join(sorted(p.stem for p in (cfg_home / 'projects').glob('*.toml')))}")
+
+STANDARD = [p_bookings, p_crm, p_blog, p_wiki, p_landing, p_notes]
+EXTRA = ["shop", "forum", "invoices", "chat", "gallery", "recipes", "budget", "habits", "fitness", "quiz",
+         "inventory", "tickets", "portfolio", "newsletter"]
+
+
+def p_extra(cfg_home: Path, root: Path, slug: str, i: int) -> None:
+    """simple projects to fill a wide tab strip: done / idle / stopped / paused, in turn"""
+    steps = [("S01", "Project scaffold"), ("S02", "Core feature"), ("S03", "Polish")]
+    r = root / slug
+    make_repo(r / "specs", {"steps.json": steps_json(slug, steps)})
+    make_repo(r / "app", {"src/app.ts": "export {}\n"})
+    st = r / "state"
+    kind = ("done", "idle", "stopped", "paused_rate_limit")[i % 4]
+    done = {"done": 3, "idle": 0, "stopped": 1, "paused_rate_limit": 2}[kind]
+    reason = {"done": "all steps passed", "idle": "", "stopped": "STOP file",
+              "paused_rate_limit": "rate limit: resets 3pm"}[kind]
+    state_json(st, kind, reason, {s: passed(s) for s, _ in steps[:done]},
+               extra={"updated_at": iso(NOW - 3600 * (i + 2))})
+    if kind == "stopped":
+        (st / "STOP").write_text("")
+    if done:
+        jsonl(st / "metrics.jsonl", metrics([s for s, _ in steps[:done]]))
+        jsonl(st / "progress.jsonl", progress(steps[:done]))
+        runner_log(st, [f"PASSED S0{done} @ {sha('S0' + str(done))[:9]} (pushed)"])
+    write_toml(cfg_home, slug, r)
+
+
+def main() -> int:
+    cfg_home, root = Path(sys.argv[1]), Path(sys.argv[2])
+    count = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] != "" else len(STANDARD)
+    hidden = sys.argv[4:]
+    if not 0 <= count <= len(STANDARD) + len(EXTRA):
+        raise SystemExit(f"count must be 0..{len(STANDARD) + len(EXTRA)}")
+    (cfg_home / "projects").mkdir(parents=True, exist_ok=True)
+    (cfg_home / "usage.json").write_text(json.dumps(
+        {"status": "allowed", "at": NOW - 240,
+         "five_hour": {"used_pct": 42.0, "resets_at": NOW + 2 * 3600},
+         "seven_day": {"used_pct": 31.5, "resets_at": NOW + 4 * 86400}}))
+    for make in STANDARD[:count]:
+        make(cfg_home, root)
+    for i, slug in enumerate(EXTRA[:max(0, count - len(STANDARD))]):
+        p_extra(cfg_home, root, slug, i)
+    names = sorted(p.stem for p in (cfg_home / "projects").glob("*.toml"))
+    bad = [h for h in hidden if h not in names]
+    if bad:
+        raise SystemExit(f"hidden projects not in the fixture set: {' '.join(bad)}")
+    if hidden:
+        (cfg_home / "ui.json").write_text(json.dumps({"hidden": sorted(hidden)}, indent=1) + "\n")
+    print(f"fixtures ready: {', '.join(names) or '(no projects)'}" + (f"; closed: {', '.join(sorted(hidden))}" if hidden else ""))
     return 0
 
 

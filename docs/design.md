@@ -102,6 +102,7 @@ text label and a dot, step icons use ✓ ✗ ○ plus colour.
 | Log viewer | `pre.log` + `.t .ok .bad .hi`, `.log-tools` | 12 px mono on surface-2, wraps, max-height with scroll; Follow / Copy / Open full |
 | Step rail | `ol.steps li(.cur .passed) .ic(.ok .bad .pend) .sid .act` + `.checklist` | current step: accent-soft with spinner and live activity line |
 | Notices | `.notice(.bad .warn .ok)` | left rule + soft fill; escalations use `.bad` with the ack action inside |
+| Dialog | `dialog.dialog` (h2, optional `.notice.warn`, body `p.muted`, `.row` with Cancel + `.btn.danger`/`.primary`) | native `<dialog>` + `showModal()`, backdrop at 35 % black; built by `confirmDialog()` in app.js, falls back to `window.confirm` where `showModal` is missing; focus starts on Cancel, Esc cancels (since step 05) |
 | Empty states | `.empty .glyph` | glyph, one-line title, hint, optional action |
 | Toasts | `.toasts .toast(.bad) .dot .x` | bottom-right (full-width on phone), inverted colours, `aria-live=polite` |
 | Loading | `.spinner`, `.btn.loading`, `.skeleton` | spinner in buttons/rows; skeleton bars for first paint |

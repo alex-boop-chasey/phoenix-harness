@@ -94,6 +94,14 @@ synthesised when `plan.lock` is held and `runner.lock` is not). `alive` = runner
 (when a step is in flight) = `{"step","attempt","base","phase"}`; `activity` = last live line
 `{"text","at"}`. A project whose config fails to load yields `{"name", "error"}` instead.
 
+`hidden` (since 0.5, step 05): `true` when the project's tab is closed in the UI. The UI shows
+projects with `hidden: false` as tabs and the others in the "+" menu's "Reopen a closed project"
+list (with `status` and `updated_at`). Closed tabs are recorded in `~/.config/hands/ui.json`
+(`{"hidden": ["name", ...]}`, 0600, written atomically via a temp file + rename); nothing else
+reads that file, and hiding never touches the project folder, repos, state or config. A running
+build or planner is unaffected by hiding. Entries that are not valid existing project names are
+ignored; an unreadable file counts as "nothing hidden".
+
 ### GET /api/p/NAME
 
 Full project detail (summary fields plus the below; example truncated to one metrics/progress element):
@@ -247,6 +255,15 @@ build is running; `approve` additionally requires plan state `ready` and `head_s
 approve"`); `plan` is refused once a plan was approved. Spawns `hands <name> plan|approve [sha]`
 detached, log `state/plan/plan.log`. `200 {"rc": 0, "output": "plan started"}` (or `"approve started"`).
 
+### POST /api/p/NAME/hide and /api/p/NAME/unhide  (since 0.5, step 05)
+
+Close or reopen the project's tab (see `hidden` above). Same auth and CSRF rules as every POST;
+`NAME` must match the name regex and be an existing project, else `404`. Idempotent. Body: none.
+
+```json
+{"ok": true, "name": "smoke", "hidden": true}
+```
+
 ## CLI entry points (context)
 
 `hands-dash run|start|stop|url` manage the server (tmux session `hands_dashboard`,
@@ -259,4 +276,4 @@ lock `~/.config/hands/dashboard.lock`). The watchdog cron keeps it running via
 GET `/api/projects` `/api/usage` `/api/creating/<slug>` `/api/p/<name>` `/api/p/<name>/log`
 `/api/p/<name>/attempts` `/api/p/<name>/attempts/<attempt>/<file>` `/api/p/<name>/planfile` ·
 POST `/api/usage/refresh` `/api/new` `/api/p/<name>/action/<action>` (stop, start, ack,
-ack-clear-model, plan, approve)
+ack-clear-model, plan, approve) `/api/p/<name>/hide` `/api/p/<name>/unhide`
