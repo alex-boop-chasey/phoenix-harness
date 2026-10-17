@@ -75,6 +75,10 @@ security review).
   `node --check` on every JS file). Tests sweep every temp dir they create.
 
 ### Upgrading from 0.4.3
+- `install.sh` no longer seeds `~/.config/hands/projects/ra.toml` (the `ra` project is gone and must not
+  come back); it creates no project config at all, only `new-project.toml` if missing
+  (`tests/test_install.py` runs the script in a throwaway HOME and fails if any file appears under
+  `projects/`). Release candidate 2 (`v0.5.0-rc2`).
 - `bash install.sh` as before; log in again with `hands-dash url`. No config migration: new keys are
   optional. The old File Browser container is retired by hand (`docs/retire-filebrowser.md`).
 - Telegram for live sessions needs the one-time setup in `docs/telegram.md` (Bun + plugin), optional.

@@ -273,8 +273,8 @@ displayed, and highlights risky acceptance commands and new network domains for 
 ## Install and live copy
 
 `bash install.sh` (only Alex runs it): checks python ≥ 3.12, git/tmux/docker, copies the source dirs to
-`~/.local/share/hands/runner`, writes the `hands`/`hands-dash` launchers, seeds `ra.toml` and
-`new-project.toml` if missing, installs the watchdog cron line, runs the test suite, restarts the
+`~/.local/share/hands/runner`, writes the `hands`/`hands-dash` launchers, seeds `new-project.toml` if
+missing (never a project config: `tests/test_install.py`), installs the watchdog cron line, runs the test suite, restarts the
 dashboard. Until 0.5.0 is installed the live copy is 0.4.3 (see `docs/install-0.5.md`); at the 0.4.3 baseline
 `diff -rq` showed the install identical to source;
 only repo-side files that install.sh does not copy differ (`.git`, `.gitignore`, `.claude`, `.mcp.json`,
@@ -282,6 +282,6 @@ only repo-side files that install.sh does not copy differ (`.git`, `.gitignore`,
 
 ## Tests
 
-`python3 -m unittest discover -s tests`: 248 tests at 0.5.0, 2 skipped
+`python3 -m unittest discover -s tests`: 249 tests at 0.5.0, 2 skipped
 (`test_runner.TestSmokeSpec.test_smoke_spec` — node is not installed on the host; it runs inside the
 image — and the tmux integration test, which the sandbox cannot run; it passes outside it). `tests/fake_docker.py` stands in for Docker, so the suite runs without containers or Claude usage.

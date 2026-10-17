@@ -34,20 +34,6 @@ echo "== self-test (fake docker, no Claude usage)"
 
 IMG_TAG="$(sed -n 's/^CLAUDE_CODE_VERSION=//p' "$SRC/image/versions.env" 2>/dev/null)"
 PW_TAG="$(sed -n 's/^PLAYWRIGHT_VERSION=//p' "$SRC/image/versions.env" 2>/dev/null)"
-CFG="$HOME/.config/hands/projects/ra.toml"
-if [ ! -f "$CFG" ] && [ -n "$IMG_TAG" ]; then
-  cat > "$CFG" <<EOF
-spec_dir = "~/projects/ra/specs"
-app_dir = "~/projects/ra/app"
-state_dir = "~/projects/ra/state"
-image = "hands:cc$IMG_TAG-pw$PW_TAG"
-coder_model = "claude-fable-5-1"
-eval_model = "claude-fable-5-1"
-fallback_model = "claude-opus-5-5"
-max_sessions = 60
-EOF
-  echo "wrote $CFG"
-fi
 NP="$HOME/.config/hands/new-project.toml"
 if [ ! -f "$NP" ] && [ -n "$IMG_TAG" ]; then
   cat > "$NP" <<EOF

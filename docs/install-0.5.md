@@ -1,7 +1,7 @@
 # Installing Phoenix Harness 0.5.0 (plan for Alex)
 
 Written 2026-10-17 (step 16). The source is `~/harness` on branch `phoenix-0.5`, release candidate tag
-`v0.5.0-rc1`; the live copy in `~/.local/share/hands/runner` is still 0.4.3 until step 3 below. Run the
+`v0.5.0-rc2`; the live copy in `~/.local/share/hands/runner` is still 0.4.3 until step 3 below. Run the
 steps in order; each one says who runs it (builder = normal shell as `builder`, root = `ssh root` shell).
 Nothing here touches `~/.config/hands` secrets, ufw, sshd or Docker images.
 
@@ -24,8 +24,8 @@ git status                      # must be clean
 git tag v0.4.3-installed main   # rollback point = what is installed today
 git checkout main
 git merge --ff-only phoenix-0.5
-git push origin main v0.4.3-installed v0.5.0-rc1 step-16-done
-git log --oneline -1            # expect the step 16 release commit
+git push origin main v0.4.3-installed v0.5.0-rc1 v0.5.0-rc2 step-16-done
+git log --oneline -1            # expect "install.sh: stop creating ra.toml" (v0.5.0-rc2)
 ```
 
 `--ff-only` works because `phoenix-0.5` was branched from `main` and `main` has not moved; if it refuses,
@@ -38,7 +38,7 @@ cd ~/harness && bash install.sh
 cat ~/.local/share/hands/runner/VERSION      # 0.5.0
 ```
 
-`install.sh` copies the source to the live folder, runs the test suite (248 tests, 2 skips are expected:
+`install.sh` copies the source to the live folder, runs the test suite (249 tests, 2 skips are expected:
 node on the host, tmux inside the sandbox), keeps the watchdog cron line and restarts the dashboard in tmux
 (`hands_dashboard`). Open Session manager sessions survive (they live in their own tmux sessions); the
 browser session does not: log in again in step 5.

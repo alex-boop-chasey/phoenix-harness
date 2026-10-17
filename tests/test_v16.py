@@ -90,6 +90,14 @@ class TestFilesFixes(tf.Base):
             data += chunk
         self.assertTrue(data.startswith(b"HTTP/1.1 409"), data[:80])
         self.assertIn(b"connection: close", data.lower())
+        head, _, tail = data.partition(b"\r\n\r\n")       # drain the 409 body (it may arrive in a later segment)
+        want = int(next(l.split(b":")[1] for l in head.lower().split(b"\r\n") if l.startswith(b"content-length:")))
+        while len(tail) < want:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            tail += chunk
+        self.assertEqual(len(tail), want, tail)
         try:
             s.sendall(body)                              # the leftover body must not be parsed as a request
         except OSError:
