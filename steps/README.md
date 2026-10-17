@@ -1,6 +1,6 @@
 # Phoenix Harness build steps
 
-Alex gives you one step at a time: "Do step NN" means read `~/ops/steps/NN-*.md` and carry it out.
+"Do step NN" means read `~/ops/steps/NN-*.md` and carry it out. When a step passes, report it and go straight on to the next step without waiting, unless the next step is 03, 09, 12 or 16 (those start only when Alex says "Do step NN").
 These files are read-only. Never edit, move or delete anything in `~/ops/steps/`.
 
 ## Before every step
