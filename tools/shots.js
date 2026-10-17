@@ -45,6 +45,32 @@ async function openNewForm(page) {
   await page.locator("#slug").waitFor({ timeout: 10000 });
 }
 
+// ---- environment variables editor helpers (step 07)
+const envRoot = (page) => page.locator("section.envsec .envedit, form .envedit").first();
+async function addEnvRow(page, key, value, isPublic) {
+  const root = envRoot(page);
+  await root.locator("button", { hasText: "+ Add variable" }).click();
+  const row = root.locator(".envrow:not(.removed)").last();
+  await row.locator("input").nth(0).fill(key);
+  if (value !== undefined) await row.locator("input").nth(1).fill(value);
+  if (isPublic) await row.locator(".seg button", { hasText: "Public" }).click();
+  return row;
+}
+async function pasteInto(locator, text) {
+  await locator.evaluate((input, t) => {
+    const dt = new DataTransfer();
+    dt.setData("text/plain", t);
+    input.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  }, text);
+}
+async function saveEnv(page) {
+  const root = envRoot(page);
+  await root.locator("button", { hasText: /^Save/ }).click();
+  const status = root.locator('[role="status"]', { hasText: /^(Saved|not saved|Fix|Nothing)/ });
+  await status.waitFor({ timeout: 10000 });
+  return (await status.textContent()) || "";
+}
+
 async function waitBuilder(page) {
   // the builder settles on: a selected tab, the New project form (no projects) or the empty state (all closed)
   await page.locator('#tabs .tab[aria-selected="true"], #slug, main .empty').first().waitFor({ timeout: 10000 });
@@ -60,6 +86,30 @@ async function capture(context, name, width, theme) {
       await page.locator(`#page-${sec} h1`).waitFor({ timeout: 10000 });
     } else if (name === "new") {
       await openNewForm(page);
+      await page.locator("#slug").fill("bakery");
+      await page.locator("#desc").fill("Ordering site for a small bakery: menu, opening hours, pre-orders for pickup.");
+      await addEnvRow(page, "SUPABASE_URL", "https://abc.supabase.co", true);
+      await addEnvRow(page, "SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiJ9.demo");
+    } else if (name === "newbad") {
+      await openNewForm(page);
+      await page.locator("#slug").fill("bakery");
+      await page.locator("#desc").fill("Ordering site for a small bakery.");
+      await addEnvRow(page, "lower-case", "x");
+      await addEnvRow(page, "PATH", "");
+      await page.locator("form button[type=submit]").click();
+      await envRoot(page).locator(".error").first().waitFor({ timeout: 5000 });
+    } else if (name === "env") {
+      await selectProject(page, "blog");
+      await envRoot(page).locator(".envrow").first().waitFor({ timeout: 10000 });
+    } else if (name === "envbad") {
+      await selectProject(page, "blog");
+      await envRoot(page).locator(".envrow").first().waitFor({ timeout: 10000 });
+      await addEnvRow(page, "bad key", "x");
+      await addEnvRow(page, "HANDS_SECRET", "y");
+      await addEnvRow(page, "SUPABASE_URL", "dup");
+      await addEnvRow(page, "NEEDS_VALUE", "");
+      await saveEnv(page);
+      await envRoot(page).locator(".error").first().waitFor({ timeout: 5000 });
     } else if (name === "nav") {
       if (width <= 900) { await page.locator("#navtoggle").click(); await page.locator("body.nav-open").waitFor({ timeout: 5000 }); }
     } else if (name === "tabs") {
@@ -170,11 +220,98 @@ async function tour(context) {
   const h2After = (await page.locator("main section h2").allTextContents()).join("|");
   if (h2After !== h2Before) throw new Error(`tour: reopened ${victim} shows different sections: ${h2Before} vs ${h2After}`);
 
+  let envNote = "";
+  if (names.includes("wiki")) envNote = await envFlow(page);
+
   await openNewForm(page);
+  // the New project form: local rows, paste, validation blocks the submit (no request is sent)
+  await addEnvRow(page, "lower", "x");
+  let newPosts = 0;
+  const onReq = (r) => { if (r.method() === "POST" && r.url().includes("/api/new")) newPosts++; };
+  page.on("request", onReq);
+  await page.locator("#slug").fill("bakery");
+  await page.locator("#desc").fill("x");
+  await page.locator("form button[type=submit]").click();
+  await envRoot(page).locator(".error").first().waitFor({ timeout: 5000 });
+  page.off("request", onReq);
+  if (newPosts) throw new Error("tour: create was submitted despite an invalid variable");
+  await pasteInto(envRoot(page).locator(".envrow input").first(), "API_URL=https://x\nAPI_KEY=k\n");
+  if ((await envRoot(page).locator(".envrow").count()) !== 2) throw new Error("tour: paste into the New project form did not add rows");
   await page.locator("#navtoggle").click().catch(() => {});   // desktop: hidden, that's fine
   console.log(`tour ok: ${names.length} projects, ${attemptFiles} attempt files, ${planFiles} plan files, ${logs} planner logs, ` +
-              `keyboard, close/reopen ${victim}, sections + new project`);
+              `keyboard, close/reopen ${victim}, sections + new project${envNote}`);
   await page.close();
+}
+
+// Environment panel on the wiki project (project_env configured, no file yet): add 3 variables (2 secret,
+// 1 public), save, reload, check masks, replace a secret, delete one, paste a block. Secrets must never
+// appear in the DOM or in any API response after the save.
+async function envFlow(page) {
+  const S1 = "sk_live_SECRETONE_7f3a", S2 = "whsec_SECRETTWO_91bc", S1b = "sk_live_REPLACED_55de", PUB = "https://pub.example";
+  const seen = [];
+  const onResp = async (r) => {
+    if (!r.url().includes("/api/")) return;
+    try { seen.push(`${r.url()} :: ${await r.text()}`); } catch (e) { /* redirected/aborted */ }
+  };
+  const leak = (where) => {
+    for (const s of [S1, S2, S1b]) {
+      const hit = seen.find((x) => x.includes(s));
+      if (hit) throw new Error(`env: secret found in a response after save (${where}): ${hit.slice(0, 120)}`);
+    }
+  };
+  const bodyHas = async (s) => (await page.evaluate(() => document.body.innerHTML)).includes(s);
+
+  await selectProject(page, "wiki");
+  const root = envRoot(page);
+  await root.locator("button", { hasText: "+ Add variable" }).waitFor({ timeout: 10000 });
+  if (await root.locator(".envrow").count()) throw new Error("env: wiki should start with no variables");
+  await addEnvRow(page, "STRIPE_SECRET", S1);
+  await addEnvRow(page, "STRIPE_WEBHOOK", S2);
+  await addEnvRow(page, "PUBLIC_URL", PUB, true);
+  page.on("response", onResp);
+  let st = await saveEnv(page);
+  if (!st.startsWith("Saved: 3 set")) throw new Error(`env: unexpected status after save: ${st}`);
+  await page.waitForTimeout(300);
+  leak("first save");
+  for (const s of [S1, S2]) if (await bodyHas(s)) throw new Error("env: secret in the DOM after save");
+  if (!(await bodyHas(PUB))) throw new Error("env: public value missing after save");
+
+  await page.reload({ waitUntil: "networkidle" });
+  await waitBuilder(page);
+  await selectProject(page, "wiki");
+  await root.locator(".envrow").nth(2).waitFor({ timeout: 10000 });
+  const keys = await root.locator(".envrow input[readonly]").evaluateAll((els) => els.map((e) => e.value));
+  if (keys.join() !== "STRIPE_SECRET,STRIPE_WEBHOOK,PUBLIC_URL") throw new Error(`env: keys after reload: ${keys}`);
+  const vals = await root.locator(".envrow").evaluateAll((rows) => rows.map((r) => {
+    const v = r.querySelectorAll("input")[1]; return [v.value, v.type, v.placeholder.startsWith("••••")]; }));
+  if (vals[0][0] !== "" || vals[0][1] !== "password" || !vals[0][2]) throw new Error(`env: secret row not masked: ${JSON.stringify(vals[0])}`);
+  if (vals[2][0] !== PUB || vals[2][1] !== "text") throw new Error(`env: public row wrong: ${JSON.stringify(vals[2])}`);
+  for (const s of [S1, S2]) if (await bodyHas(s)) throw new Error("env: secret in the DOM after reload");
+  leak("reload");
+
+  // replace the first secret, delete the second
+  await root.locator(".envrow").nth(0).locator("input").nth(1).fill(S1b);
+  await root.locator(".envrow").nth(1).locator("button[aria-label^=Remove]").click();
+  await root.locator(".envrow.removed").waitFor({ timeout: 5000 });
+  st = await saveEnv(page);
+  if (!st.startsWith("Saved: 1 set, 1 deleted")) throw new Error(`env: unexpected status after replace/delete: ${st}`);
+  await page.waitForTimeout(300);
+  leak("replace");
+  if (await bodyHas(S1b)) throw new Error("env: replaced secret in the DOM");
+  if ((await root.locator(".envrow").count()) !== 2) throw new Error("env: delete did not remove the row");
+
+  // paste a block into a new row's Key field: one row per KEY=value line, all Secret
+  await root.locator("button", { hasText: "+ Add variable" }).click();
+  await pasteInto(root.locator(".envrow:not(.removed)").last().locator("input").first(), "# pasted\nMAIL_FROM=hi@x.test\nexport MAIL_PASS=p4ss\nbad line\n");
+  if ((await root.locator(".envrow").count()) !== 4) throw new Error("env: paste did not add rows");
+  const pressed = await root.locator(".envrow").nth(3).locator('.seg button[aria-pressed="true"]').textContent();
+  if (pressed !== "Secret") throw new Error("env: pasted rows must be Secret");
+  st = await saveEnv(page);
+  if (!st.startsWith("Saved: 2 set")) throw new Error(`env: unexpected status after paste: ${st}`);
+  page.off("response", onResp);
+  const finalKeys = await root.locator(".envrow input[readonly]").evaluateAll((els) => els.map((e) => e.value));
+  if (finalKeys.join() !== "STRIPE_SECRET,PUBLIC_URL,MAIL_FROM,MAIL_PASS") throw new Error(`env: final keys: ${finalKeys}`);
+  return `, env flow (add 3, reload, replace, delete, paste; ${seen.length} responses checked, no secret leaked)`;
 }
 
 // Mock mode: `node shots.js --mock <base-url> <out-dir> <pages>` — static design pages, no login,

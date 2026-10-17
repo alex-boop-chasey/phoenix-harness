@@ -186,6 +186,9 @@ class Store:
                 new_values[key] = it["value"]
             elif key not in new_values:
                 raise EnvError(f"{key}: value required")
+            elif public and not new_meta.get(key, {}).get("public"):
+                # a stored secret is write-only: making it public would reveal it, so the value must be given again
+                raise EnvError(f"{key}: enter the value again to make it public")
             new_meta[key] = {"public": public, "updated": _now()}
         self._save(new_values, new_meta)
 

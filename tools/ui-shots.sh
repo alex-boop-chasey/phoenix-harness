@@ -11,6 +11,8 @@
 #             landing (plan ready)  notes (planning)  new (New project form)
 #             sessions, files (sections), nav (phone drawer open)
 #             tabs (builder as it opens), menu ("+" menu open), close (close-tab confirmation)
+#             newbad (New project form with invalid variables), env (blog's Environment panel),
+#             envbad (that panel with validation errors)
 #   Each page is saved as <page>-light-1440.png, <page>-dark-390.png, ...
 #
 #   Environment: UI_SHOTS_PROJECTS=N   how many sample projects (0..20, default 6; see fixtures.py)
@@ -73,7 +75,7 @@ LABEL="${1:-}"
 [ -n "$LABEL" ] || { echo "usage: bash tools/ui-shots.sh <label> [page ...]" >&2; exit 2; }
 case "$LABEL" in *[!A-Za-z0-9._/-]*|*..*|/*) echo "label: letters, digits, . _ - and / (no .., not absolute) only" >&2; exit 2;; esac
 shift
-if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new sessions files nav tabs menu close}"; fi
+if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new newbad env envbad sessions files nav tabs menu close}"; fi
 case "${UI_SHOTS_PROJECTS:-}" in ""|[0-9]|1[0-9]|20) ;; *) echo "UI_SHOTS_PROJECTS: 0..20" >&2; exit 2;; esac
 case "${UI_SHOTS_HIDDEN:-}" in *[!A-Za-z0-9_\ -]*) echo "UI_SHOTS_HIDDEN: project names separated by spaces" >&2; exit 2;; esac
 REPO="$(cd "$(dirname "$0")/.." && pwd)"

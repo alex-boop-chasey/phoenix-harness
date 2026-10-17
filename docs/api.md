@@ -299,7 +299,9 @@ GH_TOKEN GITHUB_TOKEN TG_TOKEN TG_CHAT_ID PATH HOME USER SHELL CI NODE_OPTIONS` 
 
 Body (JSON, up to **64 kB** on this route only): `{"set": [{"key": "K", "value": "v", "public": false}, ...],
 "delete": ["K2", ...]}` — at least one of `set`/`delete`. In `set`, `public` defaults to false; `value`
-may be omitted for an existing key to change only its visibility. The whole request is validated
+may be omitted for an existing key to change only its visibility, except that turning a stored secret
+public requires the value again (`400 "K: enter the value again to make it public"`), so a secret is
+never revealed by a visibility change. The whole request is validated
 before anything is written (one bad item → `400`, nothing changes); writes are atomic (temp file +
 rename, 0600). Deleting an unknown key → `400`. Response: the same object as GET. Same auth and CSRF
 rules as every POST.

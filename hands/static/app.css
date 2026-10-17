@@ -203,6 +203,34 @@ input:focus-visible, textarea:focus-visible { border-color: var(--accent); box-s
 textarea { resize: vertical; }
 textarea.feedback { display: block; width: 100%; max-width: 760px; }
 ul.checklist { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.input { font: inherit; padding: 7px 10px; border: 1px solid var(--line-2); border-radius: var(--r-1); background: var(--surface); color: var(--ink); width: 100%; min-width: 0; }
+.input::placeholder { color: var(--ink-3); }
+.input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.input[aria-invalid="true"], input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--bad); }
+.input[readonly] { background: var(--surface-2); color: var(--ink-2); }
+.error { color: var(--bad); font-size: var(--fs-0); }
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: var(--r-1); overflow: hidden; flex: none; }
+.seg button { font: inherit; font-size: var(--fs-1); padding: 5px 10px; background: var(--surface); color: var(--ink-2); border: 0; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line-2); }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.btn.quiet { border-color: transparent; background: transparent; color: var(--ink-2); }
+.btn.quiet:hover { background: var(--surface-2); color: var(--ink); }
+.btn.sm { padding: 3px 8px; font-size: var(--fs-1); }
+.btn.quiet.sm { font-size: var(--fs-3); line-height: 1; padding: 2px 8px; }
+
+/* ---------------------------------------------------------------- environment variables editor */
+.envedit { display: grid; gap: var(--sp-2); max-width: 900px; }
+.envrows { display: grid; gap: 6px; }
+.envrow { display: grid; grid-template-columns: minmax(140px, 220px) minmax(0, 1fr) auto auto; gap: 6px 8px; align-items: center;
+          grid-template-areas: "key val seg rm" "ek ev . ."; }
+.envrow > :nth-child(1) { grid-area: key; } .envrow > :nth-child(2) { grid-area: val; }
+.envrow > .seg { grid-area: seg; } .envrow > .btn { grid-area: rm; }
+.envrow .ek { grid-area: ek; } .envrow .ev { grid-area: ev; }
+.envrow.removed { grid-template-columns: minmax(140px, 220px) 1fr auto; grid-template-areas: "key val rm"; color: var(--ink-2); }
+.envrow.removed > :nth-child(1) { text-decoration: line-through; }
+.envedit .hint { margin-top: 2px; }
+.envedit [role="status"] { font-size: var(--fs-1); }
+section.envsec > p.muted { margin-bottom: var(--sp-2); }
 
 /* ---------------------------------------------------------------- step rail, live activity */
 .stepbar { position: sticky; top: var(--sp-4); max-height: calc(100vh - 32px); overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-3); padding: var(--sp-3) var(--sp-3); box-shadow: var(--shadow-1); }
@@ -243,6 +271,8 @@ ol.phases li.done { color: var(--ok); }
   .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, .35); z-index: 7; }
   .page { padding: var(--sp-3) var(--sp-4); }
   .tabs-wrap { top: var(--topbar-h); }
+  .envrow { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "key seg rm" "ek ek ek" "val val val" "ev ev ev"; }
+  .envrow.removed { grid-template-columns: 1fr auto; grid-template-areas: "key rm" "val val"; }
   .tabs { padding: var(--sp-2) var(--sp-4) 0; }
   .tab { max-width: 260px; padding-left: 10px; gap: 6px; }
 }

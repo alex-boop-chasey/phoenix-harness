@@ -109,6 +109,11 @@ class TestStore(unittest.TestCase):
         self.assertFalse(again.meta["P"]["public"])
         with self.assertRaises(projectenv.EnvError):
             st.set([{"key": "NEW", "public": True}])      # no value and not existing
+        with self.assertRaises(projectenv.EnvError):
+            st.set([{"key": "P", "public": True}])        # secret -> public without the value would reveal it
+        self.assertFalse(projectenv.Store(self.d).meta["P"]["public"])
+        st.set([{"key": "P", "value": "pub", "public": True}])
+        self.assertTrue(projectenv.Store(self.d).meta["P"]["public"])
         st.delete("K")
         self.assertEqual(projectenv.Store(self.d).values, {"P": "pub"})
         with self.assertRaises(projectenv.EnvError):

@@ -47,6 +47,7 @@ function select(name) {
   mode = "project";
   domainAck = false;
   current = name;
+  delete envPanels[name];              // fresh editor (and listing) each time a project is opened
   try { localStorage.setItem("hands.project", name); } catch (e) { /* ignore */ }
   $("#main").replaceChildren(el("p", { class: "muted" }, "Loading…"));
   viewerTitle.textContent = "File";
@@ -323,29 +324,218 @@ function attemptsSection(name, rows) {
           f.name)))))));
 }
 
+// ---- environment variables editor (step 07). Used by the New project form (rows kept locally until
+// create has started), the creating page and the project page (pending/project API). Secret values are
+// write-only: the server never returns them and the inputs are cleared after every save.
+const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
+const ENV_RESERVED = new Set(["CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "TG_TOKEN", "TG_CHAT_ID", "PATH",
+  "HOME", "USER", "SHELL", "CI", "NODE_OPTIONS"]);
+const ENV_HINT = "Secret: saved write-only, shown as •••• from now on, seen only by the build containers. " +
+  "Public: shown here and may end up in the built app's browser bundle (e.g. a public API URL). Values are passed as typed: no quotes needed.";
+function envKeyError(k) {
+  if (!k) return "Key required";
+  if (k.length > 128) return "Key too long (max 128)";
+  if (!ENV_KEY.test(k)) return "UPPER_CASE letters, digits and _ only; cannot start with a digit";
+  if (ENV_RESERVED.has(k) || k.startsWith("HANDS_") || k.startsWith("CLAUDE_")) return `${k} is reserved`;
+  return "";
+}
+function envValueError(v) {
+  if (/[\r\n\0]/.test(v)) return "One line, no control characters";
+  if (new TextEncoder().encode(v).length > 8192) return "Value too long (max 8 KB)";
+  return "";
+}
+function parseEnvBlock(text) {
+  const out = [];
+  for (let line of String(text || "").split(/\r?\n/)) {
+    line = line.replace(/^\s+/, "");
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("export ")) line = line.slice(7).trimStart();
+    const i = line.indexOf("=");
+    if (i <= 0) continue;
+    out.push({ key: line.slice(0, i).trim(), value: line.slice(i + 1) });
+  }
+  return out;
+}
+
+function envEditor(opts) {
+  // opts.name: project (or creating slug) to load/save through the API; opts.local: no server, rows kept here
+  const rows = [];
+  let info = null, msg = null, loaded = !!opts.local;
+  const root = el("div", { class: "envedit" });
+  const newRow = (r) => ({ key: "", value: "", secret: true, existing: false, removed: false, err: {}, ...r });
+  const fromServer = (v) => newRow({ key: v.key, value: v.secret ? "" : v.value, orig: v.secret ? "" : v.value,
+                                     secret: v.secret, existing: true, wasSecret: v.secret });
+
+  async function load() {
+    try {
+      const d = await api(`/api/p/${encodeURIComponent(opts.name)}/env`);
+      rows.length = 0;
+      for (const v of d.vars) rows.push(fromServer(v));
+      info = d;
+      loaded = true;
+    } catch (e) { msg = { bad: true, text: `could not load variables: ${e.message}` }; }
+    render();
+  }
+
+  function validate() {
+    const set = [], del = [], seen = new Set();
+    let ok = true;
+    for (const r of rows) {
+      r.err = {};
+      if (r.removed) { del.push(r.key); continue; }
+      if (!r.existing && !r.key && !r.value) continue;                          // blank row: ignore
+      const ke = envKeyError(r.key);
+      if (ke) r.err.key = ke;
+      else if (seen.has(r.key)) r.err.key = `${r.key} is listed twice`;
+      seen.add(r.key);
+      const ve = envValueError(r.value);
+      if (ve) r.err.value = ve;
+      else if (!r.existing && !r.value && r.secret) r.err.value = "Value required";
+      else if (r.existing && r.wasSecret && !r.secret && !r.value) r.err.value = "Enter the value again to make it public";
+      if (r.err.key || r.err.value) { ok = false; continue; }
+      if (!r.existing) set.push({ key: r.key, value: r.value, public: !r.secret });
+      else {
+        const valueChanged = r.wasSecret ? !!r.value : r.value !== r.orig;   // public rows are pre-filled
+        if (valueChanged || r.secret !== r.wasSecret) {
+          const it = { key: r.key, public: !r.secret };
+          if (valueChanged) it.value = r.value;
+          set.push(it);
+        }
+      }
+    }
+    return ok ? { set, delete: del } : null;
+  }
+
+  async function save() {
+    const req = validate();
+    if (!req) { msg = { bad: true, text: "Fix the highlighted rows." }; render(); return; }
+    if (!req.set.length && !req.delete.length) { msg = { text: "Nothing to save." }; render(); return; }
+    const body = {};
+    if (req.set.length) body.set = req.set;
+    if (req.delete.length) body.delete = req.delete;
+    try {
+      const d = await api(`/api/p/${encodeURIComponent(opts.name)}/env`, { method: "POST",
+        headers: { "X-Hands": "1", "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      rows.length = 0;
+      for (const v of d.vars) rows.push(fromServer(v));
+      info = d;
+      msg = { ok: true, text: `Saved: ${req.set.length} set, ${req.delete.length} deleted.` };
+    } catch (e) { msg = { bad: true, text: `not saved: ${e.message}` }; }
+    render();
+  }
+
+  function rowEl(r) {
+    const keyIn = el("input", { class: "input mono", type: "text", value: r.key, placeholder: "KEY", spellcheck: "false",
+      autocomplete: "off", "aria-label": "Key", maxlength: "128", ...(r.existing ? { readonly: "" } : {}),
+      ...(r.err.key ? { "aria-invalid": "true" } : {}) });
+    keyIn.addEventListener("input", () => { r.key = keyIn.value.trim(); });
+    keyIn.addEventListener("paste", (ev) => {
+      const text = (ev.clipboardData || window.clipboardData || {}).getData ? (ev.clipboardData || window.clipboardData).getData("text") : "";
+      const parsed = parseEnvBlock(text);
+      if (!parsed.length || !text.includes("=")) return;              // plain key: let the browser paste it
+      ev.preventDefault();
+      if (r.existing) { for (const p of parsed) rows.push(newRow(p)); }
+      else { Object.assign(r, parsed[0]); for (const p of parsed.slice(1)) rows.splice(rows.indexOf(r) + 1, 0, newRow(p)); }
+      msg = { text: `Pasted ${parsed.length} variable(s), all Secret. Save to keep them.` };
+      render();
+    });
+    const valIn = el("input", { class: "input", type: r.secret ? "password" : "text", value: r.value, "aria-label": `Value of ${r.key || "new variable"}`,
+      placeholder: r.existing && r.wasSecret ? "•••••••• (unchanged; type to replace)" : "value", autocomplete: "off", spellcheck: "false",
+      ...(r.err.value ? { "aria-invalid": "true" } : {}) });
+    valIn.addEventListener("input", () => { r.value = valIn.value; });
+    const seg = el("div", { class: "seg", role: "group", "aria-label": `Visibility of ${r.key || "new variable"}` },
+      el("button", { type: "button", "aria-pressed": String(r.secret), on: { click: () => { r.secret = true; valIn.type = "password"; seg.children[0].setAttribute("aria-pressed", "true"); seg.children[1].setAttribute("aria-pressed", "false"); } } }, "Secret"),
+      el("button", { type: "button", "aria-pressed": String(!r.secret), on: { click: () => { r.secret = false; valIn.type = "text"; seg.children[0].setAttribute("aria-pressed", "false"); seg.children[1].setAttribute("aria-pressed", "true"); } } }, "Public"));
+    const rm = el("button", { class: "btn quiet sm", type: "button", "aria-label": `Remove ${r.key || "row"}`, title: "Remove",
+      on: { click: () => { if (r.existing) r.removed = true; else rows.splice(rows.indexOf(r), 1); render(); } } }, "×");
+    if (r.removed) {
+      return el("div", { class: "envrow removed" }, el("span", { class: "mono" }, r.key), el("span", { class: "muted" }, "will be deleted on Save"),
+        el("button", { class: "btn quiet sm", type: "button", on: { click: () => { r.removed = false; render(); } } }, "Undo"));
+    }
+    return el("div", { class: "envrow" }, keyIn, valIn, seg, rm,
+      r.err.key ? el("div", { class: "error ek" }, r.err.key) : null, r.err.value ? el("div", { class: "error ev" }, r.err.value) : null);
+  }
+
+  function render() {
+    const live = rows.filter((r) => !r.removed).length;
+    root.replaceChildren(...[
+      info && info.problems && info.problems.length ? el("div", { class: "notice warn" },
+        el("strong", {}, "Some lines in project.env cannot be managed here:"), el("ul", {}, info.problems.map((p) => el("li", {}, p)))) : null,
+      info && !info.active && !info.pending ? el("p", { class: "muted small" },
+        "This project's config has no project_env, so the runner does not pass these variables to containers yet.") : null,
+      info && info.pending ? el("p", { class: "muted small" }, "Saved while the project is being created; moved into place when it finishes.") : null,
+      !loaded ? el("p", { class: "muted" }, "Loading…") :
+        el("div", { class: "envrows" }, rows.length ? rows.map(rowEl) : el("p", { class: "muted" }, "No variables yet.")),
+      el("div", { class: "row" },
+        el("button", { class: "btn sm", type: "button", on: { click: () => {
+          rows.push(newRow()); msg = null; render();
+          const last = [...root.querySelectorAll(".envrow:not(.removed) .input")].pop(); // value input of the new row
+          const keyOfLast = last && last.previousElementSibling; if (keyOfLast) keyOfLast.focus(); } } }, "+ Add variable"),
+        opts.local ? null : el("button", { class: "btn primary sm", type: "button", on: { click: save } }, live || rows.some((r) => r.removed) ? "Save variables" : "Save"),
+        opts.local ? null : el("button", { class: "btn quiet sm", type: "button", title: "Discard unsaved changes and reload", on: { click: () => { msg = null; load(); } } }, "Reload"),
+        msg ? el("span", { class: msg.bad ? "reason" : msg.ok ? "s-ok" : "muted", role: "status" }, msg.text) : null),
+      el("p", { class: "muted small hint" }, ENV_HINT, " Paste a block of KEY=value lines into a Key field to add several rows at once."),
+    ].filter(Boolean));
+  }
+
+  root.collect = () => {           // local mode: the New project form calls this before creating
+    const req = validate();
+    render();
+    if (!req) throw new Error("fix the environment variables first");
+    return req.set;
+  };
+  root.reload = load;
+  if (!opts.local) load(); else render();
+  return root;
+}
+
+const envPanels = {};               // one editor per project, kept across the 4 s refresh so edits survive
+function envPanel(key, name) {
+  if (!envPanels[key]) envPanels[key] = envEditor({ name });
+  return envPanels[key];
+}
+function envSection(name) {
+  return el("section", { class: "envsec" }, el("h2", {}, "Environment"),
+    el("p", { class: "muted" }, "Variables for this project's build containers (coder, acceptance tests, evaluator): test API keys, service URLs. Stored under ~/.config/hands/secrets/, never in the repos."),
+    envPanel(name, name));
+}
+
 function showNew() {
   mode = "new";
   loadProjects().catch(() => {});
   const slug = el("input", { id: "slug", autocomplete: "off", spellcheck: "false", maxlength: "32",
-    pattern: "[a-z][a-z0-9-]{1,30}[a-z0-9]", placeholder: "e.g. bookings", required: "" });
+    pattern: "[a-z][a-z0-9\\-]{1,30}[a-z0-9]", placeholder: "e.g. bookings", required: "" });   // "-" escaped: pattern uses the v flag
   const desc = el("textarea", { id: "desc", rows: "5", maxlength: "4000", required: "",
     placeholder: "One or two sentences: what the app is, who it is for. The planner asks the rest." });
   const out = el("pre", {}, "");
   const submit = el("button", { class: "act", type: "submit" }, "Create project");
+  const envLocal = envEditor({ local: true });
   const form = el("form", { on: { submit: async (ev) => {
     ev.preventDefault();
+    let vars;
+    try { vars = envLocal.collect(); } catch (e) { out.textContent = e.message; return; }
     if (!confirm(`Create GitHub repos ${slug.value}-specs and ${slug.value}-app and set everything up?`)) return;
     submit.disabled = true;
     out.textContent = "Starting…";
     try {
       await api("/api/new", { method: "POST", headers: { "X-Hands": "1", "Content-Type": "application/json" },
         body: JSON.stringify({ slug: slug.value, description: desc.value }) });
-      mode = "creating"; creatingSlug = slug.value; refresh(false);
-    } catch (e) { out.textContent = `failed: ${e.message}`; submit.disabled = false; }
+    } catch (e) { out.textContent = `failed: ${e.message}`; submit.disabled = false; return; }
+    creatingEnvError = "";
+    if (vars.length) {
+      try {
+        await api(`/api/p/${encodeURIComponent(slug.value)}/env`, { method: "POST",
+          headers: { "X-Hands": "1", "Content-Type": "application/json" }, body: JSON.stringify({ set: vars }) });
+      } catch (e) { creatingEnvError = `The project is being created, but its variables were not saved (${e.message}). Add them below.`; }
+    }
+    mode = "creating"; creatingSlug = slug.value; refresh(false);
   } } },
     el("label", { for: "slug" }, "Project slug"), slug,
     el("p", { class: "muted" }, "Lowercase letters, digits and hyphens. Becomes the repo names <slug>-specs and <slug>-app."),
     el("label", { for: "desc" }, "Idea"), desc,
+    el("label", {}, "Environment variables (optional)"),
+    el("p", { class: "muted" }, "Test API keys and service URLs the build containers need. You can also add them later on the project page."),
+    envLocal,
     el("div", { class: "row" }, submit), out);
   $("#main").replaceChildren(el("section", {}, el("h2", {}, "New project"),
     el("p", { class: "muted" }, "Creates two private repos with branch protection, read-only/write deploy keys, " +
@@ -353,20 +543,24 @@ function showNew() {
     form));
 }
 
+let creatingEnvError = "";
 async function refreshCreating() {
   const slug = creatingSlug;
   try {
     const c = await api(`/api/creating/${encodeURIComponent(slug)}`);
     if (mode !== "creating" || slug !== creatingSlug) return;
     const done = c.state === "done" && c.project_exists;
-    $("#main").replaceChildren(el("section", {},
+    $("#main").replaceChildren(...[el("section", {},
       el("div", { class: "row" }, el("h2", {}, `Creating ${slug}`), badge(c.state === "failed" ? "escalation" : c.state)),
       c.error ? el("p", { class: "reason" }, c.error) : null,
       el("pre", {}, c.lines.join("\n")),
       done ? el("div", { class: "row out" }, el("button", { class: "act", on: { click: () => select(slug) } }, `Open ${slug}`)) : null,
       c.state === "failed" ? el("p", { class: "muted" }, c.project_exists
         ? `Fix the cause, then on the VPS: hands ${slug} destroy --confirm ${slug}   and create it again.`
-        : "Nothing was created. Fix the cause and create it again.") : null));
+        : "Nothing was created. Fix the cause and create it again.") : null),
+      c.state === "running" ? el("section", { class: "envsec" }, el("h2", {}, "Environment"),
+        creatingEnvError ? el("div", { class: "notice bad" }, creatingEnvError) : null,
+        envPanel(`creating:${slug}`, slug)) : null].filter(Boolean));
   } catch (e) { $("#clock").textContent = `update failed: ${e.message}`; }
 }
 
@@ -562,6 +756,7 @@ async function refresh(full) {
     const content = el("div", { class: "content" }, ...[top, createSec,
       d.managed && !(d.plan && d.plan.state === "approved" && d.passed > 0) ? planSection(d) : null,
       showSetup ? setupSection(d) : null,
+      envSection(name),
       el("div", { class: "grid2" }, stepsSection(d), metricsSection(d)), logSec,
       el("div", { class: "grid2" }, att, progressSection(d)), el("section", {}, viewerTitle, viewer)].filter(Boolean));
     $("#main").replaceChildren(el("div", { class: "layout" }, content, stepBar(d)));

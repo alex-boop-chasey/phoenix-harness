@@ -8,10 +8,10 @@ Creates <config_home>/projects/<slug>.toml + usage.json, and per project under <
 specs/ (git repo), app/ (git repo), state/ (state.json, logs, attempts). Covers every state the
 dashboard shows:
 
-  bookings  building: runner alive, current step in flight, live activity line
+  bookings  building: runner alive, current step in flight, live activity line; hand-written project.env
   crm       failed step + escalation
-  blog      done (all steps passed)
-  wiki      stopped (STOP file)
+  blog      done (all steps passed); project.env with 2 secret + 1 public variable
+  wiki      stopped (STOP file); project_env configured but no file (the rig's env flow writes it)
   landing   plan ready for review (managed; candidate plan + PR metadata)
   notes     planning right now (managed; planner lock held, live activity)
 
@@ -126,13 +126,29 @@ def runner_log(state: Path, lines: list[str]) -> None:
     (state / "runner.log").write_text("".join(f"{iso(NOW - 60 * (len(lines) - i))} {l}\n" for i, l in enumerate(lines)))
 
 
-def write_toml(cfg_home: Path, slug: str, root: Path, managed: bool = False) -> None:
+def write_toml(cfg_home: Path, slug: str, root: Path, managed: bool = False, project_env: bool = False) -> None:
     extra = ""
     if managed:
         extra = (f'managed = true\ngithub_org = "acme"\nrepo_specs = "{slug}-specs"\nrepo_app = "{slug}-app"\n')
+    if managed or project_env:
+        extra += f'project_env = "{cfg_home}/secrets/{slug}/project.env"\n'
     (cfg_home / "projects" / f"{slug}.toml").write_text(
         f'spec_dir = "{root}/specs"\napp_dir = "{root}/app"\nstate_dir = "{root}/state"\n'
         f'image = "{IMAGE}"\n{extra}')
+
+
+def env_files(cfg_home: Path, slug: str, lines: list[str], public: tuple = (), managed_meta: bool = True) -> None:
+    """A sample project.env (+ env.json unless managed_meta is False, i.e. a hand-written file)."""
+    d = cfg_home / "secrets" / slug
+    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(d.parent, 0o700)
+    (d / "project.env").write_text("# sample\n" + "".join(l + "\n" for l in lines))
+    os.chmod(d / "project.env", 0o600)
+    if managed_meta:
+        keys = [l.split("=", 1)[0] for l in lines if "=" in l]
+        (d / "env.json").write_text(json.dumps({"version": 1, "vars": {
+            k: {"public": k in public, "updated": iso(NOW - 7200)} for k in keys}}, indent=1))
+        os.chmod(d / "env.json", 0o600)
 
 
 def state_json(state: Path, status: str, reason: str, steps: dict, *, current=None, extra=None) -> None:
@@ -171,7 +187,9 @@ def p_bookings(cfg_home: Path, root: Path) -> None:
     for s, _ in steps[:2]:
         attempt_dir(st, f"{s}-1", passed=True)
     hold_lock(st / "runner.lock")
-    write_toml(cfg_home, "bookings", r)
+    env_files(cfg_home, "bookings", ["STRIPE_KEY=sk_test_fixture", "SMTP_URL=smtp://localhost:1025", "lower=case", "NOEQ"],
+              managed_meta=False)                     # hand-written file: all secret, two unmanageable lines
+    write_toml(cfg_home, "bookings", r, project_env=True)
 
 
 def p_crm(cfg_home: Path, root: Path) -> None:
@@ -213,7 +231,9 @@ def p_blog(cfg_home: Path, root: Path) -> None:
     runner_log(st, ["PASSED S04 @ {} (pushed)".format(sha("S04")[:9]), "DONE: all steps passed"])
     for s, _ in steps:
         attempt_dir(st, f"{s}-1", passed=True)
-    write_toml(cfg_home, "blog", r)
+    env_files(cfg_home, "blog", ["SUPABASE_URL=https://abc.supabase.co", "SUPABASE_ANON_KEY=eyJfixture", "RESEND_API_KEY=re_fixture"],
+              public=("SUPABASE_URL",))
+    write_toml(cfg_home, "blog", r, project_env=True)
 
 
 def p_wiki(cfg_home: Path, root: Path) -> None:
@@ -231,7 +251,7 @@ def p_wiki(cfg_home: Path, root: Path) -> None:
     runner_log(st, ["PASSED S03 @ {} (pushed)".format(sha("S03")[:9]), "STOP file present; stopping"])
     for s, _ in steps[:3]:
         attempt_dir(st, f"{s}-1", passed=True)
-    write_toml(cfg_home, "wiki", r)
+    write_toml(cfg_home, "wiki", r, project_env=True)      # project_env set, no file yet: the rig's env flow uses it
 
 
 def p_landing(cfg_home: Path, root: Path) -> None:

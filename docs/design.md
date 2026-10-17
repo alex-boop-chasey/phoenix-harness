@@ -96,12 +96,13 @@ text label and a dot, step icons use ✓ ✗ ○ plus colour.
 | Tabs | `.tabs[role=tablist] .tab[role=tab]`, `.tname`, `.badge`, `.x`, `.tab-add`, `.menu` | selected tab: bg, border, 2 px accent top rule; × shows on hover/selected |
 | Badges | `.badge .b-building .b-planning .b-ready .b-done .b-passed .b-ok .b-failed .b-escalation .b-stopped .b-paused .b-idle .b-pending .b-closed`, `.pulse` | dot + text; live states pulse (disabled under reduced motion) |
 | Buttons | `.btn`, `.primary`, `.danger`, `.quiet`, `.sm`, `.loading`, `:disabled` | one primary per view; destructive = red outline, red fill on hover |
-| Forms | `.field label .hint .error`, `.input .textarea .select`, `[aria-invalid]`, `.check`, `.search` | focus = accent border + soft ring; errors inline below the field |
+| Forms | `.field label .hint .error`, `.input .textarea .select`, `[aria-invalid]`, `.check`, `.search` | focus = accent border + soft ring; errors inline below the field (`.input`, `.error`, `.seg`, `.btn.quiet/.sm` are in app.css since step 07) |
 | Cards | `.card .card-head .card-body(.tight)`, `.grid-2`, `.with-rail .rail`, `.kv` | heads carry the title + right-aligned tools |
 | Tables | `.table-wrap table`, `th`, `td.num`, `tr[aria-selected]` | muted header on surface-2; row hover tint; selected row accent-soft |
 | Log viewer | `pre.log` + `.t .ok .bad .hi`, `.log-tools` | 12 px mono on surface-2, wraps, max-height with scroll; Follow / Copy / Open full |
 | Step rail | `ol.steps li(.cur .passed) .ic(.ok .bad .pend) .sid .act` + `.checklist` | current step: accent-soft with spinner and live activity line |
 | Notices | `.notice(.bad .warn .ok)` | left rule + soft fill; escalations use `.bad` with the ack action inside |
+| Env editor | `.envedit .envrows .envrow(.removed) .input(.mono) .seg .btn.quiet.sm .error(.ek .ev) .hint` | one row per variable: Key (mono, read-only once saved), Value (`type=password` while Secret), Secret/Public `.seg`, remove ×; errors sit under their field (`aria-invalid` on the input); removed saved rows show struck through with Undo until Save; phone: key + toggle on one line, value below (since step 07) |
 | Dialog | `dialog.dialog` (h2, optional `.notice.warn`, body `p.muted`, `.row` with Cancel + `.btn.danger`/`.primary`) | native `<dialog>` + `showModal()`, backdrop at 35 % black; built by `confirmDialog()` in app.js, falls back to `window.confirm` where `showModal` is missing; focus starts on Cancel, Esc cancels (since step 05) |
 | Empty states | `.empty .glyph` | glyph, one-line title, hint, optional action |
 | Toasts | `.toasts .toast(.bad) .dot .x` | bottom-right (full-width on phone), inverted colours, `aria-live=polite` |
