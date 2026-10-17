@@ -2,8 +2,9 @@
 
 One design system for the whole app: Project builder, Session manager, File browser and everything
 added later use these tokens and components. No page-specific colours, fonts or one-off styles; if a
-component is missing, add it here and to the shared CSS first. The living reference is the static mock
-in `hands/static/mock/` (`mock.css` holds the tokens and components) — screenshots in
+component is missing, add it here and to the shared CSS first. The canonical stylesheet is
+`hands/static/app.css` (since step 04); the static mock in `hands/static/mock/` (`mock.css`) is the
+design reference for pages not built yet — screenshots in
 `~/ops/shots/03-mock/` via `bash tools/ui-shots.sh --mock <label>`.
 
 Hard rules (from the dashboard CSP): no inline scripts, no `style` attributes, no external fonts or

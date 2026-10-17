@@ -439,7 +439,40 @@ function tick() {
   refresh(ticks % 8 === 0);   // attempts list reloads every ~30 s
 }
 
+// ---- app shell: sections (#/builder, #/sessions, #/files) and the phone drawer
+const SECTIONS = { builder: "Project builder", sessions: "Session manager", files: "File browser" };
+function sectionFromHash() {
+  const m = /^#\/([a-z]+)/.exec(location.hash || "");
+  return m && SECTIONS[m[1]] ? m[1] : "builder";
+}
+function route() {
+  const sec = sectionFromHash();
+  for (const name of Object.keys(SECTIONS)) {
+    const page = document.getElementById(`page-${name}`);
+    if (page) page.hidden = name !== sec;
+  }
+  for (const a of document.querySelectorAll("#nav a")) {
+    if (a.dataset.section === sec) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  }
+  $("#topsection").textContent = SECTIONS[sec];
+  document.title = `${SECTIONS[sec]} · Phoenix Harness`;
+  setNav(false);
+}
+function setNav(open) {
+  document.body.classList.toggle("nav-open", open);
+  $("#navtoggle").setAttribute("aria-expanded", String(open));
+  $("#scrim").hidden = !open;
+}
+function initShell() {
+  $("#navtoggle").addEventListener("click", () => setNav(!document.body.classList.contains("nav-open")));
+  $("#scrim").addEventListener("click", () => setNav(false));
+  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && document.body.classList.contains("nav-open")) { setNav(false); $("#navtoggle").focus(); } });
+  window.addEventListener("hashchange", route);
+  route();
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
+  initShell();
   let saved = null;
   try { saved = localStorage.getItem("hands.project"); } catch (e) { saved = null; }
   current = saved;

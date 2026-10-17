@@ -3,22 +3,50 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>hands</title>
+<title>Phoenix Harness</title>
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
 </head>
 <body>
-<header>
-  <h1>hands</h1>
-  <div id="usage" class="usage" aria-label="Claude plan usage"></div>
-  <span id="clock" class="muted"></span>
-</header>
-<div class="shell">
-  <aside class="sidebar" aria-label="Projects">
-    <nav id="projects" class="plist" aria-label="Project list"></nav>
-    <button id="newproject" class="pcard pnew" type="button">+ New project</button>
+<div class="app">
+  <header class="topbar">
+    <button id="navtoggle" class="burger" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar">☰</button>
+    <span class="brand"><span class="mark">P</span>Phoenix</span>
+    <span id="topsection" class="section">Project builder</span>
+  </header>
+  <div id="scrim" class="scrim" hidden></div>
+  <aside id="sidebar" class="sidebar" aria-label="Sections">
+    <div class="brand"><span class="mark">P</span>Phoenix <span class="ver">0.5</span></div>
+    <nav class="nav" id="nav" aria-label="App sections">
+      <a href="#/builder" data-section="builder"><span class="ico">▦</span>Project builder</a>
+      <a href="#/sessions" data-section="sessions"><span class="ico">▣</span>Session manager</a>
+      <a href="#/files" data-section="files"><span class="ico">▤</span>File browser</a>
+    </nav>
+    <div class="side-foot">
+      <div id="usage" class="usage" aria-label="Claude plan usage"></div>
+      <span id="clock" class="faint"></span>
+    </div>
   </aside>
-  <main id="main"><p class="muted">Loading…</p></main>
+
+  <div class="content">
+    <section id="page-builder" class="page builder" aria-label="Project builder">
+      <aside class="plist-col" aria-label="Projects">
+        <nav id="projects" class="plist" aria-label="Project list"></nav>
+        <button id="newproject" class="pcard pnew" type="button">+ New project</button>
+      </aside>
+      <main id="main"><p class="muted">Loading…</p></main>
+    </section>
+
+    <section id="page-sessions" class="page" aria-label="Session manager" hidden>
+      <div class="page-head"><h1>Session manager</h1></div>
+      <div class="card"><div class="empty"><span class="glyph">▣</span><strong>Coming soon</strong><span class="small">Persistent Claude terminals on this VPS: start, attach, stop and answer them from here or from Telegram.</span></div></div>
+    </section>
+
+    <section id="page-files" class="page" aria-label="File browser" hidden>
+      <div class="page-head"><h1>File browser</h1></div>
+      <div class="card"><div class="empty"><span class="glyph">▤</span><strong>Coming soon</strong><span class="small">Browse, preview, upload and download files under your home folder without the separate File Browser container.</span></div></div>
+    </section>
+  </div>
 </div>
 </body>
 </html>

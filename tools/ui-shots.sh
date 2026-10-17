@@ -9,7 +9,8 @@
 #   [page]    what to capture; default: every sample project plus the New-project form:
 #             bookings (building)  crm (failed step)  blog (done)  wiki (stopped)
 #             landing (plan ready)  notes (planning)  new (New project form)
-#   Each page is saved as <page>-1440.png and <page>-390.png.
+#             sessions, files (sections), nav (phone drawer open)
+#   Each page is saved as <page>-light-1440.png, <page>-dark-390.png, ...
 #
 #   bash tools/ui-shots.sh --mock <label> [page ...]
 #             captures the static design mock in hands/static/mock/ instead of the dashboard, in
@@ -66,7 +67,7 @@ LABEL="${1:-}"
 [ -n "$LABEL" ] || { echo "usage: bash tools/ui-shots.sh <label> [page ...]" >&2; exit 2; }
 case "$LABEL" in *[!A-Za-z0-9._-]*) echo "label: letters, digits, . _ - only" >&2; exit 2;; esac
 shift
-if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new}"; fi
+if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new sessions files nav}"; fi
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$HOME/ops/shots/$LABEL"
 mkdir -p "$OUT"
