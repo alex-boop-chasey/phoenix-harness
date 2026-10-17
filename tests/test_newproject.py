@@ -148,11 +148,17 @@ class TestCreate(Base):
         self.assertEqual(cfg.image, "hands:cc1-pw1")
         self.assertTrue((root / "specs" / ".github" / "CODEOWNERS").read_text().startswith("* @boss"))
         self.assertIn("/acceptance/", (root / "app" / ".gitignore").read_text())
-        self.assertEqual((root / "project.env").stat().st_mode & 0o777, 0o600)
+        sec = self.cfg_home / "secrets" / "bookings"
+        self.assertEqual((sec / "project.env").stat().st_mode & 0o777, 0o600)
+        self.assertEqual(cfg.project_env, (sec / "project.env").resolve())
+        self.assertEqual(sec.stat().st_mode & 0o777, 0o700)
+        self.assertEqual((self.cfg_home / "secrets").stat().st_mode & 0o777, 0o700)
+        self.assertFalse((root / "keys").exists(), "deploy keys must live under ~/.config/hands")
+        self.assertFalse((root / "project.env").exists(), "project secrets must live under ~/.config/hands")
         self.assertEqual((root / "description.txt").read_text().strip(), "Booking app for salons")
         self.assertFalse((self.home / ".ssh").exists(), "must not touch ~/.ssh")
-        self.assertEqual((root / "keys" / "deploy_bookings-app").stat().st_mode & 0o777, 0o600)
-        self.assertEqual((root / "keys").stat().st_mode & 0o777, 0o700)
+        self.assertEqual((sec / "keys" / "deploy_bookings-app").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((sec / "keys").stat().st_mode & 0o777, 0o700)
         sshc = git("config", "core.sshCommand", cwd=root / "app").strip()
         self.assertIn("deploy_bookings-app", sshc)
         self.assertIn("-F /dev/null", sshc)
@@ -194,6 +200,7 @@ class TestCreate(Base):
         self.assertEqual(newproject.run_create("half", "x"), 1)
         self.assertTrue((self.cfg_home / "projects" / "half.toml").exists())
         self.assertTrue((self.remote / "half-specs.git").exists())
+        self.assertTrue((self.cfg_home / "secrets" / "half").is_dir())
         with self.assertRaises(newproject.CreateError):
             newproject.destroy("half", "wrong")
         self.assertEqual(newproject.destroy("half", "half"), 0)
@@ -201,6 +208,7 @@ class TestCreate(Base):
         self.assertFalse((self.remote / "half-app.git").exists())
         self.assertFalse((self.cfg_home / "projects" / "half.toml").exists())
         self.assertFalse((self.home / "projects" / "half").exists())
+        self.assertFalse((self.cfg_home / "secrets" / "half").exists())
         self.assertFalse(newproject.status_path("half").exists())
 
     def test_destroy_refuses_unmanaged(self):

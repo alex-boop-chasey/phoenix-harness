@@ -27,9 +27,11 @@ Login codes are single use; sessions live in memory for 12 h (restart = log in a
 ## New projects (0.4.1)
 Dashboard → "+ New project" (slug + idea), or on the VPS: `echo "idea" | hands <slug> create`.
 Creates private repos <slug>-specs (PR + code-owner review required) and <slug>-app (no force-push/deletion),
-deploy keys in ~/projects/<slug>/keys/ (specs key read-only, verified), clones pinned to those keys via
-core.sshCommand (your ~/.ssh/config, agent and personal keys are never used), GitHub host keys from /meta,
-~/projects/<slug>/{state,project.env,description.txt,created.json} and the runner config.
+deploy keys in ~/.config/hands/secrets/<slug>/keys/ (specs key read-only, verified), clones pinned to those keys
+via core.sshCommand (your ~/.ssh/config, agent and personal keys are never used), GitHub host keys from /meta,
+~/.config/hands/secrets/<slug>/project.env (0600), ~/projects/<slug>/{state,description.txt,created.json}
+and the runner config. All project secrets live under ~/.config/hands (dirs 0700), so one deny rule for
+~/.config/hands keeps them away from an operator Claude session; the project folder holds none.
 Defaults (org, code owner, image, models): ~/.config/hands/new-project.toml.
 Remove a hands-created project (CLI only): `hands <slug> destroy --confirm <slug>`; it deletes only the repos
 recorded in created.json and only if their GitHub id still matches.

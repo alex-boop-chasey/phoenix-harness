@@ -7,11 +7,13 @@ For slug S in org O (settings: ~/.config/hands/new-project.toml) create makes:
   O/S-specs  private, CODEOWNERS "* @<codeowner>", ruleset protect-main: no deletion, no force-push,
              PR + 1 approval + code-owner review + dismiss stale; org admins may merge their own PRs
   O/S-app    private, .gitignore, ruleset protect-main: no deletion, no force-push (the runner pushes)
-  ~/projects/S/keys/deploy_S-{specs,app}  (specs key read-only, app key write), never in ~/.ssh
+  ~/.config/hands/secrets/S/keys/deploy_S-{specs,app}  (specs key read-only, app key write), never in ~/.ssh
+  ~/.config/hands/secrets/S/project.env (0600)           dev/test secrets for the build containers
+           (all project secrets live under ~/.config/hands so one deny rule covers them; dirs 0700)
   ~/projects/S/known_hosts                 GitHub host keys from the authenticated /meta API (no TOFU)
   ~/projects/S/{specs,app}                 clones whose core.sshCommand pins that key: ~/.ssh/config,
                                            ssh-agent and personal keys are never used or changed
-  ~/projects/S/{state/,project.env (0600),description.txt,created.json}
+  ~/projects/S/{state/,description.txt,created.json}
   ~/.config/hands/projects/S.toml          (managed = true)
 
 created.json records exactly what this run made (repo ids); destroy deletes only those, and only if the
@@ -58,6 +60,11 @@ def home() -> Path:
 
 def projects_root() -> Path:
     return home() / "projects"
+
+
+def secrets_root(slug: str) -> Path:
+    """Per-project secrets (deploy keys, project.env). Kept under ~/.config/hands, never in the project folder."""
+    return cfgmod.CONFIG_HOME / "secrets" / slug
 
 
 def creating_dir() -> Path:
@@ -268,6 +275,9 @@ def preflight(slug: str, description: str) -> tuple[dict, "GitHub", list[str]]:
         raise CreateError(f"project {slug} already exists ({cfg_path})")
     if root.exists() or root.is_symlink():
         raise CreateError(f"{root} already exists")
+    sec = secrets_root(slug)
+    if sec.exists() or sec.is_symlink():
+        raise CreateError(f"{sec} already exists")
     gh = GitHub(token())
     org = s["org"]
     for r in (f"{slug}-specs", f"{slug}-app"):
@@ -290,6 +300,7 @@ def create(slug: str, description: str, ctx_holder: list) -> int:
     org, owner = s["org"], s["codeowner"]
     cfg_path = cfgmod.CONFIG_HOME / "projects" / f"{slug}.toml"
     root = projects_root() / slug
+    sec = secrets_root(slug)
     specs, app = f"{slug}-specs", f"{slug}-app"
     say(f"[..] creating project {slug} in {org}")
 
@@ -302,7 +313,7 @@ def create(slug: str, description: str, ctx_holder: list) -> int:
             f"# created by hands {time.strftime('%Y-%m-%d %H:%M')}\nmanaged = true\n"
             f"github_org = {toml_str(org)}\nrepo_specs = {toml_str(specs)}\nrepo_app = {toml_str(app)}\n"
             f"spec_dir = {toml_str(str(root / 'specs'))}\napp_dir = {toml_str(str(root / 'app'))}\n"
-            f"state_dir = {toml_str(str(root / 'state'))}\nproject_env = {toml_str(str(root / 'project.env'))}\n"
+            f"state_dir = {toml_str(str(root / 'state'))}\nproject_env = {toml_str(str(sec / 'project.env'))}\n"
             f"image = {toml_str(s['image'])}\n"
             + "".join(f"{k} = {toml_str(s[k])}\n" for k in ("coder_model", "eval_model", "fallback_model")
                       if isinstance(s.get(k), str) and s[k])
@@ -312,7 +323,10 @@ def create(slug: str, description: str, ctx_holder: list) -> int:
     root.mkdir(parents=True)
     ctx.save()
     (root / "description.txt").write_text(description + "\n")
-    keys = root / "keys"
+    sec.parent.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(sec.parent, 0o700)
+    sec.mkdir(mode=0o700)
+    keys = sec / "keys"
     keys.mkdir(mode=0o700)
     kh = root / "known_hosts"
     kh.write_text("".join(f"github.com {k}\n" for k in host_keys))
@@ -368,7 +382,7 @@ def create(slug: str, description: str, ctx_holder: list) -> int:
                 raise CreateError(f"{sub} push URL resolves to {url!r}, expected ssh to github.com")
         say(f"[ok] cloned {repo} -> {root / sub} (pinned to its deploy key)")
     (root / "state").mkdir()
-    fd = os.open(root / "project.env", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd = os.open(sec / "project.env", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     os.write(fd, b"# dev/test secrets for this project (KEY=value, no quotes). Seen by coder, acceptance, evaluator.\n")
     os.close(fd)
     if branches[app] != "main":
@@ -382,7 +396,7 @@ def create(slug: str, description: str, ctx_holder: list) -> int:
             raise CreateError(f"could not confirm the specs deploy key is read-only (rc={p.returncode}): {p.stderr.strip()[:300]}")
         say("[ok] specs deploy key is read-only (push refused by GitHub)")
     say(f"DONE: project {slug} created. Next: plan it (the spec repo needs steps.json); "
-        f"test keys go in {root / 'project.env'}; extra domains in the spec repo's allowed-domains.")
+        f"test keys go in {sec / 'project.env'}; extra domains in the spec repo's allowed-domains.")
     return 0
 
 
@@ -477,7 +491,12 @@ def destroy(slug: str, confirm: str) -> int:
     if root.exists() and not root.is_symlink():
         from .workspace import rmtree
         rmtree(root)
-        say(f"[ok] removed {root} (including its deploy keys)")
+        say(f"[ok] removed {root}")
+    sec = secrets_root(slug)
+    if sec.exists() and not sec.is_symlink():
+        from .workspace import rmtree
+        rmtree(sec)
+        say(f"[ok] removed {sec} (deploy keys and project.env)")
     for p in (cfg_path, status_path(slug), creating_dir() / f"{slug}.log"):
         if p.exists():
             p.unlink()
