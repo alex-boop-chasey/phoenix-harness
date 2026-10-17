@@ -212,6 +212,16 @@ before the upgrade, plus a single-use 30 s ticket minted by a CSRF-checked POST 
 only reads `~/.config/hands/sessions/*.json` and the one transcript per record; delete unlinks that one
 transcript. A systemd unit for the dashboard is prepared in `console/deploy/` (not installed).
 
+**Live on Telegram (step 12).** One session at a time may run with `--channels
+plugin:telegram@claude-plugins-official` (Claude Code's official Telegram channel plugin, a research
+preview; `sessions.TELEGRAM_CHANNEL`, the only value ever passed). The flag lives in the session record
+(`"telegram": true`), is set at creation or on resume, and `Store.live_telegram()` refuses a second
+running flagged session (`409`). The plugin, not the harness, owns the bot: token in
+`~/.claude/channels/telegram/.env`, sender allowlist in `access.json`, pairing codes, and the permission
+relay (Allow / Deny buttons in Telegram, allowlisted senders only). The dashboard never reads
+`~/.claude/channels` (and the sandbox/settings deny it to Claude); it only adds the flag to the argv.
+Setup and the permission-relay review: `docs/console-review.md` §8, `docs/telegram.md`.
+
 ## Planner and project lifecycle (newproject.py, planner.py)
 
 `create` (CLI or dashboard form): private repos `<org>/<slug>-specs` (CODEOWNERS, ruleset: PR +

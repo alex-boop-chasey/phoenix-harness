@@ -46,7 +46,7 @@ class RigBackend(sessions.Tmux):
         self.alive_ids: set[str] = set()
 
     def start(self, rec: dict, resume: bool) -> None:
-        sessions.claude_argv(rec["id"], resume)       # the real argv builder still runs (claude must resolve)
+        sessions.claude_argv(rec["id"], resume, sessions.is_telegram(rec))   # the real argv builder still runs
         self.alive_ids.add(rec["id"])
 
     def alive(self, sid: str) -> bool:

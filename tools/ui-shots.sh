@@ -14,7 +14,8 @@
 #             newbad (New project form with invalid variables), env (blog's Environment panel),
 #             envbad (that panel with validation errors)
 #             sessions (Session manager: list + live terminal; phone: the list), sessions-term (phone:
-#             the terminal view), sessions-new (New session dialog), sessions-delete (Delete dialog)
+#             the terminal view), sessions-new (New session dialog), sessions-delete (Delete dialog),
+#             sessions-telegram (Leave/Go live on Telegram dialog; the live session is on Telegram)
 #   Also writes compare-<theme>-<width>.png: Project builder and Session manager side by side.
 #   Each page is saved as <page>-light-1440.png, <page>-dark-390.png, ...
 #
@@ -80,7 +81,7 @@ LABEL="${1:-}"
 [ -n "$LABEL" ] || { echo "usage: bash tools/ui-shots.sh <label> [page ...]" >&2; exit 2; }
 case "$LABEL" in *[!A-Za-z0-9._/-]*|*..*|/*) echo "label: letters, digits, . _ - and / (no .., not absolute) only" >&2; exit 2;; esac
 shift
-if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new newbad env envbad sessions sessions-term sessions-new sessions-delete files nav tabs menu close}"; fi
+if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new newbad env envbad sessions sessions-term sessions-new sessions-delete sessions-telegram files nav tabs menu close}"; fi
 case "${UI_SHOTS_PROJECTS:-}" in ""|[0-9]|1[0-9]|20) ;; *) echo "UI_SHOTS_PROJECTS: 0..20" >&2; exit 2;; esac
 case "${UI_SHOTS_HIDDEN:-}" in *[!A-Za-z0-9_\ -]*) echo "UI_SHOTS_HIDDEN: project names separated by spaces" >&2; exit 2;; esac
 REPO="$(cd "$(dirname "$0")/.." && pwd)"

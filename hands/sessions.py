@@ -46,6 +46,9 @@ PTY_CHUNK = 8192
 # Claude's own login is ~/.claude/.credentials.json, reached through HOME (or CLAUDE_CONFIG_DIR). Token
 # variables are deliberately not passed: the session command line (`env -i K=V ...`) is visible to tmux.
 PASSTHROUGH = ("CLAUDE_CONFIG_DIR", "TMUX_TMPDIR")
+# The one channel a "live" session may run (step 12): Claude Code's official Telegram plugin, whose bot
+# token lives in ~/.claude/channels/telegram/.env and is read by the plugin inside the session, never here.
+TELEGRAM_CHANNEL = "plugin:telegram@claude-plugins-official"
 
 
 # ---------------------------------------------------------------- validation and pure helpers
@@ -119,7 +122,8 @@ def _base_env() -> dict[str, str]:
         user = pwd.getpwuid(os.getuid()).pw_name
     except KeyError:
         user = os.environ.get("USER", "builder")
-    return {"PATH": f"{home}/.local/bin:/usr/local/bin:/usr/bin:/bin", "HOME": str(home),
+    # ~/.bun/bin: the Telegram channel plugin is `bun run ...` resolved through this PATH (step 12)
+    return {"PATH": f"{home}/.local/bin:{home}/.bun/bin:/usr/local/bin:/usr/bin:/bin", "HOME": str(home),
             "TERM": "xterm-256color", "LANG": "C.UTF-8", "USER": user, "SHELL": "/bin/bash"}
     # no COLORTERM on purpose: 24-bit colour cells need a style attribute the CSP forbids (console-review §5)
 
@@ -143,16 +147,25 @@ def tmux_env() -> dict[str, str]:
     return env
 
 
-def claude_argv(sid: str, resume: bool) -> list[str]:
-    """Default permission mode, the user's normal settings; our uuid is Claude's session id."""
-    return [claude_exe(), "--resume" if resume else "--session-id", validate_id(sid)]
+def is_telegram(rec: dict) -> bool:
+    """The record's live-on-Telegram flag; only the JSON boolean true counts."""
+    return rec.get("telegram") is True
 
 
-def tmux_command(sid: str, resume: bool) -> str:
+def claude_argv(sid: str, resume: bool, telegram: bool = False) -> list[str]:
+    """Default permission mode, the user's normal settings; our uuid is Claude's session id. A live
+    session adds the Telegram channel plugin (and nothing else: no permission flags ever)."""
+    argv = [claude_exe(), "--resume" if resume else "--session-id", validate_id(sid)]
+    if telegram is True:
+        argv += ["--channels", TELEGRAM_CHANNEL]
+    return argv
+
+
+def tmux_command(sid: str, resume: bool, telegram: bool = False) -> str:
     """What tmux's shell runs inside the session: `env -i` makes the allowlist the entire environment."""
     env = session_env()
     return "exec env -i " + " ".join(shlex.quote(f"{k}={v}") for k, v in env.items()) + " " + \
-        " ".join(shlex.quote(a) for a in claude_argv(sid, resume))
+        " ".join(shlex.quote(a) for a in claude_argv(sid, resume, telegram))
 
 
 def transcript_path(root: Path, cwd: Path, sid: str) -> Path:
@@ -193,8 +206,8 @@ def read_title(path: Path) -> str | None:
         if not isinstance(c, str):
             continue
         c = c.strip()
-        if not c or c.startswith("<"):
-            continue
+        if not c or c.startswith("<") or c.startswith("/"):
+            continue        # meta/XML lines and slash commands (`/telegram:configure <token>`) never become titles
         return c.splitlines()[0].strip()[:80]
     return None
 
@@ -208,7 +221,7 @@ class Tmux:
     def start(self, rec: dict, resume: bool) -> None:
         name = tmux_name(rec["id"])
         r = self._run("new-session", "-d", "-s", name, "-c", rec["cwd"], "-x", "200", "-y", "50",
-                      tmux_command(rec["id"], resume))
+                      tmux_command(rec["id"], resume, is_telegram(rec)))
         if r.returncode:
             raise ValueError(f"could not start the session: {r.stderr.strip()[:300] or 'tmux failed'}")
         self._run("set-option", "-t", f"={name}", "status", "off")      # the browser is the only UI
@@ -254,10 +267,17 @@ class Store:
             tmp.unlink(missing_ok=True)
             raise
 
-    def create(self, cwd: Path) -> dict:
-        rec = {"id": new_id(), "cwd": str(cwd), "created": round(time.time(), 3), "title": ""}
+    def create(self, cwd: Path, telegram: bool = False) -> dict:
+        rec = {"id": new_id(), "cwd": str(cwd), "created": round(time.time(), 3), "title": "", "telegram": telegram is True}
         self._write(rec)
         return rec
+
+    def live_telegram(self, exclude: str = "") -> dict | None:
+        """The record (other than `exclude`) that is flagged for Telegram and currently running, if any."""
+        for rec in self.records():
+            if rec["id"] != exclude and is_telegram(rec) and BACKEND.alive(rec["id"]):
+                return rec
+        return None
 
     def get(self, sid: str) -> dict:
         p = self._path(sid)
@@ -311,7 +331,8 @@ class Store:
         except OSError:
             has_transcript = False
         return {"id": sid, "title": title, "cwd": rec["cwd"], "created": created, "last_active": last,
-                "live": BACKEND.alive(sid), "viewers": viewer_count(sid), "transcript": has_transcript}
+                "live": BACKEND.alive(sid), "viewers": viewer_count(sid), "transcript": has_transcript,
+                "telegram": is_telegram(rec)}
 
     def listing(self) -> list[dict]:
         rows = [self.row(r) for r in self.records()]
@@ -335,11 +356,28 @@ class Store:
 _MUTEX = threading.Lock()
 
 
-def start_new(cwd_raw) -> dict:
+def _flag(telegram) -> bool:
+    if telegram is not None and not isinstance(telegram, bool):
+        raise ValueError("telegram must be true or false")
+    return telegram is True
+
+
+def _telegram_free(st: Store, sid: str) -> None:
+    """Only one session may be live on Telegram at a time (one bot, one poller, one allowlist)."""
+    other = st.live_telegram(exclude=sid)
+    if other:
+        raise Conflict(f"another session is already live on Telegram ({other.get('title') or other['id'][:8]}); stop it first")
+
+
+def start_new(cwd_raw, telegram=None) -> dict:
+    """telegram=True starts the session with the Telegram channel plugin (`--channels`)."""
     cwd = validate_cwd(cwd_raw if cwd_raw else str(default_cwd()))
+    live = _flag(telegram)
     with _MUTEX:
         st = Store()
-        rec = st.create(cwd)
+        if live:
+            _telegram_free(st, "")
+        rec = st.create(cwd, live)
         try:
             BACKEND.start(rec, resume=False)
         except Exception:
@@ -348,13 +386,22 @@ def start_new(cwd_raw) -> dict:
         return st.row(rec)
 
 
-def resume(sid: str) -> dict:
+def resume(sid: str, telegram=None) -> dict:
+    """Restart a stopped session. telegram=None keeps the record's flag; True/False sets it (persisted)
+    before the start, so a session can be moved on or off Telegram by stop + resume."""
+    want = None if telegram is None else _flag(telegram)
     with _MUTEX:
         st = Store()
         rec = st.get(sid)
         if BACKEND.alive(sid):
             raise Conflict("the session is already running")
         validate_cwd(rec["cwd"])
+        live = is_telegram(rec) if want is None else want
+        if live:
+            _telegram_free(st, sid)
+        if live != is_telegram(rec):
+            rec["telegram"] = live
+            st._write(rec)
         BACKEND.start(rec, resume=True)
         return st.row(rec)
 

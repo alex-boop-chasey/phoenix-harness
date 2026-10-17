@@ -259,3 +259,34 @@ the transcript, even if a session were ever resumed elsewhere. No code change ne
 CLI printed `[claude-code:unrecognized_model] claude-haiku-5-5` on stderr but served that model
 (`modelUsage` names it); a 3-turn one-word session already weighs 290 KB of transcript (the first user
 line is at the top, within `read_title`'s 256 KB bound).
+
+## 8. Telegram live session: permission relay reviewed (2026-10-17, step 12)
+
+Question: when a Session manager session runs with `--channels plugin:telegram@claude-plugins-official`
+and Claude hits a permission prompt, can Alex answer it from Telegram, or does the session sit paused
+until someone opens the web terminal?
+
+Source read (GitHub, `anthropics/claude-plugins-official`, `external_plugins/telegram/`: `server.ts`,
+`README.md`, `ACCESS.md`, `.mcp.json`) and the Claude Code docs page "channels" (fetched the same day).
+
+**Finding: yes, approvals can be answered from Telegram.** The plugin declares the
+`claude/channel/permission` capability. On `notifications/claude/channel/permission_request`
+(`request_id`, `tool_name`, `description`, `input_preview`) it sends a message **to every chat id on the
+allowlist** with an inline keyboard `See more · ✅ Allow · ❌ Deny` (`perm:more|allow|deny:<id>`). A
+button press is validated against `^perm:(allow|deny|more):([a-km-z]{5})$`, answered back as
+`notifications/claude/channel/permission` with `{request_id, behavior}`, and the Telegram message is
+edited to show the outcome (buttons removed). "See more" expands the tool input preview. Anyone not on
+the allowlist never receives the prompt and cannot press anything; with `dmPolicy: allowlist` their
+messages are dropped silently.
+
+Consequences for the harness:
+
+| | |
+|---|---|
+| Decision for Alex ("if approvals cannot be answered from Telegram") | not needed: they can. Prompts also stay visible in the web terminal, so either place answers them. |
+| Who can approve | exactly the Telegram allowlist. The docs say it plainly: "anyone who can reply through the channel can approve or deny tool use in your session". Keep the allowlist to Alex's own account; never add a group. |
+| What the harness adds | only the flag (`sessions.TELEGRAM_CHANNEL`) and the one-live-session rule. Token, allowlist, pairing, relay: all inside the plugin, under `~/.claude/channels/telegram/` (`.env` 0600, `access.json`, `bot.pid`, `inbox/`). The dashboard never reads that folder; Claude (this assistant) is denied it by settings and sandbox. |
+| Environment | the plugin is `bun run --cwd ${CLAUDE_PLUGIN_ROOT} ... start`, resolved through the session's `PATH`; `~/.bun/bin` is on the allowlisted PATH since step 12. Real env vars win over `.env`, and the session env has no `TELEGRAM_BOT_TOKEN`, so the file is the only source. |
+| Status | channels are a research preview: `--channels` is hidden from `claude --help` (confirmed on 2.1.292: not listed, but accepted by the parser) and "may change". Pro/Max accounts without an organization need no admin switch. |
+| Transcript hygiene | a slash command typed as the first prompt (`/telegram:configure <token>`) would have become the session title; `read_title()` now skips lines starting with `/`. Better still, run configure from an SSH shell (see `docs/telegram.md`). |
+| Limits worth knowing | the bot sees messages only while the live session runs (no history); photos/files are downloaded into `~/.claude/channels/telegram/inbox/`; replies are chunked at 4096 chars. |

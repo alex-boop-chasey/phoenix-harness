@@ -117,7 +117,7 @@ const Sessions = (() => {
   function selectedRow() { return S.rows.find((r) => r.id === S.selected) || null; }
   function renderHead() {
     const r = selectedRow();
-    const dot = q("s-dot"), badge = q("s-badge");
+    const dot = q("s-dot"), badge = q("s-badge"), tg = q("s-tg");
     q("s-term-h").textContent = r ? title(r) : "No session selected";
     q("s-meta").textContent = r ? `${shortCwd(r.cwd)} · started ${new Date(r.created * 1000).toLocaleString([], { hour: "numeric", minute: "2-digit", day: "numeric", month: "short" })}` : "";
     const live = !!(r && r.live);
@@ -125,8 +125,14 @@ const Sessions = (() => {
     const label = !r ? "idle" : !live ? "stopped" : S.state === "live" ? "live" : S.state === "reconnecting" ? "reconnecting" : "connecting";
     badge.textContent = label;
     badge.className = "badge " + (label === "live" ? "s-running pulse" : label === "stopped" ? "s-stopped" : label === "idle" ? "s-idle" : "s-planning");
+    const onTg = !!(r && r.telegram);
+    tg.hidden = !onTg;
+    tg.textContent = onTg && live ? "live on Telegram" : "Telegram";
+    tg.title = onTg ? (live ? "Messages to your Telegram bot reach this session." : "Resumes connected to your Telegram bot.") : "";
     q("s-resume").disabled = !r || live;
     q("s-stop").disabled = !r || !live;
+    q("s-telegram").disabled = !r;
+    q("s-telegram").textContent = onTg ? "Leave Telegram" : "Go live on Telegram";
     q("s-delete").disabled = !r;
   }
 
@@ -134,7 +140,8 @@ const Sessions = (() => {
   function renderList() {
     const list = q("slist");
     const live = S.rows.filter((r) => r.live).length;
-    q("s-count").textContent = S.rows.length ? `${live} running · ${S.rows.length - live} stopped` : "";
+    const onTg = S.rows.find((r) => r.live && r.telegram);
+    q("s-count").textContent = S.rows.length ? `${live} running · ${S.rows.length - live} stopped${onTg ? " · 1 on Telegram" : ""}` : "";
     if (!S.rows.length) {
       list.replaceChildren(el("div", { class: "empty" }, el("span", { class: "glyph" }, "▣"), el("strong", {}, "No sessions yet"),
         el("span", { class: "small" }, "Start a persistent Claude terminal in a folder under your home. It keeps running when you close the browser."),
@@ -145,7 +152,7 @@ const Sessions = (() => {
       class: "sitem", type: "button", role: "listitem", "data-id": r.id, title: `${title(r)} · ${r.cwd}`,
       "aria-current": String(r.id === S.selected), on: { click: () => select(r.id) } },
       el("span", { class: "dot" + (r.live ? " live" : ""), "aria-hidden": "true" }),
-      el("span", { class: "smain" }, el("span", { class: "sname" }, title(r)),
+      el("span", { class: "smain" }, el("span", { class: "sname" }, title(r), r.telegram ? el("span", { class: "badge s-telegram" }, "Telegram") : null),
         el("span", { class: "smeta" }, `${shortCwd(r.cwd)}${r.live ? "" : " · stopped"}${r.viewers ? ` · ${r.viewers} viewer${r.viewers > 1 ? "s" : ""}` : ""}`)),
       el("span", { class: "when" + (r.live ? " live" : "") }, r.live ? "live" : agoTs(r.last_active)))));
   }
@@ -262,7 +269,9 @@ const Sessions = (() => {
     select(row.id).catch(() => {});
     load();
   }
-  const start = (cwd) => post("/api/sessions/new", { cwd });
+  const start = (cwd, telegram) => post("/api/sessions/new", telegram ? { cwd, telegram: true } : { cwd });
+  const tgTaken = (r) => S.rows.find((x) => x.live && x.telegram && (!r || x.id !== r.id));
+  const tgBusy = (holder) => `another session is already live on Telegram (${title(holder)}); stop it or leave Telegram there first`;
   function folderDialog(def) {
     if (typeof HTMLDialogElement !== "function" || !HTMLDialogElement.prototype.showModal) {
       const v = prompt("Working folder for the new session (under your home folder):", def);
@@ -273,21 +282,35 @@ const Sessions = (() => {
       const finish = (v) => { if (done) return; done = true; resolve(v); dlg.close(); dlg.remove(); };
       const input = el("input", { class: "input mono", id: "s-cwd", type: "text", value: def, spellcheck: "false", autocomplete: "off", "aria-describedby": "s-cwd-hint" });
       const err = el("div", { class: "error", id: "s-cwd-err" });
+      const tg = el("input", { type: "checkbox", id: "s-tg-new" });
+      const taken = tgTaken(null);
+      const tgErr = el("div", { class: "error", id: "s-tg-err" });
       const go = el("button", { class: "btn primary", type: "submit" }, "Start session");
       const form = el("form", { method: "dialog", on: { submit: async (ev) => {
         ev.preventDefault();
         const v = input.value.trim();
-        const fail = (msg) => { err.textContent = msg; input.setAttribute("aria-invalid", "true"); go.disabled = false; input.focus(); };
+        const fail = (msg, where) => {
+          (where || err).textContent = msg; go.disabled = false;
+          if (!where) { input.setAttribute("aria-invalid", "true"); input.focus(); } else tg.focus();
+        };
         if (!v) return fail("Enter a folder.");
+        const holder = tg.checked ? tgTaken(null) : null;          // client pre-check; the server refuses too (409)
+        if (holder) return fail(tgBusy(holder), tgErr);
         go.disabled = true;
         err.textContent = "";
+        tgErr.textContent = "";
         input.removeAttribute("aria-invalid");
-        try { finish(await start(v)); } catch (e) { fail(e.message); }
+        try { finish(await start(v, tg.checked)); }
+        catch (e) { fail(e.message, /Telegram/.test(e.message) ? tgErr : null); }
       } } },
         el("h2", { id: "s-dlg-title" }, "New session"),
         el("p", { class: "muted" }, "Starts Claude Code in a folder on the VPS. The session keeps running in tmux when you close this page; stop it from here when you are done."),
         el("div", { class: "field" }, el("label", { for: "s-cwd" }, "Working folder"), input,
           el("span", { class: "muted small", id: "s-cwd-hint" }, "A folder under your home (not the home folder itself, not hidden folders such as ~/.config)."), err),
+        el("div", { class: "field" }, el("label", { class: "check", for: "s-tg-new" }, tg,
+          el("span", {}, "Live on Telegram", el("span", { class: "hint" },
+            taken ? `Only one session can be live at a time; “${title(taken)}” is live now. Stop it or leave Telegram there first.`
+                  : "Messages to your Telegram bot reach this session and Claude answers there. Only one session can be live at a time."))), tgErr),
         el("div", { class: "row" }, el("button", { class: "btn", type: "button", on: { click: () => finish(null) } }, "Cancel"), go));
       const dlg = el("dialog", { class: "dialog", "aria-labelledby": "s-dlg-title", on: { close: () => finish(null) } }, form);
       document.body.append(dlg);
@@ -301,6 +324,36 @@ const Sessions = (() => {
     if (!r || r.live) return;
     try { Object.assign(r, await post(`/api/sessions/${encodeURIComponent(r.id)}/resume`)); }
     catch (e) { alert(`Could not resume: ${e.message}`); return; }
+    renderList();
+    connect(r.id);
+  }
+  // Telegram on/off = a restart with or without `--channels` (stop first when running); the server
+  // refuses a second live session (409) and the message names the one that holds the slot.
+  async function toggleTelegram() {
+    const r = selectedRow();
+    if (!r) return;
+    const on = !r.telegram;
+    const other = on ? tgTaken(r) : null;
+    const ok = await confirmDialog({
+      title: on ? `Go live on Telegram with ${title(r)}?` : `Leave Telegram with ${title(r)}?`,
+      warn: other ? `“${title(other)}” is live on Telegram now. Only one session can be live at a time; stop it or leave Telegram there first.`
+                  : r.live ? "This restarts the session (its conversation is kept). Anything Claude is doing right now is interrupted." : "",
+      body: on ? "Messages to your Telegram bot reach this session and Claude answers there. Permission prompts are relayed to Telegram with Allow / Deny buttons; only paired accounts can send or approve."
+               : "The session restarts without the Telegram channel. Messages to the bot are no longer delivered to any session.",
+      ok: on ? (r.live ? "Restart live on Telegram" : "Resume live on Telegram") : (r.live ? "Restart without Telegram" : "Resume without Telegram"),
+      okClass: "btn primary" });
+    if (!ok) return;
+    const holder = on ? tgTaken(r) : null;                          // client pre-check; the server refuses too (409)
+    if (holder) { setConn("error", `Could not go live on Telegram: ${tgBusy(holder)}.`); return; }
+    try {
+      if (r.live) { disconnect(); Object.assign(r, await post(`/api/sessions/${encodeURIComponent(r.id)}/stop`)); }
+      Object.assign(r, await post(`/api/sessions/${encodeURIComponent(r.id)}/resume`, { telegram: on }));
+    } catch (e) {
+      load();
+      setConn("error", `Could not ${on ? "go live on" : "leave"} Telegram: ${e.message}`);
+      renderHead();
+      return;
+    }
     renderList();
     connect(r.id);
   }
@@ -340,6 +393,7 @@ const Sessions = (() => {
     q("s-back").addEventListener("click", back);
     q("s-resume").addEventListener("click", resume);
     q("s-stop").addEventListener("click", stop);
+    q("s-telegram").addEventListener("click", toggleTelegram);
     q("s-delete").addEventListener("click", del);
     api("/api/sessions/defaults").then((d) => { S.defaults = d; renderList(); renderHead(); }).catch(() => {});
   }

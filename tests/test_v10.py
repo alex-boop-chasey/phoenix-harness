@@ -123,7 +123,7 @@ class FakeBackend(sessions.Tmux):
         self.attach = ["/bin/sh", "-c", "echo READY; exec cat"]
 
     def start(self, rec: dict, resume: bool) -> None:
-        argv, env = sessions.claude_argv(rec["id"], resume), sessions.session_env()
+        argv, env = sessions.claude_argv(rec["id"], resume, sessions.is_telegram(rec)), sessions.session_env()
         self.started.append((rec["id"], argv, env, rec["cwd"]))
         self.alive_ids.add(rec["id"])
 
@@ -203,7 +203,10 @@ class TestValidation(unittest.TestCase):
             self.assertEqual(env["HOME"], str(Path.home()))
             self.assertIn("/.local/bin", env["PATH"])
             self.assertNotIn("linuxbrew", env["PATH"])
-            self.assertNotIn(".bun", env["PATH"])
+            # a fixed PATH built from HOME, never the dashboard's (~/.bun/bin is on it since step 12: the
+            # Telegram channel plugin is `bun run ...`)
+            h = Path.home()
+            self.assertEqual(env["PATH"], f"{h}/.local/bin:{h}/.bun/bin:/usr/local/bin:/usr/bin:/bin")
             # Claude's login is the credentials file under HOME; a token variable would end up on the tmux
             # command line, so it is not passed. CLAUDE_CONFIG_DIR (a path) passes through.
             self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)

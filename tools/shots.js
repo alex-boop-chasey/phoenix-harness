@@ -7,7 +7,8 @@
 // <pages>: space-separated. A project name screenshots that project's view; "new" the New project
 // form; "sessions" / "files" those sections; "nav" the phone drawer open; "tabs" the builder as it
 // opens (first open tab, or the empty state / New project form when nothing is open); "menu" the
-// "+" menu open (with the reopen list when projects are closed); "close" the close-tab confirmation.
+// "+" menu open (with the reopen list when projects are closed); "close" the close-tab confirmation;
+// "sessions-new" / "sessions-delete" / "sessions-telegram" the Session manager dialogs.
 // Files: <out>/<page>-<theme>-<width>.png
 // Before the screenshots a tour clicks every section and every view-only control (tabs, New
 // project, attempt files, plan files, planner log), closes a tab and reopens it from "+", walks the
@@ -207,10 +208,53 @@ async function sessionsFlow(page) {
   await page.locator("#slist .sitem").nth(2).waitFor({ state: "detached", timeout: 10000 });
   await conn(page).filter({ hasText: /deleted/ }).waitFor({ timeout: 5000 });
 
-  // back to the live one (first in the list), so captures find it
+  // Telegram (step 12): the selected session goes live from the head button (restart with --channels),
+  // badges appear in head and list, a second live one is refused inline in the New session dialog,
+  // and the toggle dialog explains why (both refusals are the page's own pre-check: the server's 409 is
+  // unit-tested, and a deliberate 409 here would count as a console error); then "Leave Telegram" frees
+  // the slot and the live one takes it back
   await page.locator("#slist .sitem", { hasText: "hello phoenix" }).click();
   await waitConnected(page);
-  return `, sessions (new, type, reconnect, reload, stop, resume, 2nd stopped, delete; xterm via ${styles.adopted} adopted sheets, font ${styles.rowFont.split(",")[0]})`;
+  if (!(await page.locator("#s-tg").isHidden())) throw new Error("telegram: badge shown before going live");
+  await page.locator("#s-telegram", { hasText: "Go live on Telegram" }).click();
+  dlg = page.locator("dialog.dialog[open]");
+  await dlg.locator("button", { hasText: "Restart live on Telegram" }).click();
+  await waitConnected(page);
+  await waitTermText(page, "ready");
+  await page.locator("#s-tg", { hasText: "live on Telegram" }).waitFor({ timeout: 10000 });
+  await page.locator("#slist .sitem", { hasText: "hello phoenix" }).locator(".badge.s-telegram").waitFor({ timeout: 5000 });
+  if (!(await page.locator("#s-count", { hasText: "on Telegram" }).count())) throw new Error("telegram: count line lacks 'on Telegram'");
+  await page.locator("#s-new").click();
+  dlg = page.locator("dialog.dialog[open]");
+  await dlg.locator(".hint", { hasText: "is live now" }).waitFor({ timeout: 5000 });
+  await dlg.locator("#s-tg-new").check();
+  await dlg.locator("button[type=submit]").click();
+  await dlg.locator("#s-tg-err", { hasText: /already live on Telegram/ }).waitFor({ timeout: 5000 });
+  if ((await page.locator("#slist .sitem").count()) !== 2) throw new Error("telegram: a second live session was created");
+  await dlg.locator("button", { hasText: "Cancel" }).click();
+  await dlg.waitFor({ state: "detached", timeout: 5000 });
+  // the stopped second session cannot take the slot either: its dialog warns, the server refuses, no restart
+  await page.locator("#slist .sitem", { hasText: "second session" }).click();
+  await page.locator("#s-badge", { hasText: "stopped" }).waitFor({ timeout: 10000 });
+  await page.locator("#s-telegram", { hasText: "Go live on Telegram" }).click();
+  dlg = page.locator("dialog.dialog[open]");
+  await dlg.locator(".notice.warn", { hasText: "is live on Telegram now" }).waitFor({ timeout: 5000 });
+  await dlg.locator("button", { hasText: "Resume live on Telegram" }).click();
+  await conn(page).filter({ hasText: /Could not go live on Telegram: another session is already live/ }).waitFor({ timeout: 10000 });
+  if (!(await page.locator("#s-badge", { hasText: "stopped" }).count())) throw new Error("telegram: refused session was started anyway");
+  // leave Telegram on the live one (restart without the channel), the badge goes away, then back on for the captures
+  await page.locator("#slist .sitem", { hasText: "hello phoenix" }).click();
+  await waitConnected(page);
+  await page.locator("#s-telegram", { hasText: "Leave Telegram" }).click();
+  await page.locator("dialog.dialog[open] button", { hasText: "Restart without Telegram" }).click();
+  await waitConnected(page);
+  await page.locator("#s-tg[hidden]").waitFor({ state: "attached", timeout: 10000 });
+  if (await page.locator("#slist .badge.s-telegram").count()) throw new Error("telegram: list badge left after leaving");
+  await page.locator("#s-telegram", { hasText: "Go live on Telegram" }).click();
+  await page.locator("dialog.dialog[open] button", { hasText: "Restart live on Telegram" }).click();
+  await waitConnected(page);
+  await page.locator("#s-tg", { hasText: "live on Telegram" }).waitFor({ timeout: 10000 });
+  return `, sessions (new, type, reconnect, reload, stop, resume, 2nd stopped, delete, telegram on/refused/off/on; xterm via ${styles.adopted} adopted sheets, font ${styles.rowFont.split(",")[0]})`;
 }
 const location_is_session = (url, sid) => url.endsWith(`#/sessions/${sid}`);
 
@@ -239,6 +283,7 @@ async function capture(context, name, width, theme) {
         } else if (await page.locator("#sessions.show-term").count()) throw new Error("phone: list view expected");
         if (name === "sessions-new") await page.locator("#s-new").click();
         if (name === "sessions-delete") await page.locator("#s-delete").click();
+        if (name === "sessions-telegram") await page.locator("#s-telegram").click();
         if (name !== "sessions" && name !== "sessions-term") await page.locator("dialog.dialog[open]").waitFor({ timeout: 5000 });
       }
     } else if (sec !== "builder") {

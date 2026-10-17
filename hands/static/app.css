@@ -156,6 +156,10 @@ section h2 { margin: 0 0 var(--sp-2); }
 .s-paused_rate_limit, .s-stopped, .s-failed, .s-ready { color: var(--warn); }
 .badge.s-paused_rate_limit, .badge.s-stopped, .badge.s-failed, .badge.s-ready { background: var(--warn-soft); }
 .s-escalation, .s-error { color: var(--bad); } .badge.s-escalation, .badge.s-error { background: var(--bad-soft); }
+/* channel badge (step 12): a session that is live on Telegram; the glyph replaces the status dot */
+.s-telegram { color: var(--accent); } .badge.s-telegram { background: var(--accent-soft); }
+.badge.s-telegram::before { content: "✈"; width: auto; height: auto; border-radius: 0; background: none; font-size: 11px; line-height: 1; }
+.sitem .sname .badge { margin-left: 6px; vertical-align: 1px; }
 .s-idle, .s-pending, .s-none { color: var(--ink-2); }
 
 /* ---------------------------------------------------------------- buttons */
@@ -294,6 +298,9 @@ ol.phases li.done { color: var(--ok); }
 .kbd { font: 11px var(--mono); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; color: var(--ink-2); background: var(--surface); }
 dialog.dialog .field { display: grid; gap: 4px; margin-bottom: var(--sp-2); }
 dialog.dialog .field label { margin: 0; }
+.check { display: flex; gap: 8px; align-items: flex-start; font-size: var(--fs-1); cursor: pointer; }
+.check input { margin: 3px 0 0; accent-color: var(--accent); flex: none; }
+.check .hint { display: block; font-size: var(--fs-0); color: var(--ink-2); font-weight: 400; }
 
 /* ---------------------------------------------------------------- small screens */
 @media (max-width: 1100px) {

@@ -23,6 +23,7 @@ From the Mac: `ssh -N -L 8090:127.0.0.1:8090 builder`, then on the VPS `hands-da
 (must be http://127.0.0.1:8090, not localhost). Shows status, steps, sessions, runner log, attempts
 (prompt, diff, acceptance logs, verdict) and progress notes; buttons: Start, Stop, Ack, Ack + clear model.
 Login codes are single use; sessions live in memory for 12 h (restart = log in again).
+Session manager (0.5): persistent Claude terminals in tmux; one can be live on Telegram (setup: docs/telegram.md).
 
 ## New projects (0.4.1)
 Dashboard → "+ New project" (slug + idea), or on the VPS: `echo "idea" | hands <slug> create`.

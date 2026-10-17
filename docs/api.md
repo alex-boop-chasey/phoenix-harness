@@ -319,27 +319,38 @@ session id (`claude --session-id <uuid>`, resumed with `claude --resume <uuid>`)
 ### GET /api/sessions
 
 Known sessions, newest activity first:
-`[{"id", "title", "cwd", "created", "last_active", "live", "viewers", "transcript"}]`. `title` is the
+`[{"id", "title", "cwd", "created", "last_active", "live", "viewers", "transcript", "telegram"}]`. `title` is the
 first user prompt of Claude's transcript `~/.claude/projects/<cwd encoded>/<uuid>.jsonl` (bounded read,
-cached in the record once found), `live` = the tmux session exists, `viewers` = open terminals on it.
+cached in the record once found), `live` = the tmux session exists, `viewers` = open terminals on it,
+`telegram` = the session is flagged to run with the Telegram channel (step 12; at most one flagged
+session is running at a time).
 
 ### GET /api/sessions/defaults
 
-`{"cwd": "~/ops", "home": "...", "max_terminals": 8}` (the New session form's defaults).
+`{"cwd": "~/ops", "home": "...", "max_terminals": 8, "telegram_channel": "plugin:telegram@claude-plugins-official"}`
+(the New session form's defaults and the one channel a live session runs).
 
 ### POST /api/sessions/new
 
-Body `{"cwd": "/abs/or/~/path"}` (optional, default `~/ops`). The working folder must exist, be
+Body `{"cwd": "/abs/or/~/path", "telegram": false}` (both optional, defaults `~/ops` and `false`; `telegram`
+must be a JSON boolean, `400` otherwise). The working folder must exist, be
 inside the home folder, not be the home folder itself and not be a hidden top-level folder (`~/.config`,
 `~/.ssh`, …); symlinks are resolved first (`400 "working folder …"` otherwise). Starts
 `claude --session-id <uuid>` in tmux with a clean allowlisted environment: `PATH HOME TERM LANG USER
 SHELL` (+ `CLAUDE_CONFIG_DIR`, `TMUX_TMPDIR` if the dashboard has them), **nothing copied from the
 dashboard's environment** (no GH/TG tokens, no `CLAUDECODE`, no `COLORTERM`), default permission
-mode (never `--dangerously-skip-permissions`). Response: the session's row.
+mode (never `--dangerously-skip-permissions`). With `"telegram": true` the argv also gets
+`--channels plugin:telegram@claude-plugins-official` (the plugin reads its own bot token from
+`~/.claude/channels/telegram/.env` inside the session; the dashboard never touches that folder) and the
+record is flagged; `409 "another session is already live on Telegram (<title>); stop it first"` if a
+flagged session is running. Response: the session's row.
 
 ### POST /api/sessions/UUID/resume · /stop · /delete · /ticket
 
-`resume` restarts a stopped session with `--resume <uuid>` (`409` if it is running); `stop` kills the
+`resume` restarts a stopped session with `--resume <uuid>` (`409` if it is running). Its optional body
+`{"telegram": true|false}` sets the flag before the start (persisted in the record; omitted or `null`
+keeps it), so a session moves on or off Telegram by stop + resume; a flagged start is `409` while
+another flagged session runs, and nothing is started or changed. `stop` kills the
 tmux session and closes its terminals; `delete` stops it, removes the record and unlinks exactly
 `~/.claude/projects/<cwd encoded>/<uuid>.jsonl` (never following a symlink; nothing else under
 `~/.claude` is listed or touched). `ticket` returns `{"ticket": "...", "ttl": 30}`: a single-use,

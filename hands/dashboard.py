@@ -739,7 +739,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, sessions.Store().listing())
         if parts == ["api", "sessions", "defaults"]:
             return self._json(200, {"cwd": str(sessions.default_cwd()), "home": str(sessions.HOME),
-                                    "max_terminals": sessions.MAX_TERMINALS})
+                                    "max_terminals": sessions.MAX_TERMINALS, "telegram_channel": sessions.TELEGRAM_CHANNEL})
         if len(parts) == 3 and parts[:2] == ["ws", "sessions"]:
             return self._terminal(_sid(parts[2]), (q.get("t") or [""])[0])
         if len(parts) >= 3 and parts[:2] == ["api", "p"]:
@@ -793,7 +793,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 raise ValueError("bad json")
             cwd = req.get("cwd") if isinstance(req, dict) else None
-            return self._json(200, sessions.start_new(cwd if isinstance(cwd, str) and cwd else None))
+            tg = req.get("telegram") if isinstance(req, dict) else None
+            return self._json(200, sessions.start_new(cwd if isinstance(cwd, str) and cwd else None, tg))
         if len(parts) == 4 and parts[:2] == ["api", "sessions"]:
             sid, verb = _sid(parts[2]), parts[3]
             if verb == "ticket":
@@ -801,7 +802,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ticket": self.server.mint_ticket(self._login_sid(), sid),
                                         "ttl": sessions.TICKET_TTL})
             if verb == "resume":
-                return self._json(200, sessions.resume(sid))
+                try:
+                    req = json.loads(body or b"{}")
+                except ValueError:
+                    raise ValueError("bad json")
+                return self._json(200, sessions.resume(sid, req.get("telegram") if isinstance(req, dict) else None))
             if verb == "stop":
                 return self._json(200, sessions.stop(sid))
             if verb == "delete":
