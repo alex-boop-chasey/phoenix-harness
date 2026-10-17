@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
+import tmpdirs  # noqa: E402,F401  (removes every mkdtemp dir after each test)
 os.environ["HANDS_NO_NOTIFY"] = "1"
 os.environ["HANDS_TEST_ALLOW_ROOT"] = "1"
 
