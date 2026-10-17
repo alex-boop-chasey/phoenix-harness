@@ -21,9 +21,21 @@ const [base, code, out, pagesArg] = process.argv.slice(2);
 const pages = (pagesArg || "").trim().split(/\s+/).filter(Boolean);
 const VIEWPORTS = [{ width: 1440, height: 900 }, { width: 390, height: 844 }];
 const errors = [];
+// Deliberate server refusals (the File browser flow asks for denied paths on purpose): Chromium logs every
+// non-2xx resource as a console error, so a refusal we provoke is registered here and its console line is
+// expected instead of failing the run. Anything else still fails.
+const expected = [];
+const expectFail = (re, status) => expected.push({ re, status, seen: 0 });
+function isExpected(m) {
+  const url = (m.location && m.location().url) || "";
+  if (process.env.UI_SHOTS_DEBUG) console.log(`console error at ${url}: ${m.text()}`);
+  const hit = expected.find((x) => x.re.test(url) && m.text().includes(`status of ${x.status}`));
+  if (hit) hit.seen++;
+  return !!hit;
+}
 
 function watch(page, label) {
-  page.on("console", (m) => { if (m.type() === "error") errors.push(`${label}: ${m.text()}`); });
+  page.on("console", (m) => { if (m.type() === "error" && !isExpected(m)) errors.push(`${label}: ${m.text()}`); });
   page.on("pageerror", (e) => errors.push(`${label}: ${e.message}`));
   // unhandled promise rejections are not always surfaced as pageerror: log them as console errors
   page.addInitScript(() => window.addEventListener("unhandledrejection", (ev) => {
@@ -258,6 +270,220 @@ async function sessionsFlow(page) {
 }
 const location_is_session = (url, sid) => url.endsWith(`#/sessions/${sid}`);
 
+// ---- File browser (step 14). The rig's tree is built by tools/rigdash.py under the container home:
+// ~/projects/site (text, code, PNGs, a binary, hidden files, a blocked symlink "keys" -> ~/.ssh).
+const fb = {
+  row: (page, name) => page.locator(`#f-body tr[data-name="${name}"]`),
+  async roots(page) { return page.evaluate(async () => (await (await fetch("/api/files/roots")).json())); },
+  async open(page, root, path, extra) {
+    const p = new URLSearchParams({ root, ...(path ? { path } : {}), ...(extra || {}) });
+    await page.evaluate((h) => { location.hash = h; }, `#/files?${p}`);
+    await page.locator("#page-files:not([hidden])").waitFor({ timeout: 5000 });
+    await page.waitForFunction(() => !document.querySelector("#f-body .spinner"), null, { timeout: 10000 });
+  },
+  async names(page) { return page.locator("#f-body tbody tr").evaluateAll((rs) => rs.map((r) => r.dataset.name)); },
+  async dialog(page) { const d = page.locator("dialog.dialog[open]"); await d.waitFor({ timeout: 5000 }); return d; },
+};
+async function filesFlow(page) {
+  const fs = require("fs");
+  await page.locator('#nav a[data-section="files"]').click();
+  await page.locator("#page-files:not([hidden])").waitFor({ timeout: 5000 });
+  await page.locator("#f-body table, #f-body .empty, #f-body .fgrid").first().waitFor({ timeout: 10000 });
+  const info = await fb.roots(page);
+  const home = info.home, proj = `${home}/projects`;
+  if (!info.denied.includes("~/.ssh") || !info.denied.includes("~/.config/hands")) throw new Error(`files: denied list ${info.denied}`);
+  const opts = await page.locator("#f-root option").allTextContents();
+  if (!opts.some((o) => o.startsWith("claude-harness (missing)"))) throw new Error(`files: missing root not marked: ${opts}`);
+
+  // browse: switch root with the switcher, open a folder by its link, breadcrumb back up
+  await page.locator("#f-root").selectOption(proj);
+  await fb.row(page, "site").waitFor({ timeout: 10000 });
+  await fb.row(page, "site").locator("a.fname").click();
+  await fb.row(page, "README.md").waitFor({ timeout: 10000 });
+  let names = await fb.names(page);
+  if (names.slice(0, 7).join() !== "assets,docs,empty,logs,notes,src,src-link") throw new Error(`files: folders first by name: ${names}`);
+  if (!names.includes(".env.example")) throw new Error("files: hidden files should show by default");
+  await page.locator("#f-hidden").uncheck();
+  if ((await fb.names(page)).includes(".env.example")) throw new Error("files: hidden files still shown");
+  await page.locator("#f-hidden").check();
+  await fb.row(page, "src").locator("a.fname").click();
+  await fb.row(page, "app.js").waitFor({ timeout: 10000 });
+  await page.locator("#f-crumbs a", { hasText: "site" }).click();
+  await fb.row(page, "README.md").waitFor({ timeout: 10000 });
+
+  // sort by size (largest first among files; folders stay first), then back to name
+  await page.locator("#f-body th button", { hasText: "Size" }).click();
+  names = await fb.names(page);
+  const filesOnly = names.filter((n) => !["assets", "docs", "empty", "keys", "logs", "notes", "src", "src-link"].includes(n));
+  if (filesOnly[0] !== "data.bin") throw new Error(`files: size sort: ${filesOnly}`);
+  await page.locator("#f-sort").selectOption("name:1");
+
+  // preview: text, image, binary; Escape closes
+  await fb.row(page, "README.md").locator("a.fname").click();
+  await page.locator("#f-p-body pre.log", { hasText: "A small sample project" }).waitFor({ timeout: 10000 });
+  await page.keyboard.press("Escape");
+  await page.locator("#f-preview[hidden]").waitFor({ state: "attached", timeout: 5000 });
+  await fb.row(page, "assets").locator("a.fname").click();
+  await fb.row(page, "logo.png").locator("a.fname").click();
+  const img = page.locator("#f-p-body img.pimg");
+  await img.waitFor({ timeout: 10000 });
+  await page.waitForFunction(() => { const i = document.querySelector("#f-p-body img.pimg"); return i && i.complete && i.naturalWidth === 240; }, null, { timeout: 10000 });
+  await page.locator("#f-vgrid").click();
+  await page.locator("#f-body .fgrid .fcard").first().waitFor({ timeout: 5000 });
+  await page.waitForFunction(() => Array.from(document.querySelectorAll("#f-body .fcard img")).filter((i) => i.complete && i.naturalWidth > 0).length === 2, null, { timeout: 10000 });
+  await page.locator("#f-vlist").click();
+  await page.locator("#f-crumbs a", { hasText: "site" }).click();
+  await fb.row(page, "data.bin").locator("a.fname").click();
+  await page.locator("#f-p-body", { hasText: "Binary file" }).waitFor({ timeout: 10000 });
+
+  // download: the browser gets the exact bytes
+  const [dl] = await Promise.all([page.waitForEvent("download"), page.locator("#f-p-tools a", { hasText: "Download" }).click()]);
+  const got = fs.readFileSync(await dl.path());
+  if (dl.suggestedFilename() !== "data.bin" || got.length !== 4096 || got[255] !== 255) throw new Error(`files: download ${dl.suggestedFilename()} ${got.length}`);
+  await page.locator("#f-close").click();
+
+  // new folder, then upload into it: the button (two files), drag and drop (one), a same-name upload asks first
+  await page.locator("#f-mkdir").click();
+  let dlg = await fb.dialog(page);
+  await dlg.locator("input").fill("uploads");
+  await dlg.locator("button[type=submit]").click();
+  await dlg.waitFor({ state: "detached", timeout: 5000 });
+  await fb.row(page, "uploads").locator("a.fname").click();
+  await page.locator("#f-body .empty", { hasText: "This folder is empty" }).waitFor({ timeout: 10000 });
+  await page.locator("#f-file").setInputFiles([
+    { name: "hello.txt", mimeType: "text/plain", buffer: Buffer.from("hello from the rig\n") },
+    { name: "big.bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(3 * 1024 * 1024, 7) }]);
+  await page.locator('#f-uplist .upitem[data-name="big.bin"] .badge', { hasText: "done" }).waitFor({ timeout: 20000 });
+  await fb.row(page, "big.bin").waitFor({ timeout: 10000 });
+  await page.evaluate(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(["dropped in\n"], "dropped.md", { type: "text/markdown" }));
+    const pg = document.getElementById("page-files");
+    pg.dispatchEvent(new DragEvent("dragenter", { dataTransfer: dt, bubbles: true, cancelable: true }));
+    pg.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true }));
+    pg.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+  });
+  await fb.row(page, "dropped.md").waitFor({ timeout: 10000 });
+  expectFail(/\/api\/files\/upload\?/, 409);
+  await page.locator("#f-file").setInputFiles([{ name: "hello.txt", mimeType: "text/plain", buffer: Buffer.from("replaced\n") }]);
+  dlg = await fb.dialog(page);
+  await dlg.locator("button", { hasText: "Replace" }).click();
+  await page.locator('#f-uplist .upitem[data-name="hello.txt"] .badge', { hasText: "done" }).nth(1).waitFor({ timeout: 10000 });
+  await fb.row(page, "hello.txt").locator("a.fname").click();
+  await page.locator("#f-p-body pre.log", { hasText: "replaced" }).waitFor({ timeout: 10000 });
+
+  // edit the text and save it; rename (row button); delete a file, then the non-empty folder (two confirmations)
+  await page.locator("#f-p-tools button", { hasText: "Edit" }).click();
+  await page.locator("#f-p-body textarea").fill("edited in the browser\n");
+  await page.locator("#f-p-tools button", { hasText: "Save" }).click();
+  await page.locator("#f-p-body pre.log", { hasText: "edited in the browser" }).waitFor({ timeout: 10000 });
+  await page.locator("#f-close").click();
+  await fb.row(page, "hello.txt").hover();
+  await fb.row(page, "hello.txt").locator("button[aria-label^=Rename]").click();
+  dlg = await fb.dialog(page);
+  await dlg.locator("input").fill("renamed.txt");
+  await dlg.locator("button[type=submit]").click();
+  await fb.row(page, "renamed.txt").waitFor({ timeout: 10000 });
+  if (await fb.row(page, "hello.txt").count()) throw new Error("files: old name still listed after rename");
+  await fb.row(page, "big.bin").hover();
+  await fb.row(page, "big.bin").locator("button[aria-label^=Delete]").click();
+  dlg = await fb.dialog(page);
+  await dlg.locator("button", { hasText: "Cancel" }).click();
+  if (!(await fb.row(page, "big.bin").count())) throw new Error("files: Cancel deleted the file");
+  await fb.row(page, "big.bin").hover();
+  await fb.row(page, "big.bin").locator("button[aria-label^=Delete]").click();
+  await (await fb.dialog(page)).locator("button", { hasText: "Delete" }).click();
+  await fb.row(page, "big.bin").waitFor({ state: "detached", timeout: 10000 });
+  await page.locator("#f-crumbs a", { hasText: "site" }).click();
+  await fb.row(page, "uploads").hover();
+  expectFail(/\/api\/files\/delete$/, 409);
+  await fb.row(page, "uploads").locator("button[aria-label^=Delete]").click();
+  await (await fb.dialog(page)).locator("button", { hasText: "Delete" }).click();
+  await page.locator("dialog.dialog[open] h2", { hasText: "is not empty" }).waitFor({ timeout: 10000 });
+  await page.locator("dialog.dialog[open] button", { hasText: "Delete everything" }).click();
+  await fb.row(page, "uploads").waitFor({ state: "detached", timeout: 10000 });
+
+  // search the root by name; open a hit; clear
+  await page.locator("#f-q").fill("app");
+  await page.locator("#f-q").press("Enter");
+  await page.locator('#f-body tr[data-name="site/src/app.js"]').waitFor({ timeout: 10000 });
+  await page.locator('#f-body tr[data-name="site/src/app.js"] a.fname').click();
+  await page.locator("#f-p-body pre.log", { hasText: "export function hello" }).waitFor({ timeout: 10000 });
+  await page.locator("#f-crumbs a").first().click();
+  await fb.row(page, "site").waitFor({ timeout: 10000 });
+
+  // refusals: the blocked symlink to ~/.ssh, a ".." path, a root that is not allowed, a denied root in Settings
+  await fb.open(page, proj, "site");
+  if (!(await fb.row(page, "keys").locator(".fsub", { hasText: "blocked" }).count())) throw new Error("files: keys link not marked blocked");
+  expectFail(/\/api\/files\/read\?/, 403);
+  await fb.row(page, "keys").locator("a.fname").click();                       // opened like a file: the preview refuses
+  await page.locator("#f-p-body .notice.bad", { hasText: "Access refused" }).waitFor({ timeout: 10000 });
+  expectFail(/\/api\/files\/list\?/, 403);
+  await fb.open(page, proj, "site/keys");                                       // opened as a folder: the list refuses
+  await page.locator("#f-body .notice.bad", { hasText: "Access refused" }).waitFor({ timeout: 10000 });
+  if (await page.locator("#page-files", { hasText: "id_rig" }).count()) throw new Error("files: denied folder contents shown");
+  expectFail(/\/api\/files\/list\?/, 400);
+  await fb.open(page, proj, "site/../..");
+  await page.locator("#f-body .notice.bad", { hasText: "Not allowed" }).waitFor({ timeout: 10000 });
+  expectFail(/\/api\/files\/list\?/, 404);
+  await fb.open(page, `${home}/.ssh`, "");
+  await page.locator("#f-body .notice.bad", { hasText: "Not found" }).waitFor({ timeout: 10000 });
+  await page.locator("#f-settings").click();
+  dlg = await fb.dialog(page);
+  await dlg.locator("#f-denied li", { hasText: "~/.ssh" }).waitFor({ timeout: 5000 });
+  await dlg.locator("button", { hasText: "+ Add root" }).click();
+  await dlg.locator(".rootrow input").last().fill("~/.ssh");
+  expectFail(/\/api\/files\/settings$/, 400);
+  await dlg.locator("button[type=submit]").click();
+  await dlg.locator(".error", { hasText: "hidden folder" }).waitFor({ timeout: 5000 });
+  if ((await dlg.locator('.rootrow input[aria-invalid="true"]').count()) !== 1) throw new Error("files: bad root not marked");
+  // a good root is saved and shows up in the switcher
+  await dlg.locator(".rootrow input").last().fill("~/scratch");
+  await dlg.locator("button[type=submit]").click();
+  await dlg.waitFor({ state: "detached", timeout: 5000 });
+  await page.locator(`#f-root option[value="${home}/scratch"]`).waitFor({ state: "attached", timeout: 5000 });
+  const missing = expected.filter((x) => !x.seen);
+  if (missing.length) throw new Error(`files: expected refusals not seen: ${missing.map((x) => `${x.re} ${x.status}`)}`);
+  return `, files (browse, hidden, sort, preview text/image/binary, grid thumbs, download, mkdir, upload button/drop/replace, edit, rename, delete file/folder, search, refusals 403/400/404, settings bad/good; ${expected.length} expected refusals)`;
+}
+
+// File browser screenshots: each starts from a hash so they do not depend on each other
+async function filesCapture(page, name, width) {
+  const info = await fb.roots(page);
+  const proj = `${info.home}/projects`;
+  const view = name === "files-grid" ? "#f-vgrid" : "#f-vlist";
+  if (name === "files" || name === "files-grid") await fb.open(page, proj, "site");
+  else if (name === "files-preview") await fb.open(page, proj, "site", { file: "README.md" });
+  else if (name === "files-image") await fb.open(page, proj, "site/assets", { file: "logo.png" });
+  else if (name === "files-search") await fb.open(page, proj, "", { q: "md" });
+  else if (name === "files-denied") { expectFail(/\/api\/files\/list\?/, 403); await fb.open(page, proj, "site/keys"); }
+  else if (name === "files-settings") await fb.open(page, proj, "site");
+  else if (name === "files-upload") await fb.open(page, `${info.home}/ops`, "inbox");
+  await page.locator(view).click();
+  if (name === "files-preview") await page.locator("#f-p-body pre.log").waitFor({ timeout: 10000 });
+  if (name === "files-image") await page.waitForFunction(() => { const i = document.querySelector("#f-p-body img.pimg"); return i && i.complete && i.naturalWidth > 0; }, null, { timeout: 10000 });
+  if (name === "files-grid") await page.waitForFunction(() => Array.from(document.querySelectorAll("#f-body .fcard img")).every((i) => i.complete), null, { timeout: 10000 });
+  if (name === "files-denied") await page.locator("#f-body .notice.bad").waitFor({ timeout: 10000 });
+  if (name === "files-settings") { await page.locator("#f-settings").click(); await fb.dialog(page); }
+  if (name === "files-upload") {
+    const tag = `${await page.evaluate(() => matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")}-${width}`;
+    await page.locator("#f-file").setInputFiles([
+      { name: `photo-${tag}.png`, mimeType: "image/png", buffer: Buffer.alloc(2048, 1) },
+      { name: `notes-${tag}.md`, mimeType: "text/markdown", buffer: Buffer.from("# notes\n") }]);
+    await page.locator(`#f-uplist .upitem[data-name="notes-${tag}.md"] .badge`, { hasText: "done" }).waitFor({ timeout: 10000 });
+    await page.evaluate(() => {
+      const dt = new DataTransfer();
+      dt.items.add(new File(["x"], "x.txt"));
+      document.getElementById("page-files").dispatchEvent(new DragEvent("dragenter", { dataTransfer: dt, bubbles: true, cancelable: true }));
+    });
+    await page.locator("#f-drop.active").waitFor({ timeout: 5000 });
+  }
+  if (width <= 900 && (name === "files-preview" || name === "files-image")) {
+    if (!(await page.locator("#f-back").isVisible())) throw new Error("phone: files back button hidden");
+    if (await page.locator("#fbrowser > .flistcard").isVisible()) throw new Error("phone: file list should give way to the preview");
+  }
+}
+
 async function waitBuilder(page) {
   // the builder settles on: a selected tab, the New project form (no projects) or the empty state (all closed)
   await page.locator('#tabs .tab[aria-selected="true"], #slug, main .empty').first().waitFor({ timeout: 10000 });
@@ -267,7 +493,7 @@ async function capture(context, name, width, theme) {
   const page = await context.newPage();
   watch(page, `${name}-${theme}-${width}`);
   try {
-    const sec = name.startsWith("sessions") ? "sessions" : name === "files" ? name : "builder";
+    const sec = name.startsWith("sessions") ? "sessions" : name.startsWith("files") ? "files" : "builder";
     await page.goto(`${base}/#/${sec}`, { waitUntil: "networkidle" });
     if (sec === "sessions") {
       await page.locator("#page-sessions h1").waitFor({ timeout: 10000 });
@@ -286,8 +512,9 @@ async function capture(context, name, width, theme) {
         if (name === "sessions-telegram") await page.locator("#s-telegram").click();
         if (name !== "sessions" && name !== "sessions-term") await page.locator("dialog.dialog[open]").waitFor({ timeout: 5000 });
       }
-    } else if (sec !== "builder") {
-      await page.locator(`#page-${sec} h1`).waitFor({ timeout: 10000 });
+    } else if (sec === "files") {
+      await page.locator("#page-files h1").waitFor({ timeout: 10000 });
+      await filesCapture(page, name, width);
     } else if (name === "new") {
       await openNewForm(page);
       await page.locator("#slug").fill("bakery");
@@ -427,6 +654,7 @@ async function tour(context) {
   let envNote = "";
   if (names.includes("wiki")) envNote = await envFlow(page);
   envNote += await sessionsFlow(page);
+  envNote += await filesFlow(page);
   await page.locator('#nav a[data-section="builder"]').click();
   await waitBuilder(page);
 
@@ -521,8 +749,8 @@ async function envFlow(page) {
   return `, env flow (add 3, reload, replace, delete, paste; ${seen.length} responses checked, no secret leaked)`;
 }
 
-// Side-by-side sheets: the Project builder (bookings) next to the Session manager, per theme and width,
-// so the two pages can be compared for sidebar, header, buttons, fonts and colours at a glance.
+// Side-by-side sheets: the Project builder (bookings), the Session manager and the File browser, per theme
+// and width, so the pages can be compared for sidebar, header, buttons, fonts and colours at a glance.
 async function compareShots(browser) {
   const fs = require("fs");
   const context = await browser.newContext();
@@ -530,15 +758,17 @@ async function compareShots(browser) {
     for (const theme of ["light", "dark"]) {
       for (const vp of VIEWPORTS) {
         const a = path.join(out, `bookings-${theme}-${vp.width}.png`), b = path.join(out, `sessions-${theme}-${vp.width}.png`);
+        const c = path.join(out, `files-${theme}-${vp.width}.png`);
         if (!fs.existsSync(a) || !fs.existsSync(b)) continue;
+        const third = fs.existsSync(c) ? `<figure><figcaption>File browser · ${theme} · ${vp.width}</figcaption><img src="file://${c}"></figure>` : "";
         const html = `<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#888;font:13px system-ui;display:flex;gap:12px;padding:12px;align-items:flex-start}` +
           `figure{margin:0}figcaption{color:#fff;padding:4px 0}img{display:block;width:${vp.width}px;max-height:900px;object-fit:cover;object-position:top}</style>` +
           `<figure><figcaption>Project builder · ${theme} · ${vp.width}</figcaption><img src="file://${a}"></figure>` +
-          `<figure><figcaption>Session manager · ${theme} · ${vp.width}</figcaption><img src="file://${b}"></figure>`;
+          `<figure><figcaption>Session manager · ${theme} · ${vp.width}</figcaption><img src="file://${b}"></figure>` + third;
         const f = path.join(out, `compare-${theme}-${vp.width}.html`);
         fs.writeFileSync(f, html);
         const page = await context.newPage();
-        await page.setViewportSize({ width: vp.width * 2 + 36, height: 940 });
+        await page.setViewportSize({ width: vp.width * (third ? 3 : 2) + (third ? 48 : 36), height: 940 });
         await page.goto(`file://${f}`, { waitUntil: "load" });
         await page.screenshot({ path: path.join(out, `compare-${theme}-${vp.width}.png`), fullPage: true });
         await page.close();

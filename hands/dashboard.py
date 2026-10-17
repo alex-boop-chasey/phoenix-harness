@@ -66,6 +66,7 @@ MAX_LOG_BYTES = 1_000_000
 STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8"),
                 "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                 "/sessions.js": ("sessions.js", "text/javascript; charset=utf-8"),
+                "/files.js": ("files.js", "text/javascript; charset=utf-8"),
                 "/app.css": ("app.css", "text/css; charset=utf-8"),
                 # xterm.js 5.5.0 + fit addon, vendored (no CDN; CSP is script-src 'self')
                 "/vendor/xterm.min.js": ("vendor/xterm.min.js", "text/javascript; charset=utf-8"),
@@ -759,6 +760,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, files.read_text(root, rel))
             if parts[2] == "download":
                 return self._download(root, rel)
+            if parts[2] == "image":
+                try:
+                    return self._download(root, rel, image=True)
+                except files.TooLarge as e:
+                    return self._json(413, {"error": str(e)})
             if parts[2] == "search":
                 return self._json(200, files.search(root, (q.get("q") or [""])[0]))
         if len(parts) >= 3 and parts[:2] == ["api", "p"]:
@@ -851,16 +857,22 @@ class Handler(BaseHTTPRequestHandler):
         raise LookupError(path)
 
     # -- file browser streams (hands/files.py): bounded chunks, never the whole file in memory
-    def _download(self, root: str, rel: str) -> None:
-        fd, size, name = files.open_download(root, rel)
+    def _download(self, root: str, rel: str, image: bool = False) -> None:
+        """Download (attachment, octet-stream) or, with image=True, a raster image preview (inline, its own
+        image/* type from files.IMAGE_TYPES; never SVG)."""
+        if image:
+            fd, size, name, ctype = files.open_image(root, rel)
+        else:
+            (fd, size, name), ctype = files.open_download(root, rel), "application/octet-stream"
         try:
+            kind = "inline" if image else "attachment"
             safe = re.fullmatch(r"[A-Za-z0-9 ._+()-]{1,150}", name)
-            disp = (f'attachment; filename="{name}"' if safe else
-                    "attachment; filename*=UTF-8''" + urllib.parse.quote(name, safe="")[:600])
+            disp = (f'{kind}; filename="{name}"' if safe else
+                    f"{kind}; filename*=UTF-8''" + urllib.parse.quote(name, safe="")[:600])
             self.send_response(200)
             for k, v in SECURITY_HEADERS.items():
                 self.send_header(k, v)
-            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(size))
             self.send_header("Content-Disposition", disp)
             self.end_headers()

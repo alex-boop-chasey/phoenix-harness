@@ -125,6 +125,12 @@ text label and a dot, step icons use ✓ ✗ ○ plus colour.
 | File grid | `.fgrid .fcard[aria-selected] .thumb .fname .fmeta` | auto-fill 140 px cards |
 | Preview pane | `.card.preview` (+ `pre.log` for text) | actions row: Download, Copy path, Rename · Delete (danger, right) |
 | Upload | `.dropzone(.active)`, `.progress .fill` | drop target + per-file progress list with badges |
+| File browser page | `.page-head.fhead` (search, List/Grid `.seg`, New folder, Upload, Settings), `.fbar` (root `select.select`, `.crumbs`, sort `select`), `.fbrowser(.has-preview)` = `.card.flistcard` + `.card.preview` | built in `files.js` (step 14). Location in the hash (`#/files?root=&path=&file=&q=`). List = `table.flist` with sortable `th button[aria-sort]`, `.ftype` chip (`.bad` = blocked link), `.fsub` note, per-row ✎/🗑 `.ract` buttons (shown on hover/focus, always on phone). Preview: text in `pre.log`, raster images as `img.pimg` from `/api/files/image`, binary note; tools Download · Copy path · Edit · Rename · Delete. Edit = `.textarea` saved by upload with overwrite. Refusals (403/404/400) = `.notice.bad` "Access refused / Not found / Not allowed" in the list or preview. Phone: preview replaces the list (`‹ Files`), Permissions/Modified hidden |
+| Upload list | `.card` + `.uplist .upitem` (`.ftype`, `.upname`, state `.badge`, `.progress .fill`, `.error`) | one row per file: waiting / % / done / failed / skipped; same-name upload asks Replace via `confirmDialog` |
+| Roots settings | `dialog.dialog.wide`, `.rootrows .rootrow` (`.input.mono` + × , missing roots read-only with a hint), `label.check` for `.git` writes, `ul.denied` (`.badge.s-error` "denied" + mono path) | server errors inline under the list, the offending root gets `aria-invalid` |
+| Quiet text button | `.btn.quiet.sm.text` | quiet button with text at `--fs-1` (`.btn.quiet.sm` alone is the larger icon button) |
+| Select | `select.select` | native select in control style, accent focus ring |
+| Toasts | `#toasts.toasts .toast(.bad)` | now in app.css (step 14); used by the File browser for done/failed actions |
 
 ## States
 

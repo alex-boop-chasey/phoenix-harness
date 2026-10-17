@@ -39,6 +39,11 @@ MAX_NAME = 255
 MAX_LIST = 5000                         # entries per folder listing
 MAX_TEXT = 2_000_000                    # bytes returned by read (text)
 MAX_UPLOAD = 256 * 1024 * 1024          # bytes per upload (streamed to disk, never held in memory)
+MAX_IMAGE = 32 * 1024 * 1024            # bytes per image preview
+# raster images the page may preview inline (by the real file's extension). SVG is never served as an
+# image: it can carry script, so the page shows it as text.
+IMAGE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif",
+               "webp": "image/webp", "avif": "image/avif", "bmp": "image/bmp", "ico": "image/x-icon"}
 MAX_HITS = 500                          # search results
 MAX_SCAN = 100_000                      # directory entries a search may visit
 SEARCH_SECONDS = 5.0
@@ -52,6 +57,10 @@ _MUTEX = threading.Lock()
 
 
 class Conflict(Exception):
+    pass
+
+
+class TooLarge(Exception):
     pass
 
 
@@ -178,11 +187,22 @@ def save_settings(req) -> dict:
     return settings()
 
 
+def denied_display() -> list[str]:
+    """The always-denied places, as the settings view shows them (~/... where under home), no duplicates."""
+    home, out = _home(), []
+    for d in denied_paths():
+        shown = "~" + d[len(home):] if _within(d, home) and d != home else d
+        if shown not in out:
+            out.append(shown)
+    return out
+
+
 def roots_info() -> dict:
     s = settings()
     return {"roots": [{"name": os.path.basename(r), "path": r, "exists": os.path.isdir(r)} for r in s["roots"]],
-            "git_writes": s["git_writes"],
-            "limits": {"max_upload": MAX_UPLOAD, "max_text": MAX_TEXT, "max_list": MAX_LIST, "max_hits": MAX_HITS}}
+            "git_writes": s["git_writes"], "home": _home(), "denied": denied_display(),
+            "limits": {"max_upload": MAX_UPLOAD, "max_text": MAX_TEXT, "max_list": MAX_LIST, "max_hits": MAX_HITS,
+                       "max_image": MAX_IMAGE}}
 
 
 # ---------------------------------------------------------------- resolution
@@ -400,6 +420,20 @@ def open_download(root, rel) -> tuple[int, int, str]:
     real = resolve(root, rel, s)
     fd, size = _open_file(real)
     return fd, size, real.name
+
+
+def open_image(root, rel) -> tuple[int, int, str, str]:
+    """(fd, size, file name, MIME type) of a raster image for the preview. The caller closes the fd."""
+    s = settings()
+    real = resolve(root, rel, s)
+    ctype = IMAGE_TYPES.get(real.name.rsplit(".", 1)[-1].lower()) if "." in real.name else None
+    if not ctype:
+        raise ValueError("not an image the browser can preview (png, jpg, gif, webp, avif, bmp, ico)")
+    fd, size = _open_file(real)
+    if size > MAX_IMAGE:
+        os.close(fd)
+        raise TooLarge(f"image too large to preview (max {MAX_IMAGE // (1024 * 1024)} MB); download it instead")
+    return fd, size, real.name, ctype
 
 
 def mkdir(root, rel) -> dict:

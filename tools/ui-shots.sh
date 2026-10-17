@@ -16,7 +16,9 @@
 #             sessions (Session manager: list + live terminal; phone: the list), sessions-term (phone:
 #             the terminal view), sessions-new (New session dialog), sessions-delete (Delete dialog),
 #             sessions-telegram (Leave/Go live on Telegram dialog; the live session is on Telegram)
-#   Also writes compare-<theme>-<width>.png: Project builder and Session manager side by side.
+#             files (File browser list), files-grid, files-preview (text), files-image, files-search,
+#             files-upload (upload list + drop zone), files-settings (roots dialog), files-denied (refusal)
+#   Also writes compare-<theme>-<width>.png: Project builder, Session manager and File browser side by side.
 #   Each page is saved as <page>-light-1440.png, <page>-dark-390.png, ...
 #
 #   Environment: UI_SHOTS_PROJECTS=N   how many sample projects (0..20, default 6; see fixtures.py)
@@ -45,6 +47,7 @@ if [ "${1:-}" = "--inner" ]; then
   node --check /src/tools/shots.js
   node --check /src/hands/static/app.js                # the host has no node; this is the JS syntax check
   node --check /src/hands/static/sessions.js
+  node --check /src/hands/static/files.js
   NODE_PATH="$(ls -d /home/node/.npm/_npx/*/node_modules | head -1)"   # playwright lives in the npx cache
   if [ "${UI_SHOTS_MODE:-}" = "mock" ]; then
     PYTHONPATH=/src python3 /src/tools/mockserve.py /src/hands/static/mock "$PORT" /vendor=/src/console/static >/tmp/dash.log 2>&1 &
@@ -81,7 +84,7 @@ LABEL="${1:-}"
 [ -n "$LABEL" ] || { echo "usage: bash tools/ui-shots.sh <label> [page ...]" >&2; exit 2; }
 case "$LABEL" in *[!A-Za-z0-9._/-]*|*..*|/*) echo "label: letters, digits, . _ - and / (no .., not absolute) only" >&2; exit 2;; esac
 shift
-if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new newbad env envbad sessions sessions-term sessions-new sessions-delete sessions-telegram files nav tabs menu close}"; fi
+if [ "$MODE" = mock ]; then PAGES="${*:-builder sessions files files-grid}"; else PAGES="${*:-bookings crm blog wiki landing notes new newbad env envbad sessions sessions-term sessions-new sessions-delete sessions-telegram files files-grid files-preview files-image files-search files-upload files-settings files-denied nav tabs menu close}"; fi
 case "${UI_SHOTS_PROJECTS:-}" in ""|[0-9]|1[0-9]|20) ;; *) echo "UI_SHOTS_PROJECTS: 0..20" >&2; exit 2;; esac
 case "${UI_SHOTS_HIDDEN:-}" in *[!A-Za-z0-9_\ -]*) echo "UI_SHOTS_HIDDEN: project names separated by spaces" >&2; exit 2;; esac
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -90,7 +93,7 @@ mkdir -p "$OUT"
 
 docker run --rm --init --network none --entrypoint bash \
   --shm-size 1g \
-  -e UI_SHOTS_PAGES="$PAGES" -e UI_SHOTS_MODE="$MODE" \
+  -e UI_SHOTS_PAGES="$PAGES" -e UI_SHOTS_MODE="$MODE" -e UI_SHOTS_DEBUG="${UI_SHOTS_DEBUG:-}" \
   -e UI_SHOTS_PROJECTS="${UI_SHOTS_PROJECTS:-}" -e UI_SHOTS_HIDDEN="${UI_SHOTS_HIDDEN:-}" \
   --mount "type=bind,src=$REPO,dst=/src,readonly" \
   --mount "type=bind,src=$OUT,dst=/out" \

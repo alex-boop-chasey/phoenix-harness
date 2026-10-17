@@ -408,9 +408,12 @@ it points to; a non-empty folder needs `"recursive": true` (JSON boolean).
 
 ```json
 {"roots": [{"name": "harness", "path": "/home/builder/harness", "exists": true}, ...],
- "git_writes": false,
- "limits": {"max_upload": 268435456, "max_text": 2000000, "max_list": 5000, "max_hits": 500}}
+ "git_writes": false, "home": "/home/builder",
+ "denied": ["~/.config/hands", "~/.ssh", "~/.config/gh", "~/.git-credentials", "~/.claude"],
+ "limits": {"max_upload": 268435456, "max_text": 2000000, "max_list": 5000, "max_hits": 500, "max_image": 33554432}}
 ```
+
+`denied` (since step 14) lists the always-denied places for the settings view (`~/` form, no duplicates).
 
 ### POST /api/files/settings
 
@@ -443,6 +446,12 @@ instead of a folder → `400`.
 The file as `application/octet-stream` with `Content-Length` and
 `Content-Disposition: attachment; filename="name"` (or `filename*=UTF-8''...` for names outside
 `[A-Za-z0-9 ._+()-]`), streamed; opened `O_NOFOLLOW`, regular files only (`400` otherwise).
+
+### GET /api/files/image?root=ROOT&path=REL
+
+A raster image for the preview (since step 14): served `inline` with its own type chosen by the real
+file's extension (`png jpg jpeg gif webp avif bmp ico`), same security headers (`nosniff`, CSP) and
+streaming as download; at most 32 MB (`413`). Anything else (SVG included: it can carry script) → `400`.
 
 ### GET /api/files/search?root=ROOT&q=TEXT
 
@@ -487,11 +496,11 @@ lock `~/.config/hands/dashboard.lock`). The watchdog cron keeps it running via
 
 ## Route inventory (for the coverage check)
 
-`/` `/app.js` `/sessions.js` `/app.css` `/vendor/xterm.min.js` `/vendor/addon-fit.min.js` `/vendor/xterm.min.css` `/login` ·
+`/` `/app.js` `/sessions.js` `/files.js` `/app.css` `/vendor/xterm.min.js` `/vendor/addon-fit.min.js` `/vendor/xterm.min.css` `/login` ·
 GET `/api/projects` `/api/usage` `/api/creating/<slug>` `/api/p/<name>` `/api/p/<name>/log`
 `/api/p/<name>/attempts` `/api/p/<name>/attempts/<attempt>/<file>` `/api/p/<name>/planfile`
 `/api/p/<name>/env` `/api/sessions` `/api/sessions/defaults` `/api/files/roots` `/api/files/list`
-`/api/files/read` `/api/files/download` `/api/files/search` ·
+`/api/files/read` `/api/files/download` `/api/files/image` `/api/files/search` ·
 POST `/api/usage/refresh` `/api/new` `/api/p/<name>/action/<action>` (stop, start, ack,
 ack-clear-model, plan, approve) `/api/p/<name>/hide` `/api/p/<name>/unhide` `/api/p/<name>/env`
 `/api/sessions/new` `/api/sessions/<uuid>/resume|stop|delete|ticket` `/api/files/settings`
