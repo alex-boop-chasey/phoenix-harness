@@ -216,4 +216,11 @@ resized together with the browser (`tmux resize-window` / `setwinsize` on the at
 
 ### Decision
 
-_Pending: Alex to choose A, B or C (or propose another). Recorded here once made._
+**C, chosen by Alex on 2026-10-17**, with four conditions for step 10:
+
+1. Origin, Host, session (cookie) and CSRF (X-Hands) checks run before the WebSocket upgrade is
+   accepted; anything failing is rejected with a plain HTTP error, never upgraded.
+2. The WebSocket server rejects unmasked client frames, caps frame and message size, handles
+   fragmentation, ping/pong and close correctly, and times out idle or half-open connections.
+3. The number of open terminal connections is capped.
+4. Each of these has its own unit test.
