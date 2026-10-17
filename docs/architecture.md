@@ -195,6 +195,23 @@ the STOP file, and actions that run the `hands` CLI as a subprocess (so the CLI'
 It never reads agent workspaces, never holds the GitHub token, and never mounts anything. Bounded:
 32 connections, 10 s socket timeout, 10 kB POST bodies, capped file reads, never follows symlinks.
 
+### Session manager (0.5, step 10; `hands/sessions.py`, `hands/ws.py`)
+
+Persistent interactive Claude Code sessions for the host user, run **outside** the container boundary
+on purpose (they are Alex's own terminal, with Claude's normal permission prompts), so the rules are
+the opposite of the runner's: never autonomous (`--dangerously-skip-permissions` is never passed; the
+test suite asserts it on the argv and on the tmux command line), never the dashboard's environment
+(an allowlist `PATH HOME TERM LANG USER SHELL` + `CLAUDE_CONFIG_DIR`/`TMUX_TMPDIR` built from scratch
+and applied with `env -i`; Claude's login is its credentials file under HOME), working folder under
+home but never home itself or a hidden folder. One `claude` per tmux session `hands_s_<uuid>` so it
+survives viewers, the dashboard and `bash install.sh`; the dashboard only ever attaches
+(`tmux attach-session` on a PTY per WebSocket, spawned with posix_spawn + setsid, never fork in the
+threaded server). The WebSocket server is stdlib RFC 6455 in-process, so Host/cookie/Origin checks run
+before the upgrade, plus a single-use 30 s ticket minted by a CSRF-checked POST (an upgrade cannot carry
+`X-Hands`). Caps: 8 open terminals, 64 kB frames, 256 kB messages, idle close after 60 s. The listing
+only reads `~/.config/hands/sessions/*.json` and the one transcript per record; delete unlinks that one
+transcript. A systemd unit for the dashboard is prepared in `console/deploy/` (not installed).
+
 ## Planner and project lifecycle (newproject.py, planner.py)
 
 `create` (CLI or dashboard form): private repos `<org>/<slug>-specs` (CODEOWNERS, ruleset: PR +

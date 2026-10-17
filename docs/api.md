@@ -306,6 +306,63 @@ before anything is written (one bad item → `400`, nothing changes); writes are
 rename, 0600). Deleting an unknown key → `400`. Response: the same object as GET. Same auth and CSRF
 rules as every POST.
 
+## Session manager (since 0.5, step 10)
+
+Persistent Claude Code terminals (`hands/sessions.py`, `hands/ws.py`; design in
+`docs/console-review.md` §6, option C). A session is one `claude` process inside tmux session
+`hands_s_<uuid>`; `<uuid>` is a lower-case UUID4 (`sessions.ID`, `fullmatch`) and is also Claude's own
+session id (`claude --session-id <uuid>`, resumed with `claude --resume <uuid>`). Records live in
+`~/.config/hands/sessions/<uuid>.json` (0600). Same auth, Host and CSRF rules as every other route.
+
+### GET /api/sessions
+
+Known sessions, newest activity first:
+`[{"id", "title", "cwd", "created", "last_active", "live", "viewers", "transcript"}]`. `title` is the
+first user prompt of Claude's transcript `~/.claude/projects/<cwd encoded>/<uuid>.jsonl` (bounded read,
+cached in the record once found), `live` = the tmux session exists, `viewers` = open terminals on it.
+
+### GET /api/sessions/defaults
+
+`{"cwd": "~/ops", "home": "...", "max_terminals": 8}` (the New session form's defaults).
+
+### POST /api/sessions/new
+
+Body `{"cwd": "/abs/or/~/path"}` (optional, default `~/ops`). The working folder must exist, be
+inside the home folder, not be the home folder itself and not be a hidden top-level folder (`~/.config`,
+`~/.ssh`, …); symlinks are resolved first (`400 "working folder …"` otherwise). Starts
+`claude --session-id <uuid>` in tmux with a clean allowlisted environment: `PATH HOME TERM LANG USER
+SHELL` (+ `CLAUDE_CONFIG_DIR`, `TMUX_TMPDIR` if the dashboard has them), **nothing copied from the
+dashboard's environment** (no GH/TG tokens, no `CLAUDECODE`, no `COLORTERM`), default permission
+mode (never `--dangerously-skip-permissions`). Response: the session's row.
+
+### POST /api/sessions/UUID/resume · /stop · /delete · /ticket
+
+`resume` restarts a stopped session with `--resume <uuid>` (`409` if it is running); `stop` kills the
+tmux session and closes its terminals; `delete` stops it, removes the record and unlinks exactly
+`~/.claude/projects/<cwd encoded>/<uuid>.jsonl` (never following a symlink; nothing else under
+`~/.claude` is listed or touched). `ticket` returns `{"ticket": "...", "ttl": 30}`: a single-use,
+30-second token bound to this login session and this session id, the CSRF proof for the WebSocket
+below (browsers cannot send `X-Hands` on an upgrade). Unknown or malformed id → `404`.
+
+### GET /ws/sessions/UUID?t=TICKET  (WebSocket)
+
+Every check runs before the `101`, in this order: Host (as everywhere), login cookie, `Origin` ==
+`http://<Host>`, a valid RFC 6455 handshake (`Upgrade: websocket`, `Connection: Upgrade`, version 13,
+16-byte key), the ticket (→ `403`), the record (→ `404`), the session running (→ `409`), a free
+terminal slot (**8** open terminals in total → `503`). Then the server runs `tmux attach-session` on
+a fresh PTY (posix_spawn, setsid, controlling tty) and bridges it:
+
+- client → server: binary frames = terminal input; text frames = JSON `{"type": "resize", "cols", "rows"}`
+  (clamped to 20–500 × 5–300);
+- server → client: binary frames = terminal output; text `{"type": "exit"}` then close `1000` when the
+  attach process ends (session stopped or Claude exited).
+
+Protocol limits (`hands/ws.py`): client frames must be masked, no reserved bits, only opcodes
+0/1/2/8/9/10, control frames ≤ 125 bytes and unfragmented, payload ≤ 64 kB per frame, ≤ 256 kB per
+assembled message, text must be UTF-8 (close codes 1002 / 1009 / 1007). Liveness: a ping after 20 s
+of silence, close `1001` after 60 s without any client frame; a frame that stalls half-way closes
+with 1002; peer gone = 1006. The session itself keeps running when the viewer disconnects.
+
 ## CLI entry points (context)
 
 `hands-dash run|start|stop|url` manage the server (tmux session `hands_dashboard`,
@@ -317,6 +374,8 @@ lock `~/.config/hands/dashboard.lock`). The watchdog cron keeps it running via
 `/` `/app.js` `/app.css` `/login` ·
 GET `/api/projects` `/api/usage` `/api/creating/<slug>` `/api/p/<name>` `/api/p/<name>/log`
 `/api/p/<name>/attempts` `/api/p/<name>/attempts/<attempt>/<file>` `/api/p/<name>/planfile`
-`/api/p/<name>/env` ·
+`/api/p/<name>/env` `/api/sessions` `/api/sessions/defaults` ·
 POST `/api/usage/refresh` `/api/new` `/api/p/<name>/action/<action>` (stop, start, ack,
 ack-clear-model, plan, approve) `/api/p/<name>/hide` `/api/p/<name>/unhide` `/api/p/<name>/env`
+`/api/sessions/new` `/api/sessions/<uuid>/resume|stop|delete|ticket` ·
+WebSocket `/ws/sessions/<uuid>?t=<ticket>`

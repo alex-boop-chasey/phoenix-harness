@@ -1,0 +1,44 @@
+# Phoenix Harness dashboard (Project builder + Session manager), as a system service for user builder.
+# Prepared in 0.5 step 10; NOT installed by install.sh. See README.md next to this file before using it.
+#
+#   sudo cp ~/harness/console/deploy/hands-dashboard.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now hands-dashboard
+#   systemctl status hands-dashboard ; journalctl -u hands-dashboard -f
+
+[Unit]
+Description=Phoenix Harness dashboard on 127.0.0.1:8090
+Documentation=file:///home/builder/harness/docs/api.md
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=builder
+Group=builder
+WorkingDirectory=/home/builder
+ExecStart=/home/builder/.local/bin/hands-dash run --port 8090
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+# Claude sessions live in tmux servers that the dashboard starts; a restart of the dashboard must not
+# take them down. KillMode=process signals only the dashboard, and tmux's socket dir in /tmp must stay
+# shared with the `hands` CLI and the watchdog, so no PrivateTmp.
+KillMode=process
+PrivateTmp=no
+
+# The dashboard's environment is what `hands` subprocesses see. Keep it minimal: no tokens here, ever.
+Environment=PATH=/home/builder/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/builder
+Environment=LANG=C.UTF-8
+Environment=PYTHONUNBUFFERED=1
+
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
