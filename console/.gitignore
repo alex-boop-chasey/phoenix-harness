@@ -1,0 +1,13 @@
+# secrets / per-machine state
+.cred
+.ttyd-url
+telegram-state/
+
+# python venv
+.venv/
+__pycache__/
+*.pyc
+
+# editor / OS
+.DS_Store
+*.swp
