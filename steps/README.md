@@ -18,6 +18,7 @@ These files are read-only. Never edit, move or delete anything in `~/ops/steps/`
 - Small commits on `phoenix-0.5` with clear messages. Never push, never install, never merge to `main`. Alex does those.
 - Never weaken a security check to make a test pass. If a rule in `~/harness/CLAUDE.md` ("Never weaken these") gets in the way, stop and ask.
 - Docker commands run outside the sandbox and need Alex's approval each time. Batch them so he approves few prompts.
+- One design system for the whole app: every page (Project builder, Session manager, File browser and anything added later) uses the tokens and components in `docs/design.md` (from step 03). Do not keep claude-harness's or File Browser's own look, CSS, fonts, colours or login page. No page-specific colours or one-off styles; if a component is missing, add it to `docs/design.md` and the shared CSS first.
 - UI work: check it yourself with screenshots (from step 02 on) at desktop 1440x900 and phone 390x844, before calling it done.
 
 ## When a step is done

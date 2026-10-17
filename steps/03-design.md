@@ -12,8 +12,9 @@ Agree on how Phoenix Harness looks before building it: a design system and a cli
 ## Tasks
 1. Write `docs/design.md`: design tokens (colours for light and dark, type scale, spacing, radius, shadows), components (sidebar, tabs, badges, buttons, forms, tables, log viewer, terminal frame, file list, empty states, errors, toasts), states (hover, focus, disabled, loading), and accessibility (contrast, keyboard use of tabs and sidebar, focus rings).
 2. Build a static mock at `hands/static/mock/` (HTML and CSS, no inline scripts or style attributes, same CSP rules as the dashboard) showing: Project builder with 5 tabs in different stages, the "+" menu open, a project page; Session manager page (terminal placeholder); File browser page (sample listing).
-3. Serve the mock through the screenshot rig and capture it at both widths in light and dark: `~/ops/shots/03-mock/`.
-4. Iterate on your own screenshots until it looks professional and consistent: no overflow, no clipped text, readable on phone.
+3. The design must cover the Session manager and File browser as fully as the Project builder: terminal frame and its colour theme (light and dark, derived from the tokens), session list, file list and grid, breadcrumb, preview pane, upload area. These pages get no separate look from the apps they replace.
+4. Serve the mock through the screenshot rig and capture it at both widths in light and dark: `~/ops/shots/03-mock/`.
+5. Iterate on your own screenshots until it looks professional and consistent: no overflow, no clipped text, readable on phone.
 
 ## Decision for Alex
 Present the screenshots and 2-3 named visual directions you considered (one line each), with your recommendation. Wait for Alex to approve or ask for changes. Apply his changes and re-screenshot until he approves. This approval is the step's outcome.
