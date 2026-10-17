@@ -233,6 +233,58 @@ def set_hidden(name: str, hidden: bool) -> dict:
 _UI_MUTEX = threading.Lock()
 
 
+# ---------------------------------------------------------------- environment variables (hands/projectenv.py)
+MAX_BODY = 10000
+MAX_ENV_BODY = 65536        # /api/p/<name>/env may carry several 8 kB values
+
+
+def env_store(name: str):
+    """The Store for an existing project, or the pending store for a project whose create is running."""
+    from . import newproject, projectenv
+    if NAME.match(name) and name in project_names():
+        cfg = load_cfg(name)
+        p = cfg.project_env or (newproject.secrets_root(name) / projectenv.ENV_FILE)
+        for repo in (cfg.app_dir, cfg.spec_dir):
+            if repo in p.parents:
+                raise ValueError(f"project_env {p} is inside a repo; point it under ~/.config/hands/secrets/")
+        return projectenv.Store(p.parent, p.name), {"file": str(p), "active": bool(cfg.project_env), "pending": False}
+    try:
+        newproject.validate_slug(name)
+    except newproject.CreateError:
+        raise LookupError(name)
+    info = create_info(name)
+    if info and info["state"] == "running":
+        d = projectenv.pending_dir(name)
+        return projectenv.Store(d), {"file": str(d / projectenv.ENV_FILE), "active": False, "pending": True}
+    raise LookupError(name)
+
+
+def env_listing(name: str) -> dict:
+    with _UI_MUTEX:
+        st, info = env_store(name)
+        return {"vars": st.listing(), "problems": st.problems, **info}
+
+
+def env_update(name: str, req) -> dict:
+    """Body: {"set": [{"key","value"?,"public"?}, ...], "delete": [key, ...]} — at least one of them."""
+    if not isinstance(req, dict):
+        raise ValueError("bad json")
+    items, dels = req.get("set"), req.get("delete")
+    if items is None and dels is None:
+        raise ValueError("nothing to do: give 'set' and/or 'delete'")
+    if items is not None and not isinstance(items, list):
+        raise ValueError("set must be a list")
+    if dels is not None and (not isinstance(dels, list) or not all(isinstance(k, str) for k in dels)):
+        raise ValueError("delete must be a list of keys")
+    with _UI_MUTEX:
+        st, info = env_store(name)
+        if items:
+            st.set(items)
+        for k in dels or []:
+            st.delete(k)
+        return {"vars": st.listing(), "problems": st.problems, **info}
+
+
 def detail(name: str) -> dict:
     cfg = load_cfg(name)
     sd = cfg.state_dir
@@ -430,6 +482,8 @@ def start_create(slug: str, description: str) -> dict:
             log.unlink()
         env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
         env["PYTHONPATH"] = str(cfgmod.RUNNER_HOME)
+        from . import projectenv
+        projectenv.discard_pending(slug)             # stale variables from an earlier, failed attempt
         newproject.write_status(slug, "running")     # visible at once; the child rewrites it
         fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "a") as out:
@@ -614,7 +668,7 @@ class Handler(BaseHTTPRequestHandler):
                 n = int(self.headers.get("Content-Length") or 0)
                 if n < 0:
                     return self._json(400, {"error": "bad length"})
-                if n > 10000:
+                if n > (MAX_ENV_BODY if path.endswith("/env") else MAX_BODY):
                     return self._json(413, {"error": "too large"})
                 body = self.rfile.read(n) if n else b""
                 return self._post(path, body)
@@ -662,6 +716,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, [summary(n) for n in project_names()])
         if len(parts) >= 3 and parts[:2] == ["api", "p"]:
             name, rest = parts[2], parts[3:]
+            if rest == ["env"]:
+                return self._json(200, env_listing(name))
             if rest == []:
                 return self._json(200, detail(name))
             if rest == ["log"]:
@@ -697,6 +753,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, run_action(parts[2], parts[4]))
         if len(parts) == 4 and parts[:2] == ["api", "p"] and parts[3] in ("hide", "unhide"):
             return self._json(200, set_hidden(parts[2], parts[3] == "hide"))
+        if len(parts) == 4 and parts[:2] == ["api", "p"] and parts[3] == "env":
+            try:
+                req = json.loads(body or b"{}")
+            except ValueError:
+                raise ValueError("bad json")
+            return self._json(200, env_update(parts[2], req))
         raise LookupError(path)
 
 

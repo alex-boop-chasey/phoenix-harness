@@ -25,7 +25,8 @@ Baseline written 2026-10-17 (step 01). Server: `hands/dashboard.py` (`hands-dash
 - **Auth (everything except `/login`):** valid session cookie required. Unauthenticated `GET /` →
   `401` text with instructions; any other path → `401` JSON `{"error": "not logged in"}`.
 - **CSRF (all POSTs):** `Origin` must equal `http://<Host>` **and** header `X-Hands: 1` must be present,
-  else `403 {"error": "bad origin"}`. POST bodies over **10 000 bytes** → `413 {"error": "too large"}`.
+  else `403 {"error": "bad origin"}`. POST bodies over **10 000 bytes** → `413 {"error": "too large"}`
+  (`/api/p/<name>/env` allows 65 536 bytes).
 - `/login` accepts GET only (`405` otherwise). HEAD is handled like GET without a body.
 - **Limits:** max 32 concurrent connections (excess dropped), 10 s socket timeout, file reads capped
   (2 MB per file, logs tail-read at 1 MB), symlinks never followed, path segments are allowlisted by
@@ -264,6 +265,45 @@ Close or reopen the project's tab (see `hidden` above). Same auth and CSRF rules
 {"ok": true, "name": "smoke", "hidden": true}
 ```
 
+### GET /api/p/NAME/env  (since 0.5, step 06)
+
+Environment variables for the project's build containers (module `hands/projectenv.py`). Values live
+in `~/.config/hands/secrets/<slug>/project.env` (0600, dir 0700; the path `project_env` in the
+project's toml, or that default when unset), metadata in `env.json` next to it. Nothing is ever
+written inside the project folder or a repo; a `project_env` that points inside a repo is refused.
+
+```json
+{"vars": [{"key": "STRIPE_KEY", "secret": true, "updated": "2026-10-17T12:51:11Z"},
+          {"key": "SITE_URL", "secret": false, "value": "https://x.test", "updated": "2026-10-17T12:51:11Z"}],
+ "problems": [], "file": "/home/builder/.config/hands/secrets/shop/project.env", "active": true, "pending": false}
+```
+
+- **Secret values are write-only.** A secret entry has no `value` field (and no length); only public
+  values are returned. Nothing else in the API (project detail, logs, attempts) reads the file.
+- `updated` is null for lines written by hand before the dashboard managed the file; such lines are
+  secret by default. `problems` lists lines the dashboard cannot manage (no `=`, lowercase key,
+  reserved key) by line number only, never with values. Comments are dropped on the next save.
+- `active`: whether the runner passes this file to containers (`project_env` set in the toml).
+- `pending: true` with `NAME` = a slug whose `create` is running (status `running`): variables go to
+  `~/.config/hands/creating/<slug>.pending/` and are moved into `secrets/<slug>/` when create succeeds
+  (logged as `[ok] N environment variable(s) saved`), or deleted when it fails. Otherwise an unknown
+  name → `404`.
+
+File format = docker's `--env-file` format: `KEY=value`, the value is everything after the first `=`,
+verbatim. Docker applies no unquoting, so the dashboard writes none: every allowed value (one line,
+no NUL, ≤ 8192 UTF-8 bytes) round-trips as is, and a hand-written `KEY="x"` keeps its quotes exactly
+as the container sees them. Keys: `^[A-Z_][A-Z0-9_]*$`, ≤ 128 chars; reserved (400): `CLAUDE_CODE_OAUTH_TOKEN
+GH_TOKEN GITHUB_TOKEN TG_TOKEN TG_CHAT_ID PATH HOME USER SHELL CI NODE_OPTIONS` and any `HANDS_*` / `CLAUDE_*`.
+
+### POST /api/p/NAME/env
+
+Body (JSON, up to **64 kB** on this route only): `{"set": [{"key": "K", "value": "v", "public": false}, ...],
+"delete": ["K2", ...]}` — at least one of `set`/`delete`. In `set`, `public` defaults to false; `value`
+may be omitted for an existing key to change only its visibility. The whole request is validated
+before anything is written (one bad item → `400`, nothing changes); writes are atomic (temp file +
+rename, 0600). Deleting an unknown key → `400`. Response: the same object as GET. Same auth and CSRF
+rules as every POST.
+
 ## CLI entry points (context)
 
 `hands-dash run|start|stop|url` manage the server (tmux session `hands_dashboard`,
@@ -274,6 +314,7 @@ lock `~/.config/hands/dashboard.lock`). The watchdog cron keeps it running via
 
 `/` `/app.js` `/app.css` `/login` ·
 GET `/api/projects` `/api/usage` `/api/creating/<slug>` `/api/p/<name>` `/api/p/<name>/log`
-`/api/p/<name>/attempts` `/api/p/<name>/attempts/<attempt>/<file>` `/api/p/<name>/planfile` ·
+`/api/p/<name>/attempts` `/api/p/<name>/attempts/<attempt>/<file>` `/api/p/<name>/planfile`
+`/api/p/<name>/env` ·
 POST `/api/usage/refresh` `/api/new` `/api/p/<name>/action/<action>` (stop, start, ack,
-ack-clear-model, plan, approve) `/api/p/<name>/hide` `/api/p/<name>/unhide`
+ack-clear-model, plan, approve) `/api/p/<name>/hide` `/api/p/<name>/unhide` `/api/p/<name>/env`

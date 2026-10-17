@@ -9,7 +9,9 @@ For slug S in org O (settings: ~/.config/hands/new-project.toml) create makes:
   O/S-app    private, .gitignore, ruleset protect-main: no deletion, no force-push (the runner pushes)
   ~/.config/hands/secrets/S/keys/deploy_S-{specs,app}  (specs key read-only, app key write), never in ~/.ssh
   ~/.config/hands/secrets/S/project.env (0600)           dev/test secrets for the build containers
-           (all project secrets live under ~/.config/hands so one deny rule covers them; dirs 0700)
+           (all project secrets live under ~/.config/hands so one deny rule covers them; dirs 0700);
+           env.json next to it holds the dashboard's metadata (hands/projectenv.py); variables set
+           while create runs wait in ~/.config/hands/creating/S.pending/ and are moved in at the end
   ~/projects/S/known_hosts                 GitHub host keys from the authenticated /meta API (no TOFU)
   ~/projects/S/{specs,app}                 clones whose core.sshCommand pins that key: ~/.ssh/config,
                                            ssh-agent and personal keys are never used or changed
@@ -418,13 +420,25 @@ def run_create(slug: str, description: str) -> int:
         if not exists:
             write_status(slug, "running")
         holder: list[Ctx] = []
+        from . import projectenv
         try:
             rc = create(slug, description, holder)
+            try:
+                n = projectenv.adopt_pending(slug, secrets_root(slug))      # variables set while creating
+                if n:
+                    say(f"[ok] {n} environment variable(s) saved to {secrets_root(slug) / 'project.env'}")
+            except Exception as e:
+                say(f"WARN: pending environment variables not applied ({type(e).__name__}: {e}); "
+                    f"they are still in {projectenv.pending_dir(slug)}")
             write_status(slug, "done")
             return rc
         except Exception as e:
             msg = str(e) if isinstance(e, CreateError) else f"{type(e).__name__}: {e}"
             say(f"FAILED: {msg}")
+            try:
+                projectenv.discard_pending(slug)
+            except OSError:
+                pass
             ctx = holder[0] if holder else None
             if ctx and ctx.toml_written:
                 say(f"Partially created. Remove what this run made with: hands {slug} destroy --confirm {slug}")
