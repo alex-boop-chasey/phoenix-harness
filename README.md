@@ -1,4 +1,4 @@
-# Phoenix Harness 0.5.0 (hands runner)
+# Phoenix Harness 0.5.2 (hands runner)
 
 One app behind one login: Project builder and Session manager. What changed since 0.4.3:
 `CHANGELOG.md`; architecture `docs/architecture.md`; HTTP API `docs/api.md`; design system `docs/design.md`;

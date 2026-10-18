@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.2 (step 17: owner fixes, in progress)
+## 0.5.2 (step 17: owner fixes, 2026-10-18)
 
 - File browser removed at Alex's request (`hands/files.py`, `files.js`, `/api/files/*`, its tests, rig
   flows, mock pages and `docs/retire-filebrowser.md`). Files on the VPS are browsed with the separate File
