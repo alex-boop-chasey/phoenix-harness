@@ -1,4 +1,4 @@
-"""0.5 step 12: one Session manager session can be live on Telegram (claude --channels ...). No tmux, docker or Claude."""
+"""0.5 step 12: one Session manager session can be live on Telegram (claude --channels ...). No docker or Claude."""
 import json
 import os
 import sys
@@ -30,14 +30,13 @@ class TestLiveArgv(unittest.TestCase):
             for bad in ("--dangerously-skip-permissions", "--permission-mode", "--dangerously-load-development-channels"):
                 self.assertNotIn(bad, live)
             self.assertNotIn("--channels", plain)
-            cmd = sessions.tmux_command(sid, resume, telegram=True)
-            self.assertTrue(cmd.startswith("exec env -i "), cmd)
-            self.assertIn(f"--channels {CHANNEL}", cmd)
-            self.assertNotIn("dangerously", cmd)
-            self.assertNotIn("--channels", sessions.tmux_command(sid, resume))
+            run = sessions.spawn_argv("/x", live)
+            self.assertEqual(run[-2:], ["--channels", CHANNEL])
+            self.assertNotIn("dangerously", " ".join(run))
+            self.assertNotIn("--channels", sessions.spawn_argv("/x", plain))
         # the channel name is a constant the tests pin: nothing else may ever be passed to --channels
         self.assertEqual(sessions.TELEGRAM_CHANNEL, CHANNEL)
-        # the record flag is what Tmux.start reads: a stray truthy value never widens it
+        # the record flag is what PtyBackend.start reads: a stray truthy value never widens it
         self.assertFalse(sessions.is_telegram({"id": sid, "cwd": "/x"}))
         self.assertFalse(sessions.is_telegram({"id": sid, "cwd": "/x", "telegram": "yes"}))
         self.assertTrue(sessions.is_telegram({"id": sid, "cwd": "/x", "telegram": True}))
@@ -80,6 +79,7 @@ class TestOneLiveSession(unittest.TestCase):
 
     def tearDown(self):
         self.d.close()
+        self.fake.close()
         sessions.HOME = self.old_home
         sessions.BACKEND = self.old_backend
         os.environ.clear()

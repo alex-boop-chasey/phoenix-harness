@@ -300,7 +300,7 @@ const Sessions = (() => {
         catch (e) { fail(e.message, /Telegram/.test(e.message) ? tgErr : null); }
       } } },
         el("h2", { id: "s-dlg-title" }, "New session"),
-        el("p", { class: "muted" }, "Starts Claude Code in a folder on the VPS. The session keeps running in tmux when you close this page; stop it from here when you are done."),
+        el("p", { class: "muted" }, "Starts Claude Code in a folder on the VPS. The session keeps running when you close this page (it lives as long as the dashboard); stop it from here when you are done."),
         el("div", { class: "field" }, el("label", { for: "s-cwd" }, "Working folder"), input,
           el("span", { class: "muted small", id: "s-cwd-hint" }, "Your home folder (the default) or a folder inside it; hidden folders such as ~/.config are refused."), err),
         el("div", { class: "field" }, el("label", { class: "check", for: "s-tg-new" }, tg,

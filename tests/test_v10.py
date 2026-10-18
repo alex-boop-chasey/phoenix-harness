@@ -113,28 +113,26 @@ def ws_headers(d: Dash, cookie=True, origin=None, key="dGhlIHNhbXBsZSBub25jZQ=="
     return h
 
 
-class FakeBackend(sessions.Tmux):
-    """Stands in for tmux: remembers what would have run; viewers attach to a plain shell command instead."""
+class FakeBackend(sessions.PtyBackend):
+    """The real PTY backend, but the session process is a plain shell command instead of claude; remembers
+    the claude argv/env/cwd that would have run."""
 
     def __init__(self):
         super().__init__()
         self.started: list[tuple[str, list[str], dict, str]] = []
-        self.alive_ids: set[str] = set()
         self.attach = ["/bin/sh", "-c", "echo READY; exec cat"]
 
     def start(self, rec: dict, resume: bool) -> None:
         argv, env = sessions.claude_argv(rec["id"], resume, sessions.is_telegram(rec)), sessions.session_env()
         self.started.append((rec["id"], argv, env, rec["cwd"]))
-        self.alive_ids.add(rec["id"])
+        self.launch(rec["id"], list(self.attach), {"PATH": "/usr/bin:/bin", "TERM": "dumb"}, "/")
 
-    def alive(self, sid: str) -> bool:
-        return sid in self.alive_ids
+    @property
+    def alive_ids(self) -> set[str]:
+        return {sid for sid in list(self._procs) if self.alive(sid)}
 
-    def stop(self, sid: str) -> None:
-        self.alive_ids.discard(sid)
-
-    def attach_argv(self, sid: str) -> list[str]:
-        return list(self.attach)
+    def close(self) -> None:
+        self.shutdown()
 
 
 # ---------------------------------------------------------------- pure functions
@@ -183,12 +181,13 @@ class TestValidation(unittest.TestCase):
         argv = sessions.claude_argv(sid, resume=True)
         self.assertNotIn("--dangerously-skip-permissions", argv)
         self.assertEqual(argv[1:], ["--resume", sid])
-        # the exact tmux command line as well (what the shell runs)
+        # the exact argv posix_spawn runs (sh changes folder, then execs claude; no shell parsing of either)
         for resume in (False, True):
-            cmd = sessions.tmux_command(sid, resume)
-            self.assertNotIn("dangerously", cmd)
-            self.assertTrue(cmd.startswith("exec env -i "), cmd)
-            self.assertIn(sid, cmd)
+            run = sessions.spawn_argv("/home/x/my folder", sessions.claude_argv(sid, resume))
+            self.assertEqual(run[:4], ["/bin/sh", "-c", 'cd -- "$1" && shift && exec "$@"', "hands-session"])
+            self.assertEqual(run[4], "/home/x/my folder")
+            self.assertEqual(run[5:], sessions.claude_argv(sid, resume))
+            self.assertNotIn("dangerously", " ".join(run))
 
     def test_env_allowlist(self):
         old = dict(os.environ)
@@ -210,23 +209,12 @@ class TestValidation(unittest.TestCase):
             # Telegram channel plugin is `bun run ...`)
             h = Path.home()
             self.assertEqual(env["PATH"], f"{h}/.local/bin:{h}/.bun/bin:/usr/local/bin:/usr/bin:/bin")
-            # Claude's login is the credentials file under HOME; a token variable would end up on the tmux
+            # Claude's login is the credentials file under HOME; a token variable has no place in the session
             # command line, so it is not passed. CLAUDE_CONFIG_DIR (a path) passes through.
             self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)
             self.assertEqual(env["CLAUDE_CONFIG_DIR"], "/home/x/.claude")
-            self.assertEqual(set(env) - {"CLAUDE_CONFIG_DIR", "TMUX_TMPDIR"},
-                             {"PATH", "HOME", "TERM", "LANG", "USER", "SHELL"})
-            # the tmux client (attach) env is the same shape
-            tenv = sessions.tmux_env()
-            self.assertNotIn("TMUX", tenv)
-            self.assertEqual(tenv["TMUX_TMPDIR"], "/tmp/tt")
-            for k in SECRETS:
-                self.assertNotIn(k, tenv)
-            # everything in the `env -i` command line is from the allowlist
-            cmd = sessions.tmux_command(sessions.new_id(), False)
-            for k, v in list(SECRETS.items()) + [("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-x")]:
-                self.assertNotIn(v, cmd)
-                self.assertNotIn(k + "=", cmd)
+            self.assertEqual(set(env), {"PATH", "HOME", "TERM", "LANG", "USER", "SHELL", "CLAUDE_CONFIG_DIR"})
+            self.assertNotIn("TMUX_TMPDIR", env)                      # no tmux anywhere on the session path (0.5.2)
         finally:
             os.environ.clear()
             os.environ.update(old)
@@ -269,6 +257,7 @@ class TestStore(unittest.TestCase):
 
     def tearDown(self):
         self.d.close()
+        self.fake.close()
         sessions.HOME = self.old_home
         sessions.BACKEND = self.old_backend
         os.environ.clear()
@@ -562,6 +551,7 @@ class TestSessionsAPI(unittest.TestCase):
         for c in self.clients:
             c.close()
         self.d.close()
+        self.fake.close()
         sessions.HOME = self.old_home
         sessions.BACKEND = self.old_backend
         ws.PING_INTERVAL, ws.IDLE_TIMEOUT = self.old_ping
@@ -854,7 +844,7 @@ class TestSessionsAPI(unittest.TestCase):
             self.fail("not closed")
 
 
-# ---------------------------------------------------------------- real tmux (skipped where tmux cannot start)
+# ---------------------------------------------------------------- the real PTY backend with a fake claude
 FAKE_CLAUDE = r"""#!/bin/sh
 # fake claude for tests: records argv + env, writes a transcript like Claude Code, echoes input
 printf '%s\n' "$0 $*" > "$FAKE_OUT/argv"
@@ -872,20 +862,12 @@ done
 """
 
 
-def _tmux_usable(tmp: Path) -> bool:
-    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(Path.home()), "TMUX_TMPDIR": str(tmp)}
-    try:
-        r = subprocess.run(["tmux", "start-server", ";", "kill-server"], env=env, capture_output=True, timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return r.returncode == 0
+class TestRealPty(unittest.TestCase):
+    """The real backend with a fake `claude` (a shell script): the session is a PTY owned by this process,
+    survives its viewers, replays scrollback to a new viewer, stops and resumes with --resume."""
 
-
-class TestRealTmux(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="hands-tmux-"))
-        if not _tmux_usable(self.tmp):
-            self.skipTest("tmux cannot start here (no unix sockets?)")
+        self.tmp = Path(tempfile.mkdtemp(prefix="hands-pty-"))
         self.d = Dash()
         self.home = self.tmp / "home"
         (self.home / "ops").mkdir(parents=True)
@@ -897,18 +879,20 @@ class TestRealTmux(unittest.TestCase):
         exe.chmod(0o700)
         self.old_env = dict(os.environ)
         os.environ.update(SECRETS)
-        os.environ.update({"CLAUDE_CONFIG_DIR": str(self.claude), "TMUX_TMPDIR": str(self.tmp), "HANDS_CLAUDE": str(exe),
-                           "TMUX": "/tmp/tmux-0/default,1,0"})
+        os.environ.update({"CLAUDE_CONFIG_DIR": str(self.claude), "HANDS_CLAUDE": str(exe), "TMUX": "/tmp/tmux-0/default,1,0"})
         self.old_home = sessions.HOME
         sessions.HOME = self.home
+        self.old_backend = sessions.BACKEND
+        sessions.BACKEND = sessions.PtyBackend()
         self.clients = []
 
     def tearDown(self):
         for c in self.clients:
             c.close()
-        subprocess.run(["tmux", "kill-server"], env=sessions.tmux_env(), capture_output=True)
+        sessions.BACKEND.shutdown()
         self.d.close()
         sessions.HOME = self.old_home
+        sessions.BACKEND = self.old_backend
         os.environ.clear()
         os.environ.update(self.old_env)
 
@@ -922,8 +906,15 @@ class TestRealTmux(unittest.TestCase):
         c.close()
         return out
 
-    def test_session_lives_in_tmux_and_survives_viewers(self):
-        st, rec = self.post("/api/sessions/new")
+    def viewer(self, sid):
+        _, t = self.post(f"/api/sessions/{sid}/ticket")
+        c = WSClient(self.d.port, f"/ws/sessions/{sid}?t={t['ticket']}", ws_headers(self.d))
+        self.clients.append(c)
+        self.assertEqual(c.status, 101)
+        return c
+
+    def test_session_is_a_dashboard_pty_and_survives_viewers(self):
+        st, rec = self.post("/api/sessions/new", {"cwd": str(self.home / "ops")})
         self.assertEqual(st, 200, rec)
         sid = rec["id"]
         self.assertTrue(rec["live"])
@@ -937,33 +928,55 @@ class TestRealTmux(unittest.TestCase):
         env = dict(l.split("=", 1) for l in (self.out / "env").read_text().splitlines() if "=" in l)
         for k in SECRETS:
             self.assertNotIn(k, env, k)
-        self.assertNotIn("CLAUDECODE", env)
+        for k in ("CLAUDECODE", "TMUX", "TMUX_TMPDIR", "COLORTERM"):
+            self.assertNotIn(k, env, k)
         self.assertEqual(env["TERM"], "xterm-256color")
         self.assertEqual(env["HOME"], str(Path.home()))
-        self.assertEqual(env.get("PWD", str(self.home / "ops")), str(self.home / "ops"))
-        _, t = self.post(f"/api/sessions/{sid}/ticket")
-        c = WSClient(self.d.port, f"/ws/sessions/{sid}?t={t['ticket']}", ws_headers(self.d))
-        self.clients.append(c)
-        self.assertEqual(c.status, 101)
+        self.assertEqual(env["PWD"], str(self.home / "ops"))                      # sh changed into the folder
+        self.assertEqual(set(env) - {"PWD", "OLDPWD", "_", "SHLVL"}, {"PATH", "HOME", "TERM", "LANG", "USER", "SHELL", "CLAUDE_CONFIG_DIR"})
+        proc = sessions.BACKEND.proc(sid)
+        self.assertIsNotNone(proc)
+        self.assertEqual(os.getpgid(proc.pid), proc.pid)                           # its own session/process group
+        # viewer 1: scrollback replayed (the banner was printed before anyone attached), typing works
+        c = self.viewer(sid)
         c.recv_until(b"fake claude ready")
-        c.send(frame(2, b"hello tmux\r"))
-        self.assertIn(b"fake:hello tmux", c.recv_until(b"fake:hello"))
-        c.close()                                                                   # viewer goes away...
+        c.send(frame(1, json.dumps({"type": "resize", "cols": 100, "rows": 30}).encode()))
+        c.send(frame(2, b"hello pty\r"))
+        self.assertIn(b"fake:hello pty", c.recv_until(b"fake:hello"))
+        c.close()                                                                  # browser closed...
         time.sleep(0.3)
         st, _, rows = self.d.req("GET", "/api/sessions")
         rows = json.loads(rows)
-        self.assertTrue(rows[0]["live"])                                           # ...the session stays
-        self.assertEqual(rows[0]["title"], "hello tmux")
-        _, t = self.post(f"/api/sessions/{sid}/ticket")
-        c = WSClient(self.d.port, f"/ws/sessions/{sid}?t={t['ticket']}", ws_headers(self.d))
-        self.clients.append(c)
-        c.send(frame(2, b"again\r"))
-        self.assertIn(b"fake:again", c.recv_until(b"fake:again"))
+        self.assertTrue(rows[0]["live"])                                           # ...the session runs on
+        self.assertEqual(rows[0]["viewers"], 0)
+        self.assertEqual(rows[0]["title"], "hello pty")
+        # viewer 2 and 3: both get the whole scrollback, both see new output, either can type
+        c2 = self.viewer(sid)
+        c3 = self.viewer(sid)
+        for c in (c2, c3):
+            back = c.recv_until(b"fake:hello pty")
+            self.assertIn(b"fake claude ready", back)
+        self.assertEqual(json.loads(self.d.req("GET", "/api/sessions")[2])[0]["viewers"], 2)
+        c3.send(frame(2, b"again\r"))
+        self.assertIn(b"fake:again", c2.recv_until(b"fake:again"))
+        self.assertIn(b"fake:again", c3.recv_until(b"fake:again"))
+        # stop: the process is gone and every viewer is told and closed
         self.assertEqual(self.post(f"/api/sessions/{sid}/stop")[1]["live"], False)
+        for c in (c2, c3):
+            seen = set()
+            for _ in range(50):
+                op, _, payload = c.recv_frame()
+                seen.add(op)
+                if op == 8:
+                    break
+            self.assertIn(8, seen)
         for _ in range(50):
-            op, _, _ = c.recv_frame()
-            if op == 8:
+            if self.d.srv.terminals_open() == 0:
                 break
+            time.sleep(0.1)
+        self.assertEqual(self.d.srv.terminals_open(), 0)
+        self.assertFalse(proc.alive())
+        # resume = claude --resume <id>, a fresh PTY, empty scrollback
         st, r = self.post(f"/api/sessions/{sid}/resume")
         self.assertEqual((st, r["live"]), (200, True))
         for _ in range(50):
@@ -971,9 +984,60 @@ class TestRealTmux(unittest.TestCase):
                 break
             time.sleep(0.1)
         self.assertIn(f"--resume {sid}", (self.out / "argv").read_text())
+        c4 = self.viewer(sid)
+        self.assertNotIn(b"hello pty", c4.recv_until(b"fake claude ready"))
         self.assertEqual(self.post(f"/api/sessions/{sid}/delete")[0], 200)
         self.assertFalse(sessions.BACKEND.alive(sid))
-        self.assertFalse(sessions.transcript_path(self.claude, self.home / "ops", sid).exists())
+
+    def test_process_exit_ends_viewers_and_marks_stopped(self):
+        st, rec = self.post("/api/sessions/new", {"cwd": str(self.home / "ops")})
+        sid = rec["id"]
+        c = self.viewer(sid)
+        c.recv_until(b"fake claude ready")
+        c.send(frame(2, b"exit\r"))
+        exit_seen = closed = False
+        for _ in range(50):
+            op, _, payload = c.recv_frame()
+            if op == 1 and json.loads(payload).get("type") == "exit":
+                exit_seen = True
+            if op == 8:
+                closed = True
+                break
+        self.assertTrue(exit_seen and closed)
+        for _ in range(50):
+            if not json.loads(self.d.req("GET", "/api/sessions")[2])[0]["live"]:
+                break
+            time.sleep(0.1)
+        self.assertFalse(json.loads(self.d.req("GET", "/api/sessions")[2])[0]["live"])
+        self.assertEqual(self.post(f"/api/sessions/{sid}/resume")[0], 200)        # a dead session resumes
+
+    def test_scrollback_is_bounded(self):
+        old = sessions.SCROLLBACK
+        sessions.SCROLLBACK = 4096
+        try:
+            p = sessions.BACKEND.launch(sessions.new_id(), ["/bin/sh", "-c", "i=0; while [ $i -lt 400 ]; do printf 'line %04d xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n' $i; i=$((i+1)); done; exec cat"],
+                                        {"PATH": "/usr/bin:/bin"}, "/")
+            for _ in range(100):
+                if b"line 0399" in p.snapshot():
+                    break
+                time.sleep(0.05)
+            snap = p.snapshot()
+            self.assertLessEqual(len(snap), 4096)
+            self.assertIn(b"line 0399", snap)
+            self.assertNotIn(b"line 0000", snap)
+            p.kill()
+            self.assertFalse(p.alive())
+        finally:
+            sessions.SCROLLBACK = old
+
+    def test_shutdown_ends_every_session(self):
+        a = self.post("/api/sessions/new", {"cwd": str(self.home / "ops")})[1]
+        b = self.post("/api/sessions/new", {"cwd": str(self.home)})[1]
+        pa, pb = sessions.BACKEND.proc(a["id"]), sessions.BACKEND.proc(b["id"])
+        sessions.BACKEND.shutdown()
+        self.assertFalse(pa.alive() or pb.alive())
+        rows = json.loads(self.d.req("GET", "/api/sessions")[2])
+        self.assertEqual([r["live"] for r in rows], [False, False])              # offered for resume after a restart
 
 
 if __name__ == "__main__":

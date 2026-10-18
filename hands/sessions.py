@@ -1,10 +1,14 @@
 """Session manager backend: persistent Claude Code terminals for the dashboard (0.5 step 10).
 
-Design (docs/console-review.md §6, option C): each session is one `claude` process inside its own tmux
-session `hands_s_<uuid>`, started with a clean allowlisted environment (no dashboard environment, no
-GitHub/Telegram secrets, no `--dangerously-skip-permissions`, normal permission prompts). A browser
-viewer is a `tmux attach` client on a PTY owned by the dashboard thread that serves its WebSocket
-(hands/ws.py); the session outlives every viewer, the dashboard and `bash install.sh`.
+Design (0.5.2, step 17, requirement 1: no tmux; the claude-harness model, docs/sessions-pty.md): each
+session is one `claude` process on a pseudo-terminal OWNED BY THE DASHBOARD (Proc), started with a clean
+allowlisted environment (no dashboard environment, no GitHub/Telegram secrets, no
+`--dangerously-skip-permissions`, normal permission prompts). A drain thread reads the PTY into a bounded
+ring buffer (scrollback) and fans the bytes out to every attached WebSocket viewer (hands/ws.py). A viewer
+is just a set member: closing the browser detaches it and the process runs on; reopening attaches a new
+viewer, which first receives the ring buffer and then live output. The session lives as long as the
+dashboard: when the dashboard restarts, every record shows as stopped and is offered for Resume
+(`claude --resume <uuid>` brings the conversation back).
 
 Owned files:
   ~/.config/hands/sessions/<uuid>.json   0600, {id, cwd, created, title}  (the known session list)
@@ -20,13 +24,11 @@ import os
 import pwd
 import re
 import select
-import shlex
 import shutil
 import signal
 import socket
 import stat
 import struct
-import subprocess
 import termios
 import threading
 import time
@@ -44,8 +46,10 @@ COLS, ROWS = (20, 500), (5, 300)
 TITLE_BYTES = 256 * 1024
 PTY_CHUNK = 8192
 # Claude's own login is ~/.claude/.credentials.json, reached through HOME (or CLAUDE_CONFIG_DIR). Token
-# variables are deliberately not passed: the session command line (`env -i K=V ...`) is visible to tmux.
-PASSTHROUGH = ("CLAUDE_CONFIG_DIR", "TMUX_TMPDIR")
+# variables are deliberately not passed: the allowlist is the whole environment and stays token-free.
+PASSTHROUGH = ("CLAUDE_CONFIG_DIR",)
+SCROLLBACK = 256 * 1024                 # bytes of PTY output kept per session for viewers that attach later
+DEFAULT_COLS, DEFAULT_ROWS = 120, 40    # until the first viewer sends its size
 # The one channel a "live" session may run (step 12): Claude Code's official Telegram plugin, whose bot
 # token lives in ~/.claude/channels/telegram/.env and is read by the plugin inside the session, never here.
 TELEGRAM_CHANNEL = "plugin:telegram@claude-plugins-official"
@@ -113,10 +117,6 @@ def sessions_dir() -> Path:
     return cfgmod.CONFIG_HOME / "sessions"
 
 
-def tmux_name(sid: str) -> str:
-    return f"hands_s_{validate_id(sid)}"
-
-
 def _base_env() -> dict[str, str]:
     home = Path.home()
     try:
@@ -132,19 +132,12 @@ def _base_env() -> dict[str, str]:
 def session_env() -> dict[str, str]:
     """The whole environment of a Claude session: an allowlist built from scratch, never a copy of the
     dashboard's environment (so no GH_TOKEN/TG_*/CLAUDECODE/COLORTERM can reach it). HOME carries
-    Claude's own login and settings; CLAUDE_CONFIG_DIR passes through if the dashboard has one."""
+    Claude's own login and settings; CLAUDE_CONFIG_DIR passes through if the dashboard has one.
+    posix_spawn passes exactly this dict: nothing is inherited."""
     env = _base_env()
     for k in PASSTHROUGH:
         if os.environ.get(k):
             env[k] = os.environ[k]
-    return env
-
-
-def tmux_env() -> dict[str, str]:
-    """Environment for tmux commands and `tmux attach` clients (no TMUX: the dashboard itself runs in tmux)."""
-    env = _base_env()
-    if os.environ.get("TMUX_TMPDIR"):
-        env["TMUX_TMPDIR"] = os.environ["TMUX_TMPDIR"]
     return env
 
 
@@ -162,11 +155,11 @@ def claude_argv(sid: str, resume: bool, telegram: bool = False) -> list[str]:
     return argv
 
 
-def tmux_command(sid: str, resume: bool, telegram: bool = False) -> str:
-    """What tmux's shell runs inside the session: `env -i` makes the allowlist the entire environment."""
-    env = session_env()
-    return "exec env -i " + " ".join(shlex.quote(f"{k}={v}") for k, v in env.items()) + " " + \
-        " ".join(shlex.quote(a) for a in claude_argv(sid, resume, telegram))
+def spawn_argv(cwd: str, argv: list[str]) -> list[str]:
+    """The exact argv posix_spawn runs: /bin/sh changes into the working folder and execs the command, so the
+    multi-threaded dashboard never forks Python. $1 is the folder, the rest the command (no shell parsing of
+    either)."""
+    return ["/bin/sh", "-c", 'cd -- "$1" && shift && exec "$@"', "hands-session", cwd, *argv]
 
 
 def transcript_path(root: Path, cwd: Path, sid: str) -> Path:
@@ -213,37 +206,233 @@ def read_title(path: Path) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------- tmux backend
-class Tmux:
-    def _run(self, *args: str, timeout: int = 20) -> subprocess.CompletedProcess:
-        return subprocess.run(["tmux", *args], env=tmux_env(), capture_output=True, text=True, timeout=timeout,
-                              stdin=subprocess.DEVNULL)
+# ---------------------------------------------------------------- PTY backend (step 17)
+class Proc:
+    """One running session: a child on a PTY the dashboard owns, its scrollback and its viewers.
+
+    The drain thread is the only reader of the master fd and the only writer of the ring buffer; it fans
+    every chunk out to the attached viewers and, when the child has exited, tells them {"type": "exit"}
+    and closes them. Input and resizes come from any viewer (last resize wins). Nothing here forks:
+    posix_spawn with setsid + opening the slave by path as fd 0 gives the child a controlling terminal
+    (SIGWINCH/SIGHUP reach it), and Python fds are close-on-exec so it sees nothing else."""
+
+    def __init__(self, sid: str, argv: list[str], env: dict[str, str], cwd: str):
+        self.sid, self.argv, self.cwd = sid, list(argv), cwd
+        self.started = time.time()
+        self._lock = threading.Lock()
+        self._buf = bytearray()
+        self._viewers: set["Viewer"] = set()
+        self._exited = False
+        self._status: int | None = None
+        self.cols, self.rows = DEFAULT_COLS, DEFAULT_ROWS
+        self.fd, self._slave = os.openpty()
+        try:
+            fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", self.rows, self.cols, 0, 0))
+            tty = os.ttyname(self._slave)
+            self.pid = os.posix_spawn(
+                "/bin/sh", spawn_argv(cwd, argv), env, setsid=True, setsigdef=[signal.SIGPIPE, signal.SIGXFSZ],
+                file_actions=[(os.POSIX_SPAWN_OPEN, 0, tty, os.O_RDWR, 0), (os.POSIX_SPAWN_DUP2, 0, 1),
+                              (os.POSIX_SPAWN_DUP2, 0, 2)])
+        except BaseException:
+            for fd in (self.fd, self._slave):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            raise
+        self._wake_r, self._wake_w = os.pipe()
+        self._thread = threading.Thread(target=self._drain, name=f"pty-{sid[:8]}", daemon=True)
+        self._thread.start()
+
+    # -- state
+    def alive(self) -> bool:
+        return not self._reaped(0)
+
+    def _reaped(self, wait: float) -> bool:
+        deadline = time.monotonic() + wait
+        while True:
+            with self._lock:
+                if self._exited:
+                    return True
+                try:
+                    pid, status = os.waitpid(self.pid, os.WNOHANG)
+                    done = pid != 0
+                except ChildProcessError:
+                    done, status = True, None
+                if done:
+                    self._exited, self._status = True, status
+                    return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+
+    def snapshot(self) -> bytes:
+        with self._lock:
+            return bytes(self._buf)
+
+    def viewer_count(self) -> int:
+        with self._lock:
+            return len(self._viewers)
+
+    # -- viewers
+    def attach(self, v: "Viewer") -> bytes:
+        """Add a viewer; returns the scrollback it should replay first."""
+        with self._lock:
+            self._viewers.add(v)
+            return bytes(self._buf)
+
+    def detach(self, v: "Viewer") -> None:
+        with self._lock:
+            self._viewers.discard(v)
+
+    # -- input
+    def write(self, data: bytes) -> None:
+        with self._lock:
+            while data and self.fd >= 0:
+                try:
+                    n = os.write(self.fd, data)
+                except OSError:
+                    return
+                data = data[n:]
+
+    def resize(self, cols: int, rows: int, force: bool = False) -> None:
+        """Set the terminal size (clamped). `force` makes a same-size request still raise SIGWINCH (one
+        column smaller, then back), so a TUI repaints for a viewer that just attached."""
+        cols = max(COLS[0], min(cols, COLS[1]))
+        rows = max(ROWS[0], min(rows, ROWS[1]))
+        with self._lock:
+            if self.fd < 0:
+                return
+            if force and (cols, rows) == (self.cols, self.rows):
+                fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, max(COLS[0], cols - 1), 0, 0))
+            self.cols, self.rows = cols, rows
+            fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+    # -- output
+    def _fanout(self, chunk: bytes) -> None:
+        with self._lock:
+            self._buf += chunk
+            if len(self._buf) > SCROLLBACK:
+                del self._buf[:len(self._buf) - SCROLLBACK]
+            vs = list(self._viewers)
+        for v in vs:
+            v.send(chunk)
+
+    def _drain(self) -> None:
+        fd = self.fd
+        try:
+            while True:
+                try:
+                    r, _, _ = select.select([fd, self._wake_r], [], [], 0.5)
+                except (OSError, ValueError):
+                    break
+                if self._wake_r in r:                                 # kill(): stop reading, the child is going
+                    break
+                if not r:
+                    if self._reaped(0):                               # exited: take what is left, then stop
+                        os.set_blocking(fd, False)
+                        while True:
+                            try:
+                                chunk = os.read(fd, PTY_CHUNK)
+                            except OSError:
+                                break
+                            if not chunk:
+                                break
+                            self._fanout(chunk)
+                        break
+                    continue
+                try:
+                    chunk = os.read(fd, PTY_CHUNK)
+                except OSError:                                       # EIO: the terminal hung up
+                    break
+                if not chunk:
+                    break
+                self._fanout(chunk)
+        finally:
+            self._reaped(2.0)
+            with self._lock:
+                self.fd = -1
+                for x in (fd, self._slave, self._wake_r, self._wake_w):
+                    try:
+                        os.close(x)
+                    except OSError:
+                        pass
+                self._slave = self._wake_r = self._wake_w = -1
+                vs = list(self._viewers)
+                self._viewers.clear()
+            for v in vs:
+                v.ended()
+
+    def kill(self) -> None:
+        """End the session: SIGHUP (what a closed terminal sends), then SIGKILL. Idempotent."""
+        with self._lock:
+            try:
+                os.write(self._wake_w, b"x")
+            except OSError:
+                pass
+        for sig, wait in ((signal.SIGHUP, 1.5), (signal.SIGTERM, 1.0), (signal.SIGKILL, 2.0)):
+            if self._reaped(0):
+                break
+            try:
+                os.killpg(self.pid, sig)                              # the child is its own session/group leader
+            except OSError:
+                break
+            if self._reaped(wait):
+                break
+        self._thread.join(5)
+
+
+class PtyBackend:
+    """The running sessions of this dashboard process, by id."""
+
+    def __init__(self):
+        self._procs: dict[str, Proc] = {}
+        self._lock = threading.Lock()
 
     def start(self, rec: dict, resume: bool) -> None:
-        name = tmux_name(rec["id"])
-        r = self._run("new-session", "-d", "-s", name, "-c", rec["cwd"], "-x", "200", "-y", "50",
-                      tmux_command(rec["id"], resume, is_telegram(rec)))
-        if r.returncode:
-            raise ValueError(f"could not start the session: {r.stderr.strip()[:300] or 'tmux failed'}")
-        self._run("set-option", "-t", f"={name}", "status", "off")      # the browser is the only UI
+        argv = claude_argv(rec["id"], resume, is_telegram(rec))
+        self.launch(rec["id"], argv, session_env(), rec["cwd"])
+
+    def launch(self, sid: str, argv: list[str], env: dict[str, str], cwd: str) -> Proc:
+        validate_id(sid)
+        with self._lock:
+            old = self._procs.get(sid)
+            if old is not None and old.alive():
+                raise Conflict("the session is already running")
+            try:
+                proc = Proc(sid, argv, env, cwd)
+            except OSError as e:
+                raise ValueError(f"could not start the session: {e}")
+            self._procs[sid] = proc
+            return proc
+
+    def proc(self, sid: str) -> Proc | None:
+        with self._lock:
+            p = self._procs.get(sid)
+        return p if p is not None and p.alive() else None
 
     def alive(self, sid: str) -> bool:
-        try:
-            return self._run("has-session", "-t", f"={tmux_name(sid)}").returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            return False
+        return self.proc(sid) is not None
+
+    def viewers(self, sid: str) -> int:
+        p = self.proc(sid)
+        return p.viewer_count() if p else 0
 
     def stop(self, sid: str) -> None:
-        self._run("kill-session", "-t", f"={tmux_name(sid)}")
+        with self._lock:
+            p = self._procs.pop(sid, None)
+        if p is not None:
+            p.kill()
 
-    def attach_argv(self, sid: str) -> list[str]:
-        exe = shutil.which("tmux", path=tmux_env()["PATH"])
-        if not exe:
-            raise ValueError("tmux is not installed")
-        return [exe, "attach-session", "-t", f"={tmux_name(sid)}"]
+    def shutdown(self) -> None:
+        """Dashboard exit: end every session (they are offered for resume after the restart)."""
+        with self._lock:
+            procs, self._procs = list(self._procs.values()), {}
+        for p in procs:
+            p.kill()
 
 
-BACKEND = Tmux()
+BACKEND = PtyBackend()
 
 
 # ---------------------------------------------------------------- session records
@@ -332,7 +521,7 @@ class Store:
         except OSError:
             has_transcript = False
         return {"id": sid, "title": title, "cwd": rec["cwd"], "created": created, "last_active": last,
-                "live": BACKEND.alive(sid), "viewers": viewer_count(sid), "transcript": has_transcript,
+                "live": BACKEND.alive(sid), "viewers": BACKEND.viewers(sid), "transcript": has_transcript,
                 "telegram": is_telegram(rec)}
 
     def listing(self) -> list[dict]:
@@ -343,7 +532,6 @@ class Store:
     def delete(self, sid: str) -> None:
         rec = self.get(sid)
         BACKEND.stop(sid)
-        terminate_viewers(sid)
         t = transcript_path(claude_home(), Path(rec["cwd"]), sid)
         try:
             if not stat.S_ISDIR(os.lstat(t).st_mode):
@@ -418,7 +606,6 @@ def stop(sid: str) -> dict:
         st = Store()
         rec = st.get(sid)
         BACKEND.stop(sid)
-        terminate_viewers(sid)
         return st.row(rec)
 
 
@@ -432,89 +619,38 @@ class Conflict(Exception):
     pass
 
 
-# ---------------------------------------------------------------- viewers (one PTY + pump per WebSocket)
-_VIEWERS: dict[str, set] = {}
-_VLOCK = threading.Lock()
-
-
-def viewer_count(sid: str) -> int:
-    with _VLOCK:
-        return len(_VIEWERS.get(sid, ()))
-
-
-def terminate_viewers(sid: str) -> None:
-    with _VLOCK:
-        vs = list(_VIEWERS.get(sid, ()))
-    for v in vs:
-        v.terminate()
-
-
+# ---------------------------------------------------------------- viewers (one WebSocket attached to a Proc)
 class Viewer:
-    """Runs `argv` (normally `tmux attach`) on a fresh PTY and bridges it to one WebSocket:
-    binary frames in -> PTY input; PTY output -> binary frames out; text frames carry JSON control
-    messages ({"type": "resize", "cols", "rows"}); the viewer sends {"type": "exit"} when the PTY's
-    process ends, then closes. Ends when the socket closes, the peer idles out or the session stops."""
+    """Bridges one WebSocket to a running session: the scrollback first, then live output as it arrives
+    (sent by the session's drain thread); binary frames in -> PTY input; text frames carry JSON control
+    messages ({"type": "resize", "cols", "rows"}). When the session ends the viewer gets {"type": "exit"}
+    and is closed. Detaching (socket closed, idle timeout) leaves the session running."""
 
-    def __init__(self, sid: str, argv: list[str], env: dict[str, str]):
-        self.sid, self.argv, self.env = sid, argv, env
-        self.pid = 0
-        self.fd = -1                    # PTY master
-        self._slave = -1                # kept open here so the master never reports EIO early
-        self._lock = threading.Lock()
-        self._done = False
-        self._quiet = False             # True: the viewer's socket is gone, nothing to tell it
-        self._exited = False
-        self._wake_r, self._wake_w = os.pipe()        # terminate() pokes the pump out of its select
+    def __init__(self, proc: Proc):
+        self.proc = proc
         self.ws: wsmod.WebSocket | None = None
+        self._first_resize = True
+        self._gone = False
 
     def run(self, ws: wsmod.WebSocket) -> None:
         self.ws = ws
-        self.fd, self._slave = os.openpty()
-        tty = os.ttyname(self._slave)
-        # posix_spawn, not fork: this process is multi-threaded. setsid + opening the slave by path as fd 0
-        # makes it the child's controlling terminal (so SIGWINCH/SIGHUP reach it). Python fds are
-        # close-on-exec, so the child sees nothing of the dashboard but the PTY.
-        self.pid = os.posix_spawn(
-            self.argv[0], self.argv, self.env, setsid=True, setsigdef=[signal.SIGPIPE, signal.SIGXFSZ],
-            file_actions=[(os.POSIX_SPAWN_OPEN, 0, tty, os.O_RDWR, 0), (os.POSIX_SPAWN_DUP2, 0, 1),
-                          (os.POSIX_SPAWN_DUP2, 0, 2)])
-        with _VLOCK:
-            _VIEWERS.setdefault(self.sid, set()).add(self)
-        pump = threading.Thread(target=self._pump, name=f"pty-{self.sid[:8]}", daemon=True)
-        pump.start()
+        snapshot = self.proc.attach(self)
         try:
+            if snapshot:
+                ws.send_binary(snapshot)
+            if not self.proc.alive():                               # ended between the 101 and the attach
+                self.ended()
             while True:
                 kind, data = ws.recv()
                 if kind == "binary":
-                    self._write(data)
+                    self.proc.write(data)
                 else:
                     self._control(data)
         except wsmod.Closed:
             pass
         finally:
-            self.terminate(quiet=True)
-            with _VLOCK:
-                _VIEWERS.get(self.sid, set()).discard(self)
-                if not _VIEWERS.get(self.sid):
-                    _VIEWERS.pop(self.sid, None)
-            pump.join(5)
-            self._reaped(0)
-            with self._lock:
-                for fd in (self._slave, self._wake_r, self._wake_w):
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
-                self._slave = self._wake_r = self._wake_w = -1
-
-    def _write(self, data: bytes) -> None:
-        with self._lock:                 # the lock also keeps the fd from being closed under the write
-            while data and self.fd >= 0:
-                try:
-                    n = os.write(self.fd, data)
-                except OSError:
-                    return
-                data = data[n:]
+            self._gone = True
+            self.proc.detach(self)
 
     def _control(self, data: bytes) -> None:
         try:
@@ -523,106 +659,37 @@ class Viewer:
             return
         if isinstance(msg, dict) and msg.get("type") == "resize":
             try:
-                self.resize(int(msg.get("cols", 0)), int(msg.get("rows", 0)))
+                self.proc.resize(int(msg.get("cols", 0)), int(msg.get("rows", 0)), force=self._first_resize)
             except (TypeError, ValueError, OSError):
                 pass
+            self._first_resize = False
 
-    def resize(self, cols: int, rows: int) -> None:
-        cols = max(COLS[0], min(cols, COLS[1]))
-        rows = max(ROWS[0], min(rows, ROWS[1]))
-        with self._lock:
-            if self.fd >= 0:
-                fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-
-    def _pump(self) -> None:
-        """PTY output -> WebSocket. Ends at EOF/EIO (the process ended) or when the socket is gone;
-        it owns closing the PTY fd, so no other thread can close it under a read."""
+    # called by the session's drain thread
+    def send(self, chunk: bytes) -> None:
         ws = self.ws
-        fd = self.fd
+        if ws is None or self._gone:
+            return
         try:
-            while not self._done:
-                try:
-                    r, _, _ = select.select([fd, self._wake_r], [], [], 0.5)
-                except (OSError, ValueError):
-                    break
-                if self._wake_r in r:
-                    break
-                if not r:
-                    if self._reaped(0):                          # process ended: drain what is left, then stop
-                        os.set_blocking(fd, False)
-                        while True:
-                            try:
-                                chunk = os.read(fd, PTY_CHUNK)
-                            except OSError:
-                                break
-                            if not chunk:
-                                break
-                            ws.send_binary(chunk)
-                        break
-                    continue
-                try:
-                    chunk = os.read(fd, PTY_CHUNK)
-                except OSError:                                   # EIO: hung up
-                    break
-                if not chunk:
-                    break
-                ws.send_binary(chunk)
-            if not self._quiet:
-                try:
-                    ws.send_text(json.dumps({"type": "exit"}))
-                except wsmod.Closed:
-                    pass
-                ws.close(1000, "exit")
-        except wsmod.Closed:
+            ws.send_binary(chunk)
+        except (wsmod.Closed, OSError):
+            self._gone = True
+            self.proc.detach(self)
+
+    def ended(self) -> None:
+        """The session's process is gone: tell the browser, close, and wake the reader so the handler returns."""
+        ws = self.ws
+        if ws is None or self._gone:
+            return
+        self._gone = True
+        try:
+            ws.send_text(json.dumps({"type": "exit"}))
+        except (wsmod.Closed, OSError):
             pass
-        finally:
-            with self._lock:
-                self.fd = -1
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-            try:
-                ws.sock.shutdown(socket.SHUT_RD)                  # wake the reader; the handler closes the socket
-            except OSError:
-                pass
-
-    def _reaped(self, wait: float) -> bool:
-        """True once the child has been waited for (polls up to `wait` seconds)."""
-        deadline = time.monotonic() + wait
-        while True:
-            with self._lock:
-                if self._exited:
-                    return True
-                try:
-                    done = os.waitpid(self.pid, os.WNOHANG)[0] != 0
-                except ChildProcessError:
-                    done = True
-                if done:
-                    self._exited = True
-                    return True
-            if time.monotonic() >= deadline:
-                return False
-            time.sleep(0.02)
-
-    def terminate(self, quiet: bool = False) -> None:
-        """End the attach process (idempotent; safe from any thread); the pump then finishes and, unless
-        quiet (the viewer's socket is already gone), tells the browser {"type": "exit"} and closes."""
-        with self._lock:
-            if self._done:
-                return
-            self._done = True
-            self._quiet = quiet
-            try:
-                os.write(self._wake_w, b"x")
-            except OSError:
-                pass
-        for sig in (signal.SIGHUP, signal.SIGKILL):
-            if self._reaped(0):
-                return
-            try:
-                os.killpg(self.pid, sig)                           # the child is its own session/group leader
-            except OSError:
-                return
-            if self._reaped(1.0):
-                return
+        try:
+            ws.close(1000, "exit")
+        except (wsmod.Closed, OSError):
+            pass
+        try:
+            ws.sock.shutdown(socket.SHUT_RD)
+        except OSError:
+            pass

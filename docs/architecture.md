@@ -210,22 +210,32 @@ the STOP file, and actions that run the `hands` CLI as a subprocess (so the CLI'
 It never reads agent workspaces, never holds the GitHub token, and never mounts anything. Bounded:
 32 connections, 10 s socket timeout, 10 kB POST bodies, capped file reads, never follows symlinks.
 
-### Session manager (0.5, step 10; `hands/sessions.py`, `hands/ws.py`)
+### Session manager (0.5, step 10; `hands/sessions.py`, `hands/ws.py`; PTYs since 0.5.2)
 
 Persistent interactive Claude Code sessions for the host user, run **outside** the container boundary
 on purpose (they are Alex's own terminal, with Claude's normal permission prompts), so the rules are
 the opposite of the runner's: never autonomous (`--dangerously-skip-permissions` is never passed; the
-test suite asserts it on the argv and on the tmux command line), never the dashboard's environment
-(an allowlist `PATH HOME TERM LANG USER SHELL` + `CLAUDE_CONFIG_DIR`/`TMUX_TMPDIR` built from scratch
-and applied with `env -i`; Claude's login is its credentials file under HOME), working folder under
-home but never home itself or a hidden folder. One `claude` per tmux session `hands_s_<uuid>` so it
-survives viewers, the dashboard and `bash install.sh`; the dashboard only ever attaches
-(`tmux attach-session` on a PTY per WebSocket, spawned with posix_spawn + setsid, never fork in the
-threaded server). The WebSocket server is stdlib RFC 6455 in-process, so Host/cookie/Origin checks run
-before the upgrade, plus a single-use 30 s ticket minted by a CSRF-checked POST (an upgrade cannot carry
-`X-Hands`). Caps: 8 open terminals, 64 kB frames, 256 kB messages, idle close after 60 s. The listing
-only reads `~/.config/hands/sessions/*.json` and the one transcript per record; delete unlinks that one
-transcript. A systemd unit for the dashboard is prepared in `console/deploy/` (not installed).
+test suite asserts it on the argv), never the dashboard's environment (an allowlist `PATH HOME TERM LANG
+USER SHELL` + `CLAUDE_CONFIG_DIR` built from scratch and passed to posix_spawn as the entire environment;
+Claude's login is its credentials file under HOME), working folder = the home folder (default) or a
+folder inside it, never a hidden folder.
+
+**No tmux (0.5.2, requirement 1; `docs/sessions-pty.md`).** Each session is one `claude` child on a
+pseudo-terminal owned by the dashboard process (`sessions.Proc`): `/bin/sh -c 'cd -- "$1" && shift && exec
+"$@"'` spawned with posix_spawn + setsid and the PTY slave opened by path as fd 0 (controlling terminal;
+never fork in the threaded server). A drain thread is the only reader of the master: it appends to a 256 kB
+ring buffer (scrollback) and fans each chunk out to the attached WebSocket viewers. A viewer
+(`sessions.Viewer`) is a set member: attaching replays the ring buffer, its first resize forces a SIGWINCH
+so the TUI repaints; closing the browser just detaches, the process runs on; several viewers may be
+attached at once (input from any, last resize wins). Process exit is detected by `waitpid` polling: viewers
+get `{"type": "exit"}` and are closed, the row shows stopped. The dashboard owns the PTYs, so a dashboard
+restart (`bash install.sh`, `hands-dash stop`) ends every session (SIGHUP, as a closed terminal would) and
+the list offers each one for Resume (`claude --resume <uuid>`).
+The WebSocket server is stdlib RFC 6455 in-process, so Host/cookie/Origin checks run before the upgrade,
+plus a single-use 30 s ticket minted by a CSRF-checked POST (an upgrade cannot carry `X-Hands`). Caps: 8
+open terminals, 64 kB frames, 256 kB messages, idle close after 60 s. The listing only reads
+`~/.config/hands/sessions/*.json` and the one transcript per record; delete unlinks that one transcript.
+A systemd unit for the dashboard is prepared in `console/deploy/` (not installed).
 
 **Live on Telegram (step 12).** One session at a time may run with `--channels
 plugin:telegram@claude-plugins-official` (Claude Code's official Telegram channel plugin, a research

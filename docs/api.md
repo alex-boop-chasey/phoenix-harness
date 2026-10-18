@@ -332,7 +332,7 @@ rules as every POST.
 ## Session manager (since 0.5, step 10)
 
 Persistent Claude Code terminals (`hands/sessions.py`, `hands/ws.py`; design in
-`docs/console-review.md` §6, option C). A session is one `claude` process inside tmux session
+`docs/console-review.md` §6, option C; PTYs owned by the dashboard since 0.5.2, `docs/sessions-pty.md`). A session is one `claude` process on a PTY
 `hands_s_<uuid>`; `<uuid>` is a lower-case UUID4 (`sessions.ID`, `fullmatch`) and is also Claude's own
 session id (`claude --session-id <uuid>`, resumed with `claude --resume <uuid>`). Records live in
 `~/.config/hands/sessions/<uuid>.json` (0600). Same auth, Host and CSRF rules as every other route.
@@ -342,7 +342,7 @@ session id (`claude --session-id <uuid>`, resumed with `claude --resume <uuid>`)
 Known sessions, newest activity first:
 `[{"id", "title", "cwd", "created", "last_active", "live", "viewers", "transcript", "telegram"}]`. `title` is the
 first user prompt of Claude's transcript `~/.claude/projects/<cwd encoded>/<uuid>.jsonl` (bounded read,
-cached in the record once found), `live` = the tmux session exists, `viewers` = open terminals on it,
+cached in the record once found), `live` = the process is running in this dashboard, `viewers` = open terminals on it,
 `telegram` = the session is flagged to run with the Telegram channel (step 12; at most one flagged
 session is running at a time).
 
@@ -357,8 +357,9 @@ Body `{"cwd": "/abs/or/~/path", "telegram": false}` (both optional, defaults: th
 never `~/ops`) and `false`; `telegram` must be a JSON boolean, `400` otherwise). The working folder must
 exist and be the home folder or a folder inside it, and not a hidden top-level folder (`~/.config`,
 `~/.ssh`, …); symlinks are resolved first (`400 "working folder …"` otherwise). Starts
-`claude --session-id <uuid>` in tmux with a clean allowlisted environment: `PATH HOME TERM LANG USER
-SHELL` (+ `CLAUDE_CONFIG_DIR`, `TMUX_TMPDIR` if the dashboard has them), **nothing copied from the
+`claude --session-id <uuid>` on a dashboard-owned PTY (via `/bin/sh -c 'cd -- "$1" && shift && exec "$@"'`)
+with a clean allowlisted environment: `PATH HOME TERM LANG USER SHELL` (+ `CLAUDE_CONFIG_DIR` if the
+dashboard has it), **nothing copied from the
 dashboard's environment** (no GH/TG tokens, no `CLAUDECODE`, no `COLORTERM`), default permission
 mode (never `--dangerously-skip-permissions`). With `"telegram": true` the argv also gets
 `--channels plugin:telegram@claude-plugins-official` (the plugin reads its own bot token from
@@ -371,8 +372,8 @@ flagged session is running. Response: the session's row.
 `resume` restarts a stopped session with `--resume <uuid>` (`409` if it is running). Its optional body
 `{"telegram": true|false}` sets the flag before the start (persisted in the record; omitted or `null`
 keeps it), so a session moves on or off Telegram by stop + resume; a flagged start is `409` while
-another flagged session runs, and nothing is started or changed. `stop` kills the
-tmux session and closes its terminals; `delete` stops it, removes the record and unlinks exactly
+another flagged session runs, and nothing is started or changed. `stop` ends the
+process (SIGHUP, then SIGTERM/SIGKILL) and closes its terminals; `delete` stops it, removes the record and unlinks exactly
 `~/.claude/projects/<cwd encoded>/<uuid>.jsonl` (never following a symlink; nothing else under
 `~/.claude` is listed or touched). `ticket` returns `{"ticket": "...", "ttl": 30}`: a single-use,
 30-second token bound to this login session and this session id, the CSRF proof for the WebSocket
@@ -383,8 +384,9 @@ below (browsers cannot send `X-Hands` on an upgrade). Unknown or malformed id �
 Every check runs before the `101`, in this order: Host (as everywhere), login cookie, `Origin` ==
 `http://<Host>`, a valid RFC 6455 handshake (`Upgrade: websocket`, `Connection: Upgrade`, version 13,
 16-byte key), the ticket (→ `403`), the record (→ `404`), the session running (→ `409`), a free
-terminal slot (**8** open terminals in total → `503`). Then the server runs `tmux attach-session` on
-a fresh PTY (posix_spawn, setsid, controlling tty) and bridges it:
+terminal slot (**8** open terminals in total → `503`). Then the server attaches the socket to the
+session's PTY: the scrollback (up to 256 kB) is sent first, then live output; the first resize forces a
+repaint:
 
 - client → server: binary frames = terminal input; text frames = JSON `{"type": "resize", "cols", "rows"}`
   (clamped to 20–500 × 5–300);

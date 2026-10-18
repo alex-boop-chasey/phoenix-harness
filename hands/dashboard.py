@@ -945,13 +945,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": err})
         if not ticket or not self.server.redeem_ticket(ticket, self._login_sid(), sid):
             return self._json(403, {"error": "bad or expired ticket"})
-        rec = sessions.Store().get(sid)                                   # 404 if unknown
-        if not sessions.BACKEND.alive(sid):
+        sessions.Store().get(sid)                                         # 404 if unknown
+        proc = sessions.BACKEND.proc(sid)
+        if proc is None:
             return self._json(409, {"error": "the session is not running; resume it first"})
         if not self.server.acquire_terminal():
             return self._json(503, {"error": f"too many terminals open ({sessions.MAX_TERMINALS} max); close one first"})
         try:
-            viewer = sessions.Viewer(sid, sessions.BACKEND.attach_argv(sid), sessions.tmux_env())
+            viewer = sessions.Viewer(proc)
             self.send_response(101)
             self.send_header("Upgrade", "websocket")
             self.send_header("Connection", "Upgrade")
@@ -1061,6 +1062,7 @@ def serve(port: int) -> int:
             pass
         finally:
             srv.server_close()
+            sessions.BACKEND.shutdown()          # sessions are PTYs of this process: end them cleanly (SIGHUP)
     return 0
 
 

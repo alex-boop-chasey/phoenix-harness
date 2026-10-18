@@ -38,10 +38,12 @@ cd ~/harness && bash install.sh
 cat ~/.local/share/hands/runner/VERSION      # 0.5.0
 ```
 
-`install.sh` copies the source to the live folder, runs the test suite (249 tests, 2 skips are expected:
-node on the host, tmux inside the sandbox), keeps the watchdog cron line and restarts the dashboard in tmux
-(`hands_dashboard`). Open Session manager sessions survive (they live in their own tmux sessions); the
-browser session does not: log in again in step 5.
+`install.sh` copies the source to the live folder, runs the test suite (1 skip is expected: node on the
+host), keeps the watchdog cron line and restarts the dashboard in tmux (`hands_dashboard`). Since 0.5.2
+Session manager sessions are PTYs of the dashboard process: the restart ends them (Claude gets SIGHUP) and
+the list offers each one for Resume (`claude --resume`, the conversation comes back). Stop or finish
+anything important in a session before installing. The browser login does not survive either: log in
+again in step 5.
 
 ## 4. Dashboard as a systemd service (root, optional but recommended)
 

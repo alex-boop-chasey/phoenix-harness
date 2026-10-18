@@ -23,6 +23,14 @@
   further refreshes are the ↻ button (one short Haiku reply each; the server still allows one per 2 min).
 - Requirement 9 (session folder): new sessions default to the home folder, which is now a valid working
   folder (hidden top-level folders stay refused); `~/ops` is never the default.
+- Requirement 1 (no tmux): sessions are PTYs owned by the dashboard, the claude-harness model in stdlib
+  (`docs/sessions-pty.md`): `sessions.Proc` spawns `claude` through `/bin/sh -c 'cd … && exec …'` with
+  posix_spawn + setsid on a dashboard-owned PTY, a drain thread keeps a 256 kB scrollback and fans output
+  out to every attached viewer; closing the browser detaches, reopening replays the scrollback; process
+  exit closes the viewers and shows the session stopped. A dashboard restart ends the sessions (SIGHUP)
+  and offers each for Resume (`claude --resume`). tmux, `env -i`, `tmux attach` and `TMUX_TMPDIR` are gone
+  from the session path (the dashboard and the build loops still run in tmux). The rig runs the real
+  backend with its fake claude; the real-PTY tests replace the tmux integration test (no skip).
 - Telegram (`hands/notify.py`): a failed send is retried up to 3 attempts (2 s, then 5 s backoff; HTTP
   429 waits for `retry_after`, other 4xx are not retried); one WARN names the exception class and reason
   (URLError reason, HTTP status) for every attempt, with the bot token redacted. Still best-effort: a
