@@ -169,8 +169,10 @@ class TestPlusButton(unittest.TestCase):
         self.assertEqual(app.count('class: "tab-add"'), 1)
         self.assertRegex(app, r"\nconst addBtn = el\(\"button\", \{ class: \"tab-add\"")
         body = re.search(r"function renderTabs\(open, hidden\) \{(.*?)\n\}", app, re.S).group(1)
-        self.assertIn("strip.replaceChildren(...tabs, addBtn,", body)
-        self.assertIn("if (key === lastTabsKey && strip.contains(addBtn))", body)
+        self.assertNotIn("replaceChildren", body)                 # nothing in the strip is removed and re-added
+        self.assertIn("if (!strip.contains(addBtn)) strip.append(addBtn);", body)
+        self.assertIn("if (key === lastTabsKey)", body)
+        self.assertIn("strip.insertBefore(t, cursor)", body)      # tabs reconciled in place by name
         self.assertNotIn('el("button", { class: "tab-add"', body)
 
 

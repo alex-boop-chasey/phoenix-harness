@@ -80,32 +80,46 @@ function select(name) {
 }
 
 // ---- project tabs (WAI-ARIA tabs: roving tabindex, arrows move, Enter opens, Delete closes)
-// The "+" button is created once and reused by every render: a click is lost when the element under the
-// pointer is replaced between pointerdown and pointerup (the 4 s refresh used to rebuild the whole strip,
-// so the first click on "+" sometimes did nothing: requirement 4). The strip is rebuilt only when the
-// tabs actually changed; the "+" node is the same object across renders.
+// The "+" button is created once and never removed from the strip: Chromium and WebKit drop a click when
+// the pressed node leaves the DOM between pointerdown and pointerup, even for a moment, and the 4 s refresh
+// used to rebuild the whole strip, so the first click on "+" sometimes did nothing (requirement 4). Tabs
+// are reconciled in place by project name for the same reason; the strip is touched only when something
+// changed.
 let lastScrolledTo = null;
 let lastTabsKey = null;
 const addBtn = el("button", { class: "tab-add", type: "button", "data-name": "+", "aria-haspopup": "menu", "aria-expanded": "false",
   "aria-label": "New project or reopen a closed one", title: "New project or reopen a closed one", on: { click: () => toggleMenu() } }, "+");
+function tabButton(p) {
+  return el("button", {
+    class: "tab", type: "button", role: "tab", "data-name": p.name, title: p.name,
+    on: { click: (ev) => { if (ev.target.closest(".x")) closeTab(p); else select(p.name); }, keydown: (ev) => tabKey(ev, p) } },
+    el("span", { class: "tname" }, p.name), badge(""),
+    el("span", { class: "x", "aria-label": `Close ${p.name}`, title: "Close tab (Delete)" }, "×"));
+}
 function renderTabs(open, hidden) {
   const strip = $("#tabs");
   const selected = mode === "project" ? current : null;
   addBtn.setAttribute("aria-current", String(mode === "new" || mode === "creating"));
+  if (!strip.contains(addBtn)) strip.append(addBtn);
   const key = JSON.stringify([open.map((p) => [p.name, p.error ? "error" : p.status]), selected, open.length ? 0 : hidden.length]);
-  if (key === lastTabsKey && strip.contains(addBtn)) { updateTabShadows(); return; }
+  if (key === lastTabsKey) { updateTabShadows(); return; }
   lastTabsKey = key;
-  const active = document.activeElement;
-  const focused = active && strip.contains(active) ? active.dataset.name : null;
-  const tabs = open.map((p, i) => el("button", {
-    class: "tab", type: "button", role: "tab", "data-name": p.name, title: p.name,
-    "aria-selected": String(p.name === selected), tabindex: (selected ? p.name === selected : i === 0) ? "0" : "-1",
-    on: { click: (ev) => { if (ev.target.closest(".x")) closeTab(p); else select(p.name); }, keydown: (ev) => tabKey(ev, p) } },
-    el("span", { class: "tname" }, p.name), badge(p.error ? "error" : p.status),
-    el("span", { class: "x", "aria-label": `Close ${p.name}`, title: "Close tab (Delete)" }, "×")));
-  strip.replaceChildren(...tabs, addBtn,
-    ...(open.length ? [] : [el("span", { class: "tabs-hint" }, hidden.length ? `${hidden.length} closed` : "No projects yet")]));
-  if (focused && focused !== "+") { const t = strip.querySelector(`[data-name="${CSS.escape(focused)}"]`); if (t) t.focus(); }
+  const have = new Map([...strip.querySelectorAll(".tab")].map((t) => [t.dataset.name, t]));
+  const want = new Set(open.map((p) => p.name));
+  for (const [name, t] of have) if (!want.has(name)) t.remove();
+  let cursor = strip.firstChild;                    // walk the strip, keep nodes that are already in place
+  open.forEach((p, i) => {
+    let t = have.get(p.name);
+    if (!t) { t = tabButton(p); }
+    if (t !== cursor) strip.insertBefore(t, cursor); else cursor = cursor.nextSibling;
+    t.setAttribute("aria-selected", String(p.name === selected));
+    t.tabIndex = (selected ? p.name === selected : i === 0) ? 0 : -1;
+    const status = p.error ? "error" : p.status;
+    const b = t.querySelector(".badge");
+    if (b.textContent !== (status || "?")) b.replaceWith(badge(status));
+  });
+  for (const h of strip.querySelectorAll(".tabs-hint")) h.remove();
+  if (!open.length) addBtn.after(el("span", { class: "tabs-hint" }, hidden.length ? `${hidden.length} closed` : "No projects yet"));
   if (menuEl) positionMenu();
   if (selected && selected !== lastScrolledTo) {
     lastScrolledTo = selected;
