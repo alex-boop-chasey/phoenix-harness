@@ -67,6 +67,7 @@ no-hosts
 no-poll
 domain-needed
 bogus-priv
+stop-dns-rebind
 filter-AAAA
 cache-size=1000
 pid-file=/run/hands-dns/dnsmasq.pid

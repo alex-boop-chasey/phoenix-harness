@@ -122,7 +122,7 @@ Full project detail (summary fields plus the below; example truncated to one met
  "total_cost_usd": 1.1696,
  "config": {
   "coder_model": "claude-fable-5-1", "eval_model": "claude-fable-5-1",
-  "fallback_model": "claude-opus-5-5", "image": "hands:cc2.1.301-pw1.64.1-dns1",
+  "fallback_model": "claude-opus-5-5", "image": "hands:cc2.1.301-pw1.64.1-dns2",
   "max_sessions": 60, "cost_cap_usd": 0.0, "push": true, "branch": "main"
  },
  "metrics": [

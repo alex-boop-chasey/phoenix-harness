@@ -18,7 +18,7 @@ Docker containers, with runner-run acceptance checks and an independent AI evalu
 | Planner | `hands/planner.py` | child process spawned by CLI/dashboard |
 | Project create/destroy | `hands/newproject.py` (+ `hands/codesummary.py` for imported repos) | child process spawned by CLI/dashboard |
 | Watchdog | `hands <p> watchdog` / `hands all watchdog` | cron, every 10 min |
-| Agent containers | `hands/docker.py`, `container/entry.sh`, image files in `image/` | Docker, image `hands:cc2.1.301-pw1.64.1-dns1` |
+| Agent containers | `hands/docker.py`, `container/entry.sh`, image files in `image/` | Docker, image `hands:cc2.1.301-pw1.64.1-dns2` |
 
 Supporting modules: `config.py` (per-project TOML), `state.py` (state.json, jsonl logs, flock-based `Lock`),
 `spec.py` (steps.json validation, refs, path globs), `prompts.py` (prompt assembly), `claude.py`
@@ -140,7 +140,7 @@ host-git hardening: env stripped of GIT_SSH/GIT_CONFIG overrides, global/system 
 git is never run inside an agent-written workspace).
 
 - `container/entry.sh` (mounted read-only): applies the egress firewall as root (allowlist =
-  api.anthropic.com, registry.npmjs.org, sentry.io, statsig.com + the spec repo's `allowed-domains`;
+  api.anthropic.com, registry.npmjs.org + the spec repo's `allowed-domains`; no telemetry hosts;
   skipped only with `--network none`), gives the home dir to the host uid, then drops to that uid with
   an empty capability bounding set and `no_new_privs` — the agent cannot be root (uid 0 refused),
   change the firewall, or use sudo. Nothing else is allowed: no GitHub ranges, no host /24, no tcp/22

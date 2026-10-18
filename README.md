@@ -133,8 +133,14 @@ See CHANGELOG.md.
 - DNS filter (0.5.1): only allowlisted names resolve, but dnsmasq matches by suffix, so every subdomain
   of a listed name resolves and is reachable too. Never allowlist an apex that hosts arbitrary user
   content (`github.io`, `vercel.app`, `herokuapp.com`, `s3.amazonaws.com`, ...): list the exact host.
-  The built-in list is api.anthropic.com, registry.npmjs.org, sentry.io, statsig.com; GitHub, the
-  host /24 and tcp/22 are no longer allowed (a project that needs GitHub lists it in `allowed-domains`).
+  The built-in list is api.anthropic.com and registry.npmjs.org only (no telemetry hosts: Claude Code
+  runs with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`); GitHub, the host /24 and tcp/22 are no
+  longer allowed (a project that needs GitHub lists it in `allowed-domains`).
+- The firewall allows IP addresses, not names: once an allowlisted host has been resolved, every other
+  site served from the same CDN address (registry.npmjs.org and api.anthropic.com both sit behind
+  shared CDNs) is reachable by naming it directly (`curl --resolve`, a raw IP with a Host/SNI header).
+  The DNS filter stops casual access, not a deliberate agent. The fix is an SNI-checking egress proxy
+  in front of the containers (future work).
 - Allowlisted hosts are reachable on any port, and an allowlisted service can still be used as a data
   channel (e.g. publishing to the npm registry with a token the agent was given).
 - Agent-written code runs as the same uid as the evaluator's claude process; the nonce raises the

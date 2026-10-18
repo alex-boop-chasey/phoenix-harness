@@ -45,7 +45,7 @@ class TestDnsConfig(unittest.TestCase):
         self.assertEqual(d.count("ipset=/sentry.io/allowed-domains"), 1, "duplicates are collapsed")
         # the fixed part: local-only resolver, nothing else resolves, pid where the firewall looks
         for fixed in ("no-resolv", "no-hosts", "listen-address=127.0.0.1", "bind-interfaces", "local=/#/",
-                      "user=root", "pid-file=/run/hands-dns/dnsmasq.pid", "filter-AAAA"):
+                      "user=root", "pid-file=/run/hands-dns/dnsmasq.pid", "filter-AAAA", "stop-dns-rebind"):
             self.assertIn(fixed, d)
         self.assertFalse([ln for ln in d if ln.startswith("server=") and "/#/" in ln], "no catch-all upstream")
         # every directive is one of the known forms with a safe value
@@ -106,10 +106,16 @@ class TestDnsConfig(unittest.TestCase):
         for gone in ("-p udp --dport 53 -j ACCEPT\n", "--dport 22", "api.github.com", "HOST_NETWORK", "ipset add allowed-domains \"$cidr\""):
             self.assertNotIn(gone, s, f"old rule still present: {gone!r}")
         self.assertIn("example.com resolved", s, "startup verifies the filter")
+        # built-in allowlist: Anthropic API and the npm registry only; no telemetry hosts (suffix match
+        # would open *.sentry.io / *.statsig.com ingest endpoints as an exfiltration route)
+        builtin = s.split("ALLOWED_NAMES=$(printf", 1)[1].split("cat /etc/hands/allowed-domains", 1)[0]
+        self.assertEqual(sorted(re.findall(r'"([a-z0-9.-]+)"', builtin)), ["api.anthropic.com", "registry.npmjs.org"])
+        for tele in ("sentry", "statsig", "github"):
+            self.assertNotIn(tele, builtin)
         df = (ROOT / "image" / "Dockerfile").read_text()
         self.assertIn("dnsmasq-base", df)
         self.assertIn("hands-dns-conf.sh /usr/local/bin/", df)
-        self.assertEqual((ROOT / "image" / "versions.env").read_text().count("IMAGE_VARIANT=dns1"), 1)
+        self.assertEqual((ROOT / "image" / "versions.env").read_text().count("IMAGE_VARIANT=dns2"), 1)
         self.assertEqual(subprocess.run(["bash", "-n", str(FIREWALL)]).returncode, 0)
 
 

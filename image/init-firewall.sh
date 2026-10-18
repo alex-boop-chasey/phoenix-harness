@@ -65,12 +65,12 @@ iptables -A OUTPUT -o lo -j ACCEPT
 # Create ipset with CIDR support (dnsmasq adds the addresses of allowlisted names at query time)
 ipset create allowed-domains hash:net
 
-# Allowlisted names: what Claude Code and the toolchain need, plus the spec repo's allowed-domains
+# Allowlisted names: what Claude Code and the toolchain need, plus the spec repo's allowed-domains.
+# No telemetry hosts (sentry.io, statsig.com): the runner sets CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1,
+# and with suffix matching their ingest subdomains would be a free exfiltration route.
 ALLOWED_NAMES=$(printf '%s\n' \
     "api.anthropic.com" \
-    "registry.npmjs.org" \
-    "sentry.io" \
-    "statsig.com"
+    "registry.npmjs.org"
     cat /etc/hands/allowed-domains 2>/dev/null || true)
 
 mkdir -p "$DNS_STATE"

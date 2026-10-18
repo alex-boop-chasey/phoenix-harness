@@ -3,8 +3,15 @@
 ## 0.5.1 (release candidate, 2026-10-17)
 
 Closes the open-DNS hole in the build containers (`hands <p> check` used to warn "DNS to outside
-resolvers is open: DNS tunnelling possible"). New agent image `hands:cc2.1.301-pw1.64.1-dns1`
+resolvers is open: DNS tunnelling possible"). New agent image `hands:cc2.1.301-pw1.64.1-dns2`
 (`image/versions.env` `IMAGE_VARIANT`); the old tag is untouched. Branch `dns-filter`.
+
+rc2 (review fixes): sentry.io and statsig.com dropped from the built-in allowlist (Claude Code runs
+with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`; with suffix matching their ingest subdomains would
+be an exfiltration route), so the built-in list is api.anthropic.com and registry.npmjs.org only;
+dnsmasq `stop-dns-rebind` (no private-range answers from upstream); README residual risk: the firewall
+allows IPs, so other sites on a shared CDN address stay reachable by naming them directly (future fix:
+SNI-checking egress proxy). Image variant `dns2`; npm install through the filter verified by hand.
 
 - Image: dnsmasq (`dnsmasq-base`) and `image/hands-dns-conf.sh`, which turns the allowlist into a
   dnsmasq config (`no-resolv`, one `server=`/`ipset=` pair per name, `local=/#/` so everything else is
