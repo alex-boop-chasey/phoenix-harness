@@ -25,7 +25,11 @@ class TestLiveArgv(unittest.TestCase):
         for resume in (False, True):
             plain = sessions.claude_argv(sid, resume)
             live = sessions.claude_argv(sid, resume, telegram=True)
-            self.assertEqual(live, plain + ["--channels", CHANNEL])
+            self.assertEqual(live, plain + ["--settings", sessions.TELEGRAM_SETTINGS, "--channels", CHANNEL])
+            # the per-session enable is exactly one plugin set to true, nothing else (requirement 8)
+            self.assertEqual(json.loads(sessions.TELEGRAM_SETTINGS), {"enabledPlugins": {"telegram@claude-plugins-official": True}})
+            self.assertEqual(CHANNEL, f"plugin:{sessions.TELEGRAM_PLUGIN}")
+            self.assertNotIn("--settings", plain)
             self.assertEqual(live[1], "--resume" if resume else "--session-id")
             for bad in ("--dangerously-skip-permissions", "--permission-mode", "--dangerously-load-development-channels"):
                 self.assertNotIn(bad, live)
@@ -135,7 +139,7 @@ class TestOneLiveSession(unittest.TestCase):
         self.assertEqual((st, r["live"], r["telegram"]), (200, False, True))
         st, r = self.post(f"/api/sessions/{b['id']}/resume", {"telegram": True})
         self.assertEqual((st, r["live"], r["telegram"]), (200, True, True), r)
-        self.assertEqual(self.last_argv()[1:], ["--resume", b["id"], "--channels", CHANNEL])
+        self.assertEqual(self.last_argv()[1:], ["--resume", b["id"], "--settings", sessions.TELEGRAM_SETTINGS, "--channels", CHANNEL])
         st, err = self.post(f"/api/sessions/{a['id']}/resume")             # a still flagged: conflicts with b
         self.assertEqual(st, 409, err)
         self.assertNotIn(a["id"], self.fake.alive_ids)

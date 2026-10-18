@@ -237,9 +237,13 @@ open terminals, 64 kB frames, 256 kB messages, idle close after 60 s. The listin
 `~/.config/hands/sessions/*.json` and the one transcript per record; delete unlinks that one transcript.
 A systemd unit for the dashboard is prepared in `console/deploy/` (not installed).
 
-**Live on Telegram (step 12).** One session at a time may run with `--channels
+**Live on Telegram (step 12; per-session plugin enable since 0.5.2).** One session at a time may run with
+`--settings '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' --channels
 plugin:telegram@claude-plugins-official` (Claude Code's official Telegram channel plugin, a research
-preview; `sessions.TELEGRAM_CHANNEL`, the only value ever passed). The flag lives in the session record
+preview; `sessions.TELEGRAM_SETTINGS`/`TELEGRAM_CHANNEL`, the only values ever passed). The plugin is
+disabled in the user's settings (requirement 8: no other `claude` on the host, the ops Claude included,
+loads it); `--settings` merges over the user file for that one process, verified on 2.1.292
+(`docs/telegram.md` §5). The flag lives in the session record
 (`"telegram": true`), is set at creation or on resume, and `Store.live_telegram()` refuses a second
 running flagged session (`409`). The plugin, not the harness, owns the bot: token in
 `~/.claude/channels/telegram/.env`, sender allowlist in `access.json`, pairing codes, and the permission

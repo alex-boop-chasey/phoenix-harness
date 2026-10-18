@@ -31,6 +31,11 @@
   and offers each for Resume (`claude --resume`). tmux, `env -i`, `tmux attach` and `TMUX_TMPDIR` are gone
   from the session path (the dashboard and the build loops still run in tmux). The rig runs the real
   backend with its fake claude; the real-PTY tests replace the tmux integration test (no skip).
+- Requirements 2 and 8 (Telegram): a session started with Telegram selected gets
+  `--settings '{"enabledPlugins":{"telegram@claude-plugins-official":true}}'` in front of `--channels`,
+  so the plugin can stay disabled in `~/.claude/settings.json` (the ops Claude never loads it). Verified
+  with a real Claude Code 2.1.292 process by debug log (`docs/telegram.md` §5); Alex flips the user
+  setting to false after the live check.
 - Telegram (`hands/notify.py`): a failed send is retried up to 3 attempts (2 s, then 5 s backoff; HTTP
   429 waits for `retry_after`, other 4xx are not retried); one WARN names the exception class and reason
   (URLError reason, HTTP status) for every attempt, with the bot token redacted. Still best-effort: a

@@ -3,8 +3,10 @@
 One Session manager session at a time can be "live": connected to Claude Code's official Telegram
 channel plugin, so Alex can message Claude from his phone and answer permission prompts there
 (Allow / Deny buttons; see `docs/console-review.md` §8). The harness only adds
-`--channels plugin:telegram@claude-plugins-official` to that session's `claude` command and keeps the
-count at one. Everything secret (bot token, allowlist) is the plugin's, under
+`--settings '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' --channels
+plugin:telegram@claude-plugins-official` to that session's `claude` command and keeps the count at one.
+The plugin stays **disabled** in `~/.claude/settings.json` (requirement 8, section 5 below): only a
+session started with Telegram selected loads it. Everything secret (bot token, allowlist) is the plugin's, under
 `~/.claude/channels/telegram/`, which the dashboard and the assistant never read.
 
 Requirements: Bun on the builder account, the plugin installed and configured once, a dedicated bot
@@ -66,6 +68,32 @@ setup transcript: `rm -rf ~/.claude/projects/-home-builder-ops-tmp-tg-setup ~/op
    ```
    `allowlist` = messages from anyone not paired are dropped silently (no pairing code offered).
    `/telegram:access` shows the policy and the allowlist at any time.
+
+## 5. Disable the plugin globally (requirement 8; once, after the live check below passed)
+
+Every `claude` on this host that has the plugin enabled starts the plugin's MCP server (the bridge to
+your bot), the ops Claude included. Phoenix enables it per live session with `--settings`, so the user
+setting goes back to off. In `~/.claude/settings.json` (Alex edits it; the assistant never does):
+
+```json
+"enabledPlugins": { "telegram@claude-plugins-official": false }
+```
+
+Then check from a plain shell that nothing of the plugin loads without the flag, and that it does with it
+(no network and no bot involved; the debug log is written locally):
+
+```bash
+cd ~ && claude --debug-file /tmp/tg-off.txt -p ok >/dev/null 2>&1; grep -c "plugin telegram" /tmp/tg-off.txt   # 0
+claude --settings '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' --debug-file /tmp/tg-on.txt -p ok >/dev/null 2>&1
+grep -c "plugin telegram" /tmp/tg-on.txt    # > 0 ("Checking plugin telegram", "Loaded 2 skills from plugin telegram")
+rm -f /tmp/tg-off.txt /tmp/tg-on.txt
+```
+
+Verified by the assistant on 2026-10-18 with Claude Code 2.1.292 (user setting true at the time):
+`--settings …false` → "Found 7 plugins (5 enabled, 2 disabled)", no telegram line; `--settings …true` →
+"6 enabled", "Attempting to load skills from plugin telegram", `MCP server "plugin:telegram:telegram":
+Starting connection`. `--settings` wins over the user file in both directions, so the per-session enable
+works once the file says false.
 
 ## Check
 

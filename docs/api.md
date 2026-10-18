@@ -362,7 +362,9 @@ with a clean allowlisted environment: `PATH HOME TERM LANG USER SHELL` (+ `CLAUD
 dashboard has it), **nothing copied from the
 dashboard's environment** (no GH/TG tokens, no `CLAUDECODE`, no `COLORTERM`), default permission
 mode (never `--dangerously-skip-permissions`). With `"telegram": true` the argv also gets
-`--channels plugin:telegram@claude-plugins-official` (the plugin reads its own bot token from
+`--settings '{"enabledPlugins":{"telegram@claude-plugins-official":true}}' --channels
+plugin:telegram@claude-plugins-official` (the plugin is disabled in the user settings and enabled for this
+one process; it reads its own bot token from
 `~/.claude/channels/telegram/.env` inside the session; the dashboard never touches that folder) and the
 record is flagged; `409 "another session is already live on Telegram (<title>); stop it first"` if a
 flagged session is running. Response: the session's row.

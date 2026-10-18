@@ -52,7 +52,13 @@ SCROLLBACK = 256 * 1024                 # bytes of PTY output kept per session f
 DEFAULT_COLS, DEFAULT_ROWS = 120, 40    # until the first viewer sends its size
 # The one channel a "live" session may run (step 12): Claude Code's official Telegram plugin, whose bot
 # token lives in ~/.claude/channels/telegram/.env and is read by the plugin inside the session, never here.
-TELEGRAM_CHANNEL = "plugin:telegram@claude-plugins-official"
+# The plugin is DISABLED in the user's settings (requirement 8: the ops Claude and every other claude on
+# this host must never load it); a live session enables it for itself with --settings (step 17), which
+# merges over the user settings. Verified on Claude Code 2.1.292: with that flag the debug log shows the
+# plugin enabled, its skills loaded and its MCP server started; without it, nothing of the plugin loads.
+TELEGRAM_PLUGIN = "telegram@claude-plugins-official"
+TELEGRAM_CHANNEL = f"plugin:{TELEGRAM_PLUGIN}"
+TELEGRAM_SETTINGS = json.dumps({"enabledPlugins": {TELEGRAM_PLUGIN: True}}, separators=(",", ":"))
 
 
 # ---------------------------------------------------------------- validation and pure helpers
@@ -148,10 +154,11 @@ def is_telegram(rec: dict) -> bool:
 
 def claude_argv(sid: str, resume: bool, telegram: bool = False) -> list[str]:
     """Default permission mode, the user's normal settings; our uuid is Claude's session id. A live
-    session adds the Telegram channel plugin (and nothing else: no permission flags ever)."""
+    session enables the Telegram plugin for itself (--settings) and runs it as its channel (--channels);
+    nothing else, and no permission flags ever."""
     argv = [claude_exe(), "--resume" if resume else "--session-id", validate_id(sid)]
     if telegram is True:
-        argv += ["--channels", TELEGRAM_CHANNEL]
+        argv += ["--settings", TELEGRAM_SETTINGS, "--channels", TELEGRAM_CHANNEL]
     return argv
 
 
