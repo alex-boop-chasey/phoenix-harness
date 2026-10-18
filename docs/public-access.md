@@ -28,9 +28,12 @@ email on public requests, never the token; refusals are logged with their short 
 Token verification is stdlib only and fails closed:
 
 - compact JWS; header `alg` must be exactly `RS256` (`none`, `HS*`, `RS512`... are refused); `kid` must name
-  a key in `https://<team_domain>/cdn-cgi/access/certs` (`keys`, JWK). Keys are cached 1 h; an unknown
-  `kid` triggers one refetch at most once per minute (Access rotates keys every 6 weeks, old keys stay
-  valid 7 days); a fetch failure with nothing cached refuses the token.
+  a key in `https://<team_domain>/cdn-cgi/access/certs` (`keys`, JWK). Keys are cached 1 h; a stale cache
+  or an unknown `kid` triggers a refetch, at most one attempt per minute across all requests and never
+  while holding a lock (a slow team domain cannot stall other requests); a fetch failure with nothing
+  cached refuses the token, and cached keys older than 7 days are not trusted once refreshes fail (Access
+  rotates keys every 6 weeks and keeps the old key valid 7 days). The fetch is https only, follows no
+  redirect and ignores proxy variables.
 - RSASSA-PKCS1-v1_5 / SHA-256 computed with `pow()`; the full EMSA-PKCS1-v1_5 encoding is compared byte
   for byte (never parsed); keys under 2048 bits or with an even exponent are unusable.
 - claims: `aud` (string or list) contains the configured AUD, `iss` == `https://<team_domain>`, `exp` in
@@ -86,6 +89,9 @@ the file whenever it changes (mtime/size/inode check on each request), so **no r
 - The SSH tunnel plus `hands-dash url` works exactly as before.
 
 ## What it does not do
+
+- It does not re-check the token while a WebSocket terminal is open: a terminal opened with a valid token
+  stays attached after the token's `exp` (as with Access itself); the next HTTP request needs a fresh one.
 
 - It does not replace the Access policy: keep the email list in Cloudflare tight too.
 - It does not accept the `CF_Authorization` cookie, service tokens or `alg` values other than RS256.

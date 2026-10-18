@@ -696,6 +696,7 @@ class Handler(BaseHTTPRequestHandler):
         """One request on this connection. The first request line must arrive within `timeout`; later ones
         (keep-alive) may take KEEPALIVE_IDLE, so the browser gives up on an idle connection before we do.
         Headers and body always use the short timeout. Socket errors are logged, never raised."""
+        self._body, self._email = b"", ""
         try:
             self.connection.settimeout(self.timeout if self._requests == 0 else KEEPALIVE_IDLE)
             self.raw_requestline = self.rfile.readline(65537)
@@ -735,13 +736,16 @@ class Handler(BaseHTTPRequestHandler):
     def _read_body(self) -> bool:
         """Read the whole request body up front (bounded), so every response path leaves the connection in
         sync. False = an error response was sent and the connection will close (the body stays unread)."""
-        self._body, self._email = b"", ""
         if self.headers.get("Transfer-Encoding"):
             self.close_connection = True
             self._json(411, {"error": "chunked bodies are not accepted"})
             return False
+        if len(self.headers.get_all("Content-Length") or []) > 1 or len(self.headers.get_all("Host") or []) > 1:
+            self.close_connection = True
+            self._json(400, {"error": "duplicate header"})
+            return False
         raw = (self.headers.get("Content-Length") or "0").strip()
-        if not raw.isdigit() or len(raw) > 12:
+        if not re.fullmatch(r"[0-9]{1,12}", raw):
             self.close_connection = True
             self._json(400, {"error": "bad length"})
             return False

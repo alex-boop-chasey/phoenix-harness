@@ -29,11 +29,13 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import stat
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -42,6 +44,8 @@ from . import config as cfgmod
 FILE = "public.json"
 LEEWAY = 60
 KEYS_TTL = 3600
+KEYS_MAX_AGE = 7 * 86400     # cached keys older than this are not trusted when a refresh fails
+FETCH_TIMEOUT = 5.0
 REFETCH_MIN = 60
 MIN_BITS = 2048
 MAX_TOKEN = 8192
@@ -223,11 +227,18 @@ class Settings:
 
 
 # ---------------------------------------------------------------- JWKS
-def default_fetch(url: str, timeout: float = 10.0) -> bytes:
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirect refused", headers, fp)
+
+
+def default_fetch(url: str, timeout: float = FETCH_TIMEOUT) -> bytes:
+    """GET the JWKS over https only: no redirects, no proxy environment, bounded read."""
     if not url.startswith("https://"):
         raise AccessError("jwks url must be https")
+    opener = urllib.request.build_opener(urllib.request.HTTPSHandler, _NoRedirect, urllib.request.ProxyHandler({}))
     req = urllib.request.Request(url, headers={"User-Agent": "hands-dash", "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:   # noqa: S310 (https only, checked above)
+    with opener.open(req, timeout=timeout) as r:
         return r.read(262144)
 
 
@@ -272,40 +283,56 @@ class KeyCache:
         self._url = ""
         self._fetched = -1e18
         self._attempt = -1e18
+        self._last_err = ""
 
-    def _refresh(self, url: str, reason: str) -> None:
-        self._attempt = self._clock()
+    def _fetch_keys(self, url: str) -> dict[str, tuple[int, int]]:
+        """Network fetch + parse, run WITHOUT the lock (a slow team domain must not serialise requests)."""
         try:
-            keys = parse_jwks(self._fetch(url))
+            return parse_jwks(self._fetch(url))
         except AccessError:
             raise
         except Exception as e:                       # network, TLS, HTTP: all mean "no fresh keys"
             raise AccessError(f"jwks fetch failed ({type(e).__name__})")
-        self._keys, self._url, self._fetched = keys, url, self._clock()
+
+    def _refresh(self, url: str) -> str:
+        """One attempt, at most once per REFETCH_MIN across all threads; '' on success, else the reason."""
+        with self._lock:
+            now = self._clock()
+            if now - self._attempt < REFETCH_MIN:
+                return self._last_err or "jwks refresh rate-limited"
+            self._attempt = now
+        try:
+            keys = self._fetch_keys(url)
+        except AccessError as e:
+            with self._lock:
+                self._last_err = f"{e} (next try in {REFETCH_MIN} s)"
+            return str(e)
+        with self._lock:
+            self._keys, self._url, self._fetched, self._last_err = keys, url, self._clock(), ""
+        return ""
 
     def key(self, url: str, kid: str) -> tuple[int, int]:
         with self._lock:
-            now = self._clock()
             if url != self._url:
                 self._keys, self._fetched = {}, -1e18
-            if not self._keys or now - self._fetched > KEYS_TTL:
-                try:
-                    self._refresh(url, "stale")
-                except AccessError:
-                    if not self._keys:
-                        raise
-            k = self._keys.get(kid)
-            if k is None and now - self._attempt >= REFETCH_MIN:
-                self._refresh(url, "unknown kid")
-                k = self._keys.get(kid)
-            if k is None:
-                raise AccessError("unknown signing key")
-            return k
+            now = self._clock()
+            keys, age = self._keys, now - self._fetched
+        err = ""
+        if not keys or age > KEYS_TTL or kid not in keys:
+            err = self._refresh(url)
+            with self._lock:
+                keys, age = self._keys, self._clock() - self._fetched
+        if not keys:
+            raise AccessError(err or "no signing keys")
+        if age > KEYS_MAX_AGE:
+            raise AccessError("signing keys too old to trust (refresh failing)")
+        k = keys.get(kid)
+        if k is None:
+            raise AccessError("unknown signing key")
+        return k
 
     def count(self, url: str) -> int:
-        with self._lock:
-            self._refresh(url, "test")
-            return len(self._keys)
+        return len(self._fetch_keys(url))
 
 
 # ---------------------------------------------------------------- JWT
@@ -344,9 +371,13 @@ def rsa_verify(n: int, e: int, signature: bytes, message: bytes) -> bool:
     return hmac.compare_digest(em, emsa_pkcs1_v15_sha256(message, k))
 
 
+def _no_constants(name):
+    raise ValueError(f"{name} not allowed")
+
+
 def _json_part(part: str, what: str) -> dict:
     try:
-        obj = json.loads(b64url_decode(part))
+        obj = json.loads(b64url_decode(part), parse_constant=_no_constants)     # NaN/Infinity never pass exp
     except ValueError:
         raise AccessError(f"bad {what}")
     if not isinstance(obj, dict):
@@ -366,6 +397,8 @@ def verify(token: str, cfg: Config, keys: KeyCache, now: float | None = None) ->
         raise AccessError("token alg not RS256")
     if header.get("typ") not in (None, "JWT"):
         raise AccessError("token typ not JWT")
+    if "crit" in header:                                   # RFC 7515 4.1.11: unknown critical params fail
+        raise AccessError("token crit header not supported")
     kid = header.get("kid")
     if not isinstance(kid, str) or not KID.match(kid):
         raise AccessError("token kid missing")
@@ -376,18 +409,18 @@ def verify(token: str, cfg: Config, keys: KeyCache, now: float | None = None) ->
     now = time.time() if now is None else now
     aud = claims.get("aud")
     auds = aud if isinstance(aud, list) else [aud]
-    if not any(isinstance(a, str) and hmac.compare_digest(a, cfg.aud) for a in auds):
+    if not any(isinstance(a, str) and hmac.compare_digest(a.encode("utf-8"), cfg.aud.encode("utf-8")) for a in auds):
         raise AccessError("token audience mismatch")
     if claims.get("iss") != cfg.issuer:
         raise AccessError("token issuer mismatch")
     exp = claims.get("exp")
-    if not isinstance(exp, (int, float)) or isinstance(exp, bool) or exp + LEEWAY <= now:
+    if not isinstance(exp, (int, float)) or isinstance(exp, bool) or not math.isfinite(exp) or exp + LEEWAY <= now:
         raise AccessError("token expired")
     for name in ("nbf", "iat"):
         v = claims.get(name)
         if v is None:
             continue
-        if not isinstance(v, (int, float)) or isinstance(v, bool) or v - LEEWAY > now:
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or v - LEEWAY > now:
             raise AccessError(f"token {name} in the future")
     if isinstance(claims.get("iat"), (int, float)) and exp - claims["iat"] > 90 * 86400:
         raise AccessError("token lifetime implausible")
@@ -395,6 +428,6 @@ def verify(token: str, cfg: Config, keys: KeyCache, now: float | None = None) ->
     if not isinstance(email, str) or not EMAIL.match(email.strip()):
         raise AccessError("token has no email")
     email = email.strip().lower()
-    if not any(hmac.compare_digest(email, allowed) for allowed in cfg.emails):
+    if not any(hmac.compare_digest(email.encode("utf-8"), allowed.encode("utf-8")) for allowed in cfg.emails):
         raise AccessError("email not allowed")
     return email

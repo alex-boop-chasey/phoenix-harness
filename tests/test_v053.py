@@ -187,6 +187,30 @@ class TestVerify(unittest.TestCase):
         clock[0] += publicaccess.KEYS_TTL + 1                                  # cache stale, refresh fails: old keys stay
         self.assertEqual(publicaccess.verify(token(), self.cfg, keys), "alex@example.test")
 
+    def test_failing_refresh_is_rate_limited_and_old_keys_expire(self):
+        clock = [0.0]
+        fetch = FakeFetch(fail=True)
+        keys = publicaccess.KeyCache(fetch=fetch, clock=lambda: clock[0])
+        for _ in range(5):                                                     # empty cache + failing fetch: one attempt per minute
+            self.bad_with(keys, token(), "jwks")
+        self.assertEqual(len(fetch.calls), 1)
+        clock[0] += 61
+        self.bad_with(keys, token(), "jwks fetch failed")
+        self.assertEqual(len(fetch.calls), 2)
+        fetch.fail = False
+        clock[0] += 61
+        publicaccess.verify(token(), self.cfg, keys)
+        fetch.fail = True
+        clock[0] += publicaccess.KEYS_MAX_AGE + 1                              # refresh keeps failing: old keys stop working
+        self.bad_with(keys, token(), "too old")
+
+    def test_odd_claims_and_headers_fail_closed_with_access_error(self):
+        c = {"aud": [AUD], "iss": f"https://{TEAM}", "exp": float("nan"), "email": EMAIL}
+        self.bad(token(claims=c), "bad token claims")                          # NaN is refused at parse time
+        self.bad(token(header={"crit": ["b64"], "b64": False}), "crit")
+        self.bad(token(email="al\u00e9x@example.test"), "not allowed")          # non-ASCII: AccessError, not TypeError
+        self.bad(token(aud=["\u00e9" * 64]), "audience")
+
     def bad_with(self, keys, tok, reason):
         with self.assertRaises(publicaccess.AccessError) as cm:
             publicaccess.verify(tok, self.cfg, keys)
@@ -543,6 +567,17 @@ class TestKeepAliveBodies(unittest.TestCase):
             self.assertIn("Connection: close", head)
         finally:
             s.close()
+        for hdrs in ("Content-Length: 2\r\nContent-Length: 2\r\n", "Content-Length: \xb2\r\n",
+                     f"Host: 127.0.0.1:{self.d.port}\r\nContent-Length: 0\r\n"):
+            s = self.conn()
+            try:
+                s.sendall((f"GET /api/sessions HTTP/1.1\r\nHost: 127.0.0.1:{self.d.port}\r\n"
+                           f"Cookie: {dashboard.COOKIE}={self.d.sid}\r\n{hdrs}\r\n").encode("latin-1"))
+                head, body = self.read(s)
+                self.assertEqual(self.status(head), 400, hdrs)
+                self.assertIn("Connection: close", head)
+            finally:
+                s.close()
         # a body over the route's cap (10 kB for most routes) is still 413, after it was drained, so the
         # connection stays usable
         s = self.conn()
