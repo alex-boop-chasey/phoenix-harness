@@ -302,7 +302,7 @@ const Sessions = (() => {
         el("h2", { id: "s-dlg-title" }, "New session"),
         el("p", { class: "muted" }, "Starts Claude Code in a folder on the VPS. The session keeps running in tmux when you close this page; stop it from here when you are done."),
         el("div", { class: "field" }, el("label", { for: "s-cwd" }, "Working folder"), input,
-          el("span", { class: "muted small", id: "s-cwd-hint" }, "A folder under your home (not the home folder itself, not hidden folders such as ~/.config)."), err),
+          el("span", { class: "muted small", id: "s-cwd-hint" }, "Your home folder (the default) or a folder inside it; hidden folders such as ~/.config are refused."), err),
         el("div", { class: "field" }, el("label", { class: "check", for: "s-tg-new" }, tg,
           el("span", {}, "Live on Telegram", el("span", { class: "hint" },
             taken ? `Only one session can be live at a time; “${title(taken)}” is live now. Stop it or leave Telegram there first.`

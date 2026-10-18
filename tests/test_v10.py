@@ -164,7 +164,10 @@ class TestValidation(unittest.TestCase):
         self.assertEqual(sessions.validate_cwd(str(home / "projects" / "x") + "/", home), home / "projects" / "x")
         self.assertEqual(sessions.validate_cwd("~/ops", home), home / "ops")
         self.assertEqual(sessions.validate_cwd(str(home / "ops-link"), home), home / "ops")      # resolves inside: ok
-        for bad in ("", str(home), str(home) + "/", "/", "/etc", "/tmp", str(home / "nope"), str(home / "afile"),
+        self.assertEqual(sessions.validate_cwd(str(home), home), home)                           # home itself (0.5.2 default)
+        self.assertEqual(sessions.validate_cwd(str(home) + "/", home), home)
+        self.assertEqual(sessions.validate_cwd("~", home), home)
+        for bad in ("", "/", "/etc", "/tmp", str(home / "nope"), str(home / "afile"),
                     str(home / ".config" / "hands"), str(home / ".ssh"), str(home / ".config"), str(home / "etc-link"),
                     str(home / "ops" / ".." / ".ssh"), "ops", "x" * 5000, str(home / "ops") + "\0", 7, None):
             with self.assertRaises(ValueError, msg=repr(bad)):
@@ -626,9 +629,9 @@ class TestSessionsAPI(unittest.TestCase):
         self.assertEqual(self.d.srv.server_address[0], "127.0.0.1")
         self.assertEqual(dashboard.Server.__init__.__code__.co_consts.count("127.0.0.1"), 1)
 
-    def test_new_defaults_to_ops_and_validates_cwd(self):
+    def test_new_defaults_to_home_and_validates_cwd(self):
         rec = self.new_session()
-        self.assertEqual(rec["cwd"], str(self.home / "ops"))
+        self.assertEqual(rec["cwd"], str(self.home))                   # requirement 9: home, never ~/ops
         self.assertTrue(rec["live"])
         sid, argv, env, cwd = self.fake.started[-1]
         self.assertEqual((sid, cwd), (rec["id"], rec["cwd"]))
@@ -637,7 +640,7 @@ class TestSessionsAPI(unittest.TestCase):
             self.assertNotIn(k, env)
         rec2 = self.new_session(str(self.home / "work"))
         self.assertEqual(rec2["cwd"], str(self.home / "work"))
-        for bad in (str(self.home), "/etc", str(self.home / ".ssh"), "relative", str(self.home / "nope")):
+        for bad in (str(self.home / ".config"), "/etc", str(self.home / ".ssh"), "relative", str(self.home / "nope")):
             st, err = self.post("/api/sessions/new", {"cwd": bad})
             self.assertEqual(st, 400, bad)
             self.assertIn("folder", err["error"])
@@ -646,7 +649,8 @@ class TestSessionsAPI(unittest.TestCase):
         self.assertEqual({r["id"] for r in rows}, {rec["id"], rec2["id"]})
         self.assertEqual(rows[0]["id"], rec2["id"])                  # newest first
         st, info = self.get("/api/sessions/defaults")
-        self.assertEqual(info["cwd"], str(self.home / "ops"))
+        self.assertEqual(info["cwd"], str(self.home))
+        self.assertNotIn("/ops", info["cwd"])
         self.assertEqual(info["max_terminals"], sessions.MAX_TERMINALS)
 
     def test_stop_resume_delete(self):

@@ -85,6 +85,24 @@ def read() -> dict:
         return {}
 
 
+def view(refreshing: bool = False, now: float | None = None) -> dict:
+    """What the dashboard serves: the cache plus `refreshing`, `now` (server clock, so the page compares
+    against the same clock), per-window `expired` (its reset time has passed, so the percentage describes a
+    window that is over) and `stale` (any window expired, or no data). A past reset is never shown as current."""
+    now = time.time() if now is None else now
+    u = read()
+    stale = not any(w in u for w in WINDOWS)
+    for w in WINDOWS:
+        x = u.get(w)
+        if isinstance(x, dict):
+            x["expired"] = isinstance(x.get("resets_at"), (int, float)) and x["resets_at"] <= now
+            stale = stale or x["expired"]
+    u["refreshing"] = refreshing
+    u["now"] = int(now)
+    u["stale"] = stale
+    return u
+
+
 def refresh(model: str = "claude-haiku-5-5") -> int:
     """Tiny probe session (one short reply on Haiku) just to read fresh usage. Uses the first project's
     config for the image and token file."""

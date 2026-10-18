@@ -17,6 +17,12 @@
   render and the tab strip is rebuilt only when the tabs changed; the 4 s refresh used to replace the
   button under the pointer, which swallowed the click. The rig clicks `+` with a re-render between pointer
   down and up and asserts the menu opened (`tools/shots.js`, `plusDuringRefresh`).
+- Requirement 6 (usage meter): `/api/usage` marks a window whose reset time has passed (`expired`, plus
+  `stale` and the server clock `now`); the page dims it, strikes the percentage, says when it reset and
+  that the data is stale, and refreshes once per expired window (remembered in localStorage) on its own;
+  further refreshes are the ↻ button (one short Haiku reply each; the server still allows one per 2 min).
+- Requirement 9 (session folder): new sessions default to the home folder, which is now a valid working
+  folder (hidden top-level folders stay refused); `~/ops` is never the default.
 - Telegram (`hands/notify.py`): a failed send is retried up to 3 attempts (2 s, then 5 s backoff; HTTP
   429 waits for `retry_after`, other 4xx are not retried); one WARN names the exception class and reason
   (URLError reason, HTTP status) for every attempt, with the bot token redacted. Still best-effort: a

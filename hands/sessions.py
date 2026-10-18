@@ -63,11 +63,12 @@ def validate_id(sid) -> str:
 
 
 def default_cwd() -> Path:
-    return HOME / "ops"
+    """New sessions start in the home folder (requirement 9), never in ~/ops (the ops Claude workspace)."""
+    return HOME
 
 
 def validate_cwd(raw, home: Path | None = None) -> Path:
-    """An existing directory under home (never home itself, never a hidden top-level folder such as
+    """The home folder itself or an existing directory under it (never a hidden top-level folder such as
     ~/.config or ~/.ssh), resolved through symlinks. Returns the real path."""
     home = (home or HOME).resolve()
     if not isinstance(raw, str) or not raw or len(raw) > 4096 or "\0" in raw:
@@ -80,9 +81,9 @@ def validate_cwd(raw, home: Path | None = None) -> Path:
         p = Path(raw).resolve(strict=True)
     except (OSError, RuntimeError):
         raise ValueError("working folder does not exist")
-    if p == home or home not in p.parents:
-        raise ValueError("working folder must be inside your home folder (and not the home folder itself)")
-    if p.relative_to(home).parts[0].startswith("."):
+    if p != home and home not in p.parents:
+        raise ValueError("working folder must be your home folder or a folder inside it")
+    if p != home and p.relative_to(home).parts[0].startswith("."):
         raise ValueError("working folder cannot be a hidden folder such as ~/.config or ~/.ssh")
     if not p.is_dir():
         raise ValueError("working folder is not a folder")

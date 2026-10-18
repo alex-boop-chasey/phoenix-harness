@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import tmpdirs  # noqa: E402,F401
 os.environ["HANDS_NO_NOTIFY"] = "1"
 
-from hands import dashboard  # noqa: E402
+from hands import dashboard, sessions, usage  # noqa: E402
 from test_v04 import Dash  # noqa: E402
 
 JS = [ROOT / "hands" / "static" / n for n in ("app.js", "sessions.js")]
@@ -172,6 +172,68 @@ class TestPlusButton(unittest.TestCase):
         self.assertIn("strip.replaceChildren(...tabs, addBtn,", body)
         self.assertIn("if (key === lastTabsKey && strip.contains(addBtn))", body)
         self.assertNotIn('el("button", { class: "tab-add"', body)
+
+
+class TestUsageExpired(unittest.TestCase):
+    """Item 4 / requirement 6: a window whose reset time has passed is marked expired/stale by the server
+    (same clock as the data) and the page shows it as stale with a refresh, never as current."""
+
+    def setUp(self):
+        self.d = Dash()
+
+    def tearDown(self):
+        self.d.close()
+
+    def test_view_marks_expired_windows(self):
+        now = 1_800_000_000
+        usage.record({"status": "allowed", "at": now - 7200, "five_hour": {"used_pct": 42.0, "resets_at": now - 60},
+                      "seven_day": {"used_pct": 10.0, "resets_at": now + 86400}})
+        v = usage.view(False, now=now)
+        self.assertTrue(v["five_hour"]["expired"])
+        self.assertFalse(v["seven_day"]["expired"])
+        self.assertTrue(v["stale"])
+        self.assertEqual(v["now"], now)
+        self.assertEqual(v["five_hour"]["used_pct"], 42.0)       # the number stays, marked as from a window that is over
+        v = usage.view(True, now=now - 3600)
+        self.assertFalse(v["five_hour"]["expired"])
+        self.assertFalse(v["stale"])
+        self.assertTrue(v["refreshing"])
+        self.assertTrue(usage.view(False, now=now)["stale"] if not usage.read() else True)
+
+    def test_route_serves_the_flags(self):
+        usage.record({"status": "allowed", "at": 1, "five_hour": {"used_pct": 1.0, "resets_at": 2}})
+        st, _, body = self.d.req("GET", "/api/usage")
+        v = json.loads(body)
+        self.assertEqual(st, 200)
+        self.assertTrue(v["five_hour"]["expired"])
+        self.assertTrue(v["stale"])
+        self.assertIn("now", v)
+        usage.path().unlink()
+        v = json.loads(self.d.req("GET", "/api/usage")[2])
+        self.assertTrue(v["stale"])
+        self.assertEqual(v["refreshing"], False)
+
+    def test_page_shows_expired_as_stale_and_auto_refreshes_once(self):
+        app = JS[0].read_text()
+        body = re.search(r"function meter\(label, w, withDay\) \{(.*?)\n\}", app, re.S).group(1)
+        self.assertIn("if (w.expired)", body)
+        self.assertIn('class: "meter expired"', body)
+        self.assertIn("stale, refresh for the current window", body)
+        auto = re.search(r"function autoRefreshUsage\(u\) \{(.*?)\n\}", app, re.S).group(1)
+        self.assertIn("hands.usage.autorefresh", auto)             # once per expired window, remembered across reloads
+        self.assertIn("if (done === key) return;", auto)
+        self.assertIn("if (!key || u.refreshing) return;", auto)
+
+
+class TestSessionFolder(unittest.TestCase):
+    """Item 5 / requirement 9: new sessions start in the home folder, never ~/ops; the home itself is valid."""
+
+    def test_default_is_home_not_ops(self):
+        self.assertEqual(sessions.default_cwd(), sessions.HOME)
+        self.assertNotEqual(sessions.default_cwd().name, "ops")
+        js = JS[1].read_text()
+        self.assertNotIn("~/ops", js)
+        self.assertIn("Your home folder (the default)", js)
 
 
 if __name__ == "__main__":

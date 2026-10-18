@@ -82,7 +82,9 @@ main#main { display: grid; gap: var(--sp-4); min-width: 0; }
 .bar { display: inline-block; width: 100%; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .fill { display: block; height: 100%; background: var(--ink-3); }
 .fill.ok { background: var(--ok); } .fill.warn { background: var(--warn); } .fill.bad { background: var(--bad); }
-.stale { text-decoration: line-through; }
+.stale { color: var(--warn); }
+.meter.expired .bar { opacity: .35; }
+.meter.expired s { color: var(--ink-3); }
 .linkbtn { background: none; border: 1px solid var(--line-2); border-radius: var(--r-1); color: var(--ink); cursor: pointer; font: inherit; padding: 0 6px; justify-self: start; }
 .linkbtn:hover { background: var(--surface-2); }
 

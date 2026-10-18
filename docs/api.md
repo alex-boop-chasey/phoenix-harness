@@ -232,8 +232,10 @@ started. Response: `{"state": "running|done|failed", "error": "", "lines": [...l
 
 ### GET /api/usage
 
-Contents of `~/.config/hands/usage.json` plus `refreshing` (usage-refresh.lock held). Empty cache →
-`{"refreshing": false}`. With data:
+Contents of `~/.config/hands/usage.json` plus `refreshing` (usage-refresh.lock held), `now` (server
+clock), `stale` (no data, or a window's reset time has passed) and per window `expired` (its `resets_at`
+≤ `now`: the percentage describes a window that is over and the page shows it as stale, never as current;
+since 0.5.2). Empty cache → `{"refreshing": false, "now": ..., "stale": true}`. With data:
 
 ```json
 {"status": "allowed", "at": 1792214051,
@@ -346,14 +348,14 @@ session is running at a time).
 
 ### GET /api/sessions/defaults
 
-`{"cwd": "~/ops", "home": "...", "max_terminals": 8, "telegram_channel": "plugin:telegram@claude-plugins-official"}`
+`{"cwd": "<home>", "home": "...", "max_terminals": 8, "telegram_channel": "plugin:telegram@claude-plugins-official"}`
 (the New session form's defaults and the one channel a live session runs).
 
 ### POST /api/sessions/new
 
-Body `{"cwd": "/abs/or/~/path", "telegram": false}` (both optional, defaults `~/ops` and `false`; `telegram`
-must be a JSON boolean, `400` otherwise). The working folder must exist, be
-inside the home folder, not be the home folder itself and not be a hidden top-level folder (`~/.config`,
+Body `{"cwd": "/abs/or/~/path", "telegram": false}` (both optional, defaults: the home folder (requirement 9,
+never `~/ops`) and `false`; `telegram` must be a JSON boolean, `400` otherwise). The working folder must
+exist and be the home folder or a folder inside it, and not a hidden top-level folder (`~/.config`,
 `~/.ssh`, …); symlinks are resolved first (`400 "working folder …"` otherwise). Starts
 `claude --session-id <uuid>` in tmux with a clean allowlisted environment: `PATH HOME TERM LANG USER
 SHELL` (+ `CLAUDE_CONFIG_DIR`, `TMUX_TMPDIR` if the dashboard has them), **nothing copied from the

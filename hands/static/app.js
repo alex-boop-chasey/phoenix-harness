@@ -841,6 +841,8 @@ function resetLabel(ts, withDay) {
   const t = dt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   return withDay ? `${dt.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })} ${t}` : t;
 }
+// A window whose reset time has passed is never shown as current (requirement 6): the bar is dimmed, the
+// text says the window reset and when, and a refresh is offered. `expired` comes from the server (same clock).
 function meter(label, w, withDay) {
   if (!w) return el("div", { class: "meter muted" }, `${label}: no data`);
   const pct = w.used_pct;
@@ -848,19 +850,42 @@ function meter(label, w, withDay) {
   const fill = el("span", { class: `fill ${lvl}` });
   fill.style.width = `${Math.min(100, Math.max(0, pct || 0))}%`;   // CSSOM, allowed by the CSP (style attrs are not)
   const bar = el("span", { class: "bar" }, fill);
-  return el("div", { class: "meter", title: w.resets_at ? `resets ${new Date(w.resets_at * 1000).toLocaleString()}` : "" },
+  const when = w.resets_at ? new Date(w.resets_at * 1000).toLocaleString() : "";
+  if (w.expired) {
+    return el("div", { class: "meter expired", title: `this window reset ${when}; the number is from before the reset` },
+      el("strong", {}, label), " ", bar, " ", el("s", {}, pct === null || pct === undefined ? "?" : `${Math.round(pct)}%`),
+      el("span", { class: "muted" }, ` · reset ${resetLabel(w.resets_at, withDay)} · stale, refresh for the current window`));
+  }
+  return el("div", { class: "meter", title: when ? `resets ${when}` : "" },
     el("strong", {}, label), " ", bar, " ", pct === null || pct === undefined ? "?" : `${Math.round(pct)}%`,
     w.resets_at ? el("span", { class: "muted" }, ` · resets ${resetLabel(w.resets_at, withDay)} (in ${until(w.resets_at)})`) : null);
+}
+async function refreshUsage(btn) {
+  try { await api("/api/usage/refresh", { method: "POST", headers: { "X-Hands": "1" } }); if (btn) btn.textContent = "…"; }
+  catch (e) { toast(`Usage refresh failed: ${e.message}`, true); }
+}
+// one automatic refresh per expired window (keyed by its reset time; remembered across reloads), never more:
+// every refresh costs one short Haiku reply. After that the ↻ button is the only way.
+function autoRefreshUsage(u) {
+  const key = ["five_hour", "seven_day"].map((w) => (u[w] && u[w].expired ? `${w}:${u[w].resets_at}` : "")).filter(Boolean).join(",");
+  if (!key || u.refreshing) return;
+  let done = "";
+  try { done = localStorage.getItem("hands.usage.autorefresh") || ""; } catch (e) { done = ""; }
+  if (done === key) return;
+  try { localStorage.setItem("hands.usage.autorefresh", key); } catch (e) { /* ignore */ }
+  refreshUsage(null);
 }
 async function loadUsage() {
   try {
     const u = await api("/api/usage");
-    const stale = !u.at || Date.now() / 1000 - u.at > 3 * 3600;
-    const btn = el("button", { class: "linkbtn", title: "Refresh usage (one tiny Haiku reply)",
-      on: { click: async () => { try { await api("/api/usage/refresh", { method: "POST", headers: { "X-Hands": "1" } }); btn.textContent = "…"; } catch (e) { toast(`Usage refresh failed: ${e.message}`, true); } } } },
+    const old = !u.at || (u.now || Date.now() / 1000) - u.at > 3 * 3600;
+    const btn = el("button", { class: "linkbtn", title: "Refresh usage (one tiny Haiku reply)", on: { click: () => refreshUsage(btn) } },
       u.refreshing ? "…" : "↻");
+    const note = u.stale && u.at ? `stale · as of ${new Date(u.at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      : u.at ? `as of ${new Date(u.at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "no usage data yet";
     $("#usage").replaceChildren(meter("Session", u.five_hour, false), meter("Week", u.seven_day, true),
-      el("span", { class: stale ? "muted stale" : "muted" }, u.at ? `as of ${new Date(u.at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "no usage data yet"), btn);
+      el("span", { class: u.stale || old ? "muted stale" : "muted" }, note), btn);
+    autoRefreshUsage(u);
   } catch (e) { /* keep last */ }
 }
 

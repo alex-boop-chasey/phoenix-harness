@@ -853,9 +853,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._text(200, text + (f"\n[... truncated at {MAX_FILE} bytes]" if cut else ""))
         if parts == ["api", "usage"]:
             from . import usage
-            u = usage.read()
-            u["refreshing"] = Lock.held(config_home() / "usage-refresh.lock")
-            return self._json(200, u)
+            return self._json(200, usage.view(Lock.held(config_home() / "usage-refresh.lock")))
         if parts[:2] == ["api", "projects"] and len(parts) == 2:
             return self._json(200, [summary(n) for n in project_names()])
         if parts == ["api", "sessions"]:

@@ -168,7 +168,7 @@ async function sessionsFlow(page) {
   await dlg.locator("button", { hasText: "Cancel" }).click();
   await dlg.waitFor({ state: "detached", timeout: 5000 });
 
-  // new session in the default folder (~/ops), live, output arrives, typing echoes back
+  // new session in the default folder (the home folder), live, output arrives, typing echoes back
   await page.locator("#s-new").click();
   dlg = page.locator("dialog.dialog[open]");
   await dlg.waitFor({ timeout: 5000 });
@@ -223,7 +223,7 @@ async function sessionsFlow(page) {
   await page.keyboard.press("Enter");
   await waitTermText(page, "fake claude: resumed");
 
-  dlg = await newSession(page, def.replace(/\/ops$/, "/projects/demo"));
+  dlg = await newSession(page, `${def}/projects/demo`);
   await dlg.waitFor({ state: "detached", timeout: 10000 });
   await waitConnected(page);
   await page.locator("#xterm").click();
