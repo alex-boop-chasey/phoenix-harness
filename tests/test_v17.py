@@ -147,6 +147,9 @@ class TestFirewallProbe(unittest.TestCase):
         for ns in ("1.1.1.1", "8.8.8.8"):
             self.assertIn(ns, FIREWALL_PROBE)
         self.assertIn("+tcp", FIREWALL_PROBE)
+        # a timed-out dig prints ';; communications error ...' on stdout: that must not count as an answer
+        snippet = FIREWALL_PROBE.split("for ns in", 1)[1].split("done; done;", 1)[0]
+        self.assertIn("grep -v '^;'", snippet)
         self.assertIn("140.82.112.3/22", FIREWALL_PROBE)
         self.assertIn("pkill -9 -x dnsmasq", FIREWALL_PROBE)
 

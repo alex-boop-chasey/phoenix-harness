@@ -295,7 +295,8 @@ FIREWALL_PROBE = (
     "getent hosts api.anthropic.com >/dev/null && echo dns-allowed-ok || echo DNS-ALLOWED-FAILED; "
     "getent hosts probe-$RANDOM$RANDOM.example.com >/dev/null && echo DNS-RANDOM-RESOLVED || echo dns-random-blocked; "
     "for ns in 1.1.1.1 8.8.8.8; do for t in '' '+tcp'; do "
-    "dig $t +short +time=3 +tries=1 @$ns example.com 2>/dev/null | grep -q . "
+    # dig prints ';; communications error' on STDOUT, so judge by its exit code and real answer lines only
+    "dig $t +short +time=3 +tries=1 @$ns example.com 2>/dev/null | grep -v '^;' | grep -q . "
     "&& echo DNS-OPEN-$ns${t:-+udp} || echo dns-direct-blocked-$ns${t:-+udp}; done; done; "
     "pgrep -x dnsmasq >/dev/null && echo dnsmasq-running || echo DNSMASQ-MISSING; "
     "pkill -x dnsmasq 2>/dev/null; pkill -9 -x dnsmasq 2>/dev/null; sleep 1; "
