@@ -1,8 +1,9 @@
-# Phoenix Harness 0.5.0 — dashboard HTTP API
+# Phoenix Harness 0.5.3 — dashboard HTTP API
 
-Baseline written 2026-10-17 (step 01), updated through step 16 (0.5.0). Server: `hands/dashboard.py` (`hands-dash`), stdlib
+Baseline written 2026-10-17 (step 01), updated through step 18 (0.5.3). Server: `hands/dashboard.py` (`hands-dash`), stdlib
 `ThreadingHTTPServer` bound to **127.0.0.1:8090** only. Reach it through an SSH tunnel:
-`ssh -N -L 8090:127.0.0.1:8090 builder`.
+`ssh -N -L 8090:127.0.0.1:8090 builder`, or (0.5.3) through a Cloudflare Tunnel + Cloudflare Access on a
+configured public host: `docs/public-access.md`.
 
 ## Login flow
 
@@ -20,13 +21,25 @@ Baseline written 2026-10-17 (step 01), updated through step 16 (0.5.0). Server: 
 
 ## Request rules (every route)
 
-- **Host check (all requests):** `Host` must match `^127\.0\.0\.1(:\d{1,5})?$` exactly — blocks DNS
-  rebinding and keeps the cookie away from dev servers on "localhost". Otherwise `403` text `forbidden host`.
-- **Auth (everything except `/login`):** valid session cookie required. Unauthenticated `GET /` →
-  `401` text with instructions; any other path → `401` JSON `{"error": "not logged in"}`.
-- **CSRF (all POSTs):** `Origin` must equal `http://<Host>` **and** header `X-Hands: 1` must be present,
-  else `403 {"error": "bad origin"}`. POST bodies over **10 000 bytes** → `413 {"error": "too large"}`
-  (`/api/p/<name>/env` allows 65 536 bytes).
+- **Host check (all requests):** `Host` must match `^127\.0\.0\.1(:\d{1,5})?$` exactly (a *local* host: blocks
+  DNS rebinding and keeps the cookie away from dev servers on "localhost"), or — since 0.5.3 — be one of the
+  *public* hosts in `~/.config/hands/public.json` (reached through Cloudflare Access, see below). Otherwise
+  `403` text `forbidden host`.
+- **Auth, local host (everything except `/login`):** valid session cookie required. Unauthenticated `GET /` →
+  `401` text with instructions; any other path → `401` JSON `{"error": "not logged in"}`. The Access token is
+  ignored on a local host.
+- **Auth, public host (every request: pages, static, API, WebSocket upgrade):** header
+  `Cf-Access-Jwt-Assertion` must hold a valid Cloudflare Access JWT (RS256, `kid` in the team's JWKS,
+  signature, `aud`, `iss`, `exp`, `nbf`/`iat`, allowlisted `email`; `hands/publicaccess.py`). Missing or invalid →
+  `403` text `forbidden: <short reason>`; the cookie is never consulted and `/login` is `404` there. The email
+  is logged with each public request; the token never is.
+- **CSRF (all POSTs):** `Origin` must equal `http://<Host>` on a local host, `https://<Host>` on a public
+  host, **and** header `X-Hands: 1` must be present, else `403 {"error": "bad origin"}`. POST bodies over
+  **10 000 bytes** → `413 {"error": "too large"}` (`/api/p/<name>/env` allows 65 536 bytes).
+- **Bodies (since 0.5.3):** every request's body (`Content-Length`, any method, any outcome) is read in
+  full before the response is written, so a kept-alive connection never carries leftover bytes into the next
+  request (0.5.2 logged such requests as `{}POST … 501`). `Content-Length` over 65 536 → `413` and the
+  connection closes unread; `Transfer-Encoding` → `411` and close; a non-numeric length → `400` and close.
 - `/login` accepts GET only (`405` otherwise). HEAD is handled like GET without a body.
 - **Limits:** max 32 concurrent connections (excess dropped), 10 s socket timeout, file reads capped
   (2 MB per file, logs tail-read at 1 MB), symlinks never followed, path segments are allowlisted by
@@ -383,8 +396,8 @@ below (browsers cannot send `X-Hands` on an upgrade). Unknown or malformed id �
 
 ### GET /ws/sessions/UUID?t=TICKET  (WebSocket)
 
-Every check runs before the `101`, in this order: Host (as everywhere), login cookie, `Origin` ==
-`http://<Host>`, a valid RFC 6455 handshake (`Upgrade: websocket`, `Connection: Upgrade`, version 13,
+Every check runs before the `101`, in this order: Host (as everywhere), login (cookie on a local host, Access
+token on a public one), `Origin` == `http://<Host>` (`https://` on a public host), a valid RFC 6455 handshake (`Upgrade: websocket`, `Connection: Upgrade`, version 13,
 16-byte key), the ticket (→ `403`), the record (→ `404`), the session running (→ `409`), a free
 terminal slot (**8** open terminals in total → `503`). Then the server attaches the socket to the
 session's PTY: the scrollback (up to 256 kB) is sent first, then live output; the first resize forces a
@@ -401,6 +414,14 @@ assembled message, text must be UTF-8 (close codes 1002 / 1009 / 1007). Liveness
 of silence, close `1001` after 60 s without any client frame; a frame that stalls half-way closes
 with 1002; peer gone = 1006. The session itself keeps running when the viewer disconnects.
 
+## Public hosts (since 0.5.3)
+
+Config `~/.config/hands/public.json` (0600): `{"hosts": [...], "team_domain": "<team>.cloudflareaccess.com",
+"aud": "<AUD tag>", "emails": [...]}`; written by `hands-dash public set`, removed by `hands-dash public off`,
+re-read by the running server whenever the file changes (no restart). Missing/empty/invalid = OFF.
+Terminal tickets are bound to the principal that minted them (`cf:<email>` on a public host, the cookie
+session locally), so a ticket never crosses hosts. Setup and verification details: `docs/public-access.md`.
+
 ## File browser (removed in 0.5.2)
 
 The `/api/files/*` routes and `hands/files.py` from steps 13-14 are gone; see git tag `v0.5.0-rc1` for
@@ -408,7 +429,7 @@ their contract.
 
 ## CLI entry points (context)
 
-`hands-dash run|start|stop|url` manage the server (tmux session `hands_dashboard`,
+`hands-dash run|start|stop|url` manage the server; `hands-dash public set|show|test|off` the public-access config (tmux session `hands_dashboard`,
 lock `~/.config/hands/dashboard.lock`). The watchdog cron keeps it running via
 `dashboard.ensure_running()`.
 

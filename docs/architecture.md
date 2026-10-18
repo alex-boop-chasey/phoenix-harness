@@ -210,6 +210,18 @@ the STOP file, and actions that run the `hands` CLI as a subprocess (so the CLI'
 It never reads agent workspaces, never holds the GitHub token, and never mounts anything. Bounded:
 32 connections, 10 s socket timeout, 10 kB POST bodies, capped file reads, never follows symlinks.
 
+### Public access through Cloudflare Access (0.5.3, step 18; `hands/publicaccess.py`)
+
+Optionally the same server is reached at `https://<public host>` through a Cloudflare Tunnel (cloudflared,
+operator-owned, connects from 127.0.0.1 to 8090) with Cloudflare Access in front. The Host header decides:
+a host listed in `~/.config/hands/public.json` is public, and there the Access JWT (`Cf-Access-Jwt-Assertion`)
+on every request is the login: RS256 only, `kid` from the team's JWKS (cached 1 h, unknown-kid refetch at
+most once a minute, fail closed), signature verified with `pow()` against the full EMSA-PKCS1-v1_5 encoding,
+`aud`/`iss`/`exp`/`nbf`/`iat`/allowlisted `email`. No cookie login on a public host, no token login on the
+local host, `Origin` must be `https://<host>`, the email (never the token) is logged. The file is re-read on
+change, so `hands-dash public set|off` needs no restart; missing/invalid = off = 403 for every non-local
+Host, as before. Setup: `docs/public-access.md`.
+
 ### Session manager (0.5, step 10; `hands/sessions.py`, `hands/ws.py`; PTYs since 0.5.2)
 
 Persistent interactive Claude Code sessions for the host user, run **outside** the container boundary

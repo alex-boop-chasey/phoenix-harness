@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.3 (step 18: public access, 2026-10-18)
+
+- Public access through Cloudflare Access (`hands/publicaccess.py`, `docs/public-access.md`): with
+  `~/.config/hands/public.json` (written by `hands-dash public set --host H --team T --aud A --email E`), a
+  request whose Host is a listed public host is logged in by the Cloudflare Access JWT in
+  `Cf-Access-Jwt-Assertion` on every request (pages, static, API, WebSocket upgrade). Verification is
+  stdlib only and fails closed: RS256 only, `kid` from `https://<team>/cdn-cgi/access/certs` (cached 1 h,
+  unknown kid refetched at most once a minute), RSASSA-PKCS1-v1_5/SHA-256 with the full encoding compared
+  byte for byte, `aud`, `iss`, `exp` (60 s leeway), `nbf`/`iat`, email allowlist. No cookie login there,
+  `/login` is 404, `Origin` must be `https://<host>`, the email is logged and the token never. The local
+  Host (SSH tunnel, `hands-dash url`) is unchanged and ignores the token; any other Host stays 403;
+  missing/empty/invalid config = off. The file is re-read on change: `set|off|show|test` need no restart.
+- Request bodies: every request's body is read in full before any response (also on 401/403/404/405 and
+  GET), so a kept-alive connection never carries leftover bytes into the next request (0.5.2 logged
+  `{}POST … 501`). Bodies over 64 kB → 413 and close; `Transfer-Encoding` → 411 and close.
+- Terminal tickets are bound to the principal that minted them (cookie session or Access email).
+
 ## 0.5.2 (step 17: owner fixes, 2026-10-18)
 
 - File browser removed at Alex's request (`hands/files.py`, `files.js`, `/api/files/*`, its tests, rig

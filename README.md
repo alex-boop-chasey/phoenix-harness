@@ -1,4 +1,4 @@
-# Phoenix Harness 0.5.2 (hands runner)
+# Phoenix Harness 0.5.3 (hands runner)
 
 One app behind one login: Project builder and Session manager. What changed since 0.4.3:
 `CHANGELOG.md`; architecture `docs/architecture.md`; HTTP API `docs/api.md`; design system `docs/design.md`;
@@ -22,6 +22,7 @@ hands <slug> create [--from-repo O/R [--branch B] [--ruleset]]   # new project (
 hands <slug> destroy --confirm <slug>                             # remove what create made
 hands-dash url                   # single-use login link for the app (5 min)
 hands-dash start | stop          # dashboard in tmux session hands_dashboard, 127.0.0.1:8090
+hands-dash public set|show|test|off   # reach the app through Cloudflare Access (docs/public-access.md)
 ```
 
 ## The app (dashboard)
@@ -33,6 +34,8 @@ Sections (0.5): Project builder (all of the above, projects as closable tabs), S
 Code terminals; one can be live on Telegram, setup: docs/telegram.md). Everything is served from the same process
 with the same login, Host/Origin/CSRF checks and CSP. Files on the VPS are browsed with the separate File Browser
 container (127.0.0.1:8080), not from Phoenix (0.5.2 removed the page).
+Public access (0.5.3): behind a Cloudflare Tunnel + Cloudflare Access, the Access token is the login on the
+configured public host; the SSH tunnel + `hands-dash url` keep working unchanged (`docs/public-access.md`).
 
 ## New projects (0.4.1)
 Dashboard → "+ New project" (slug + idea), or on the VPS: `echo "idea" | hands <slug> create`.
