@@ -13,6 +13,10 @@
   10 s), so the browser always closes first; Safari's "Load failed" on the reopen POST came from the
   server closing idle connections after 10 s. Every request and connection error is logged to
   `~/.config/hands/dashboard.log` (path only, 0600, rotated at 2 MB).
+- Requirement 4 (`+` opens on the first click): the `+` button is one persistent node reused by every
+  render and the tab strip is rebuilt only when the tabs changed; the 4 s refresh used to replace the
+  button under the pointer, which swallowed the click. The rig clicks `+` with a re-render between pointer
+  down and up and asserts the menu opened (`tools/shots.js`, `plusDuringRefresh`).
 - Telegram (`hands/notify.py`): a failed send is retried up to 3 attempts (2 s, then 5 s backoff; HTTP
   429 waits for `retry_after`, other 4xx are not retried); one WARN names the exception class and reason
   (URLError reason, HTTP status) for every attempt, with the bot token redacted. Still best-effort: a

@@ -160,5 +160,19 @@ class TestNoBrowserDialogs(unittest.TestCase):
         self.assertIn("err.network = true", app)
 
 
+class TestPlusButton(unittest.TestCase):
+    """Item 3 / requirement 4: the "+" node is created once and reused; renders that change nothing skip the
+    rebuild. The click itself is exercised by the rig (tools/shots.js plusDuringRefresh)."""
+
+    def test_add_button_is_persistent(self):
+        app = JS[0].read_text()
+        self.assertEqual(app.count('class: "tab-add"'), 1)
+        self.assertRegex(app, r"\nconst addBtn = el\(\"button\", \{ class: \"tab-add\"")
+        body = re.search(r"function renderTabs\(open, hidden\) \{(.*?)\n\}", app, re.S).group(1)
+        self.assertIn("strip.replaceChildren(...tabs, addBtn,", body)
+        self.assertIn("if (key === lastTabsKey && strip.contains(addBtn))", body)
+        self.assertNotIn('el("button", { class: "tab-add"', body)
+
+
 if __name__ == "__main__":
     unittest.main()

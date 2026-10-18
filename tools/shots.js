@@ -55,6 +55,34 @@ async function openMenu(page) {
   await page.locator(".menu[role=menu]").waitFor({ timeout: 5000 });
 }
 
+// Requirement 4: one click on "+" opens the menu even when the periodic refresh re-renders the tab strip
+// between pointer down and pointer up (that used to replace the button and swallow the click).
+async function plusDuringRefresh(page) {
+  const add = page.locator("#tabs .tab-add");
+  const box = await add.boundingBox();
+  if (!box) throw new Error("plus: no + button");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  // the refresh, twice, with the project list changed in between so the strip really re-renders
+  await page.evaluate(async () => {
+    const before = projects;
+    renderTabs(projects.filter((p) => !p.hidden).slice(1), projects.filter((p) => p.hidden));
+    renderTabs(before.filter((p) => !p.hidden), before.filter((p) => p.hidden));
+    await loadProjects();
+  });
+  await page.mouse.up();
+  await page.locator(".menu[role=menu]").waitFor({ timeout: 2000 }).catch(() => { throw new Error("plus: the first click during a refresh did not open the menu"); });
+  if ((await page.locator("#tabs .tab-add[aria-expanded='true']").count()) !== 1) throw new Error("plus: aria-expanded not set");
+  // and a second click (same element) closes it; a third opens it again
+  await add.click();
+  await page.locator(".menu[role=menu]").waitFor({ state: "detached", timeout: 2000 });
+  await add.click();
+  await page.locator(".menu[role=menu]").waitFor({ timeout: 2000 });
+  await page.keyboard.press("Escape");
+  await page.locator(".menu[role=menu]").waitFor({ state: "detached", timeout: 2000 });
+  return ", + during refresh ok";
+}
+
 async function openNewForm(page) {
   await openMenu(page);
   await page.locator(".menu .menu-item", { hasText: "New project" }).click();
@@ -388,6 +416,7 @@ async function tour(context) {
     return;
   }
   let attemptFiles = 0, planFiles = 0, logs = 0;
+  const plusNote = await plusDuringRefresh(page);
   for (const name of names) {
     await selectProject(page, name);
     await page.locator("#attempts-wrap section").waitFor({ timeout: 5000 }).catch(() => {});   // loads async
@@ -463,7 +492,7 @@ async function tour(context) {
   if ((await envRoot(page).locator(".envrow").count()) !== 2) throw new Error("tour: paste into the New project form did not add rows");
   await page.locator("#navtoggle").click().catch(() => {});   // desktop: hidden, that's fine
   console.log(`tour ok: ${names.length} projects, ${attemptFiles} attempt files, ${planFiles} plan files, ${logs} planner logs, ` +
-              `keyboard, close/reopen ${victim}, sections + new project${envNote}`);
+              `keyboard, close/reopen ${victim}, sections + new project${envNote}${plusNote}`);
   await page.close();
 }
 

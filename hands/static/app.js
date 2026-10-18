@@ -80,25 +80,33 @@ function select(name) {
 }
 
 // ---- project tabs (WAI-ARIA tabs: roving tabindex, arrows move, Enter opens, Delete closes)
+// The "+" button is created once and reused by every render: a click is lost when the element under the
+// pointer is replaced between pointerdown and pointerup (the 4 s refresh used to rebuild the whole strip,
+// so the first click on "+" sometimes did nothing: requirement 4). The strip is rebuilt only when the
+// tabs actually changed; the "+" node is the same object across renders.
 let lastScrolledTo = null;
+let lastTabsKey = null;
+const addBtn = el("button", { class: "tab-add", type: "button", "data-name": "+", "aria-haspopup": "menu", "aria-expanded": "false",
+  "aria-label": "New project or reopen a closed one", title: "New project or reopen a closed one", on: { click: () => toggleMenu() } }, "+");
 function renderTabs(open, hidden) {
   const strip = $("#tabs");
+  const selected = mode === "project" ? current : null;
+  addBtn.setAttribute("aria-current", String(mode === "new" || mode === "creating"));
+  const key = JSON.stringify([open.map((p) => [p.name, p.error ? "error" : p.status]), selected, open.length ? 0 : hidden.length]);
+  if (key === lastTabsKey && strip.contains(addBtn)) { updateTabShadows(); return; }
+  lastTabsKey = key;
   const active = document.activeElement;
   const focused = active && strip.contains(active) ? active.dataset.name : null;
-  const selected = mode === "project" ? current : null;
   const tabs = open.map((p, i) => el("button", {
     class: "tab", type: "button", role: "tab", "data-name": p.name, title: p.name,
     "aria-selected": String(p.name === selected), tabindex: (selected ? p.name === selected : i === 0) ? "0" : "-1",
     on: { click: (ev) => { if (ev.target.closest(".x")) closeTab(p); else select(p.name); }, keydown: (ev) => tabKey(ev, p) } },
     el("span", { class: "tname" }, p.name), badge(p.error ? "error" : p.status),
     el("span", { class: "x", "aria-label": `Close ${p.name}`, title: "Close tab (Delete)" }, "×")));
-  const add = el("button", { class: "tab-add", type: "button", "data-name": "+", "aria-haspopup": "menu",
-    "aria-expanded": String(!!menuEl), "aria-current": String(mode === "new" || mode === "creating"),
-    "aria-label": "New project or reopen a closed one", title: "New project or reopen a closed one",
-    on: { click: () => toggleMenu() } }, "+");
-  strip.replaceChildren(...tabs, add,
+  strip.replaceChildren(...tabs, addBtn,
     ...(open.length ? [] : [el("span", { class: "tabs-hint" }, hidden.length ? `${hidden.length} closed` : "No projects yet")]));
-  if (focused) { const t = strip.querySelector(`[data-name="${CSS.escape(focused)}"]`); if (t) t.focus(); }
+  if (focused && focused !== "+") { const t = strip.querySelector(`[data-name="${CSS.escape(focused)}"]`); if (t) t.focus(); }
+  if (menuEl) positionMenu();
   if (selected && selected !== lastScrolledTo) {
     lastScrolledTo = selected;
     const t = strip.querySelector('.tab[aria-selected="true"]');
