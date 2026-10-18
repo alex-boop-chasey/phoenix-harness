@@ -4,6 +4,7 @@
   hands-dash start               serve in tmux session hands-dash (also done by `hands all watchdog`)
   hands-dash stop                stop it
   hands-dash url                 print the one-time login URL (open it through the SSH tunnel)
+  hands-dash public set|show|test|off   public access through Cloudflare Access (hands/publicaccess.py)
 
 Security model (the dashboard can start builds, so it is treated as a control plane):
 - binds 127.0.0.1 only; reach it with  ssh -L 8090:127.0.0.1:8090 builder
@@ -12,6 +13,11 @@ Security model (the dashboard can start builds, so it is treated as a control pl
   (in memory only, 12 h) in an HttpOnly SameSite=Strict cookie. No long-lived secret ever leaves the VPS.
 - Host must be exactly 127.0.0.1[:port] (blocks DNS rebinding, and keeps the cookie away from dev
   servers on "localhost"); POSTs also need a matching Origin and an X-Hands header (blocks CSRF)
+- public hosts (0.5.3): with ~/.config/hands/public.json present, a Host listed there is reached through
+  a Cloudflare Tunnel and the Cloudflare Access token on every request is the login (no cookie, no login
+  link); Origin must be https://<host>. Any other Host is 403. See hands/publicaccess.py.
+- request bodies are read in full (capped) before any response, so a kept-alive connection never carries
+  leftover body bytes into the next request; chunked bodies are refused
 - bounded threads, socket timeouts, bounded reads; a kept-alive connection may wait KEEPALIVE_IDLE seconds
   for its next request (longer than any browser keeps an idle connection, so the browser always closes
   first and never sends a POST into a socket we just closed: Safari reports that as "Load failed")
@@ -42,6 +48,7 @@ from pathlib import Path
 
 from . import config as cfgmod
 from . import gitops
+from . import publicaccess
 from . import sessions
 from . import spec as specmod
 from . import ws
@@ -704,7 +711,10 @@ class Handler(BaseHTTPRequestHandler):
             if not self.parse_request():
                 return
             self._requests += 1
-            if self.command not in ("GET", "HEAD", "POST"):
+            if not self._read_body():        # every request's body is consumed (or the connection closed)
+                return                       # before anything answers, so no leftover bytes become the
+            if self.command not in ("GET", "HEAD", "POST"):      # next request on a kept-alive connection
+                self.close_connection = True
                 self.send_error(501, f"Unsupported method ({self.command!r})")
                 return
             getattr(self, f"do_{self.command}")()
@@ -719,6 +729,33 @@ class Handler(BaseHTTPRequestHandler):
             log_line(f"ERR {self.client_address[0]} {type(e).__name__} on {self._req_label()}")
             self.close_connection = True
 
+    _body = b""
+    _email = ""                            # Cloudflare Access identity on a public host (logged, never the token)
+
+    def _read_body(self) -> bool:
+        """Read the whole request body up front (bounded), so every response path leaves the connection in
+        sync. False = an error response was sent and the connection will close (the body stays unread)."""
+        self._body, self._email = b"", ""
+        if self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+            self._json(411, {"error": "chunked bodies are not accepted"})
+            return False
+        raw = (self.headers.get("Content-Length") or "0").strip()
+        if not raw.isdigit() or len(raw) > 12:
+            self.close_connection = True
+            self._json(400, {"error": "bad length"})
+            return False
+        n = int(raw)
+        if n > MAX_ENV_BODY:
+            self.close_connection = True
+            self._json(413, {"error": "too large"})
+            return False
+        if n:
+            self._body = self.rfile.read(n)
+            if len(self._body) != n:
+                raise ConnectionError("short body")
+        return True
+
     def _req_label(self) -> str:
         """The request as it is logged: method and path only (the query may carry a login code or ticket)."""
         path = urllib.parse.urlsplit(getattr(self, "path", "") or "").path
@@ -727,7 +764,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_request(self, code="-", size="-"):
         ms = round((time.monotonic() - self._started) * 1000) if self._started else 0
-        log_line(f"{self.client_address[0]} {self._req_label()} {code} {ms}ms")
+        who = f" {self._email}" if self._email else ""
+        log_line(f"{self.client_address[0]}{who} {self._req_label()} {code} {ms}ms")
 
     def log_error(self, fmt, *args):
         log_line(f"ERR {self.client_address[0]} {self._req_label()} {fmt % args}")
@@ -758,8 +796,19 @@ class Handler(BaseHTTPRequestHandler):
     def _text(self, code: int, text: str) -> None:
         self._send(code, text.encode(), "text/plain; charset=utf-8")
 
+    def _host_kind(self) -> str:
+        """'local' (127.0.0.1[:port]: cookie login), 'public' (a configured Cloudflare Access host: token
+        login) or '' (anything else: 403). The two sets never overlap: a public host is never local."""
+        host = self.headers.get("Host", "")
+        if LOCAL_HOST.match(host):
+            return "local"
+        cfg = self.server.public.current()
+        if cfg is not None and host.lower() in cfg.hosts:
+            return "public"
+        return ""
+
     def _host_ok(self) -> bool:
-        return bool(LOCAL_HOST.match(self.headers.get("Host", "")))
+        return self._host_kind() == "local"
 
     def _authed(self) -> bool:
         return bool(self._login_sid())
@@ -772,8 +821,29 @@ class Handler(BaseHTTPRequestHandler):
                 return v
         return ""
 
+    def _principal(self) -> str:
+        """Who holds this connection's login: the cookie session locally, the Access email on a public host.
+        Terminal tickets are bound to it, so a ticket minted on one host never opens a terminal on another."""
+        return f"cf:{self._email}" if self._email else self._login_sid()
+
     def _same_origin(self) -> bool:
-        return self.headers.get("Origin", "") == f"http://{self.headers.get('Host', '')}"
+        scheme = "https" if self._email else "http"
+        return self.headers.get("Origin", "") == f"{scheme}://{self.headers.get('Host', '')}"
+
+    def _access_check(self) -> str:
+        """Public host: the Access token on this request IS the login. Returns a short refusal reason or ''."""
+        token = self.headers.get("Cf-Access-Jwt-Assertion", "")
+        try:
+            cfg = self.server.public.current()
+            if cfg is None:                         # config vanished between the Host check and here
+                raise publicaccess.AccessError("public access is off")
+            self._email = publicaccess.verify(token, cfg, self.server.keys)
+        except publicaccess.AccessError as e:
+            return str(e)
+        except Exception as e:                      # never a traceback, never the token
+            log_line(f"ERR {self.client_address[0]} {self._req_label()} access check {type(e).__name__}")
+            return "access check failed"
+        return ""
 
     def _origin_ok(self) -> bool:
         return self._same_origin() and self.headers.get("X-Hands") == "1"
@@ -790,28 +860,35 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method: str) -> None:
         try:
-            if not self._host_ok():
+            kind = self._host_kind()
+            if not kind:
                 return self._text(403, "forbidden host")
             u = urllib.parse.urlsplit(self.path)
             path = u.path
-            if path == "/login" and self.command != "GET":
-                return self._text(405, "use GET")
-            if method == "GET" and path == "/login":
-                return self._login(urllib.parse.parse_qs(u.query).get("c", [""])[0])
-            if not self._authed():
-                if method == "GET" and path == "/":
-                    return self._text(401, "Not logged in. On the VPS run: hands-dash url   and open that URL.")
-                return self._json(401, {"error": "not logged in"})
+            if kind == "public":
+                # Cloudflare Access in front: the token on every request is the login (pages, static,
+                # API, WebSocket upgrade alike). No cookie, no login link, no detail on refusal.
+                reason = self._access_check()
+                if reason:
+                    log_line(f"{self.client_address[0]} {self._req_label()} access refused: {reason}")
+                    return self._text(403, f"forbidden: {reason}")
+                if path == "/login":
+                    return self._text(404, "not found (this host logs in through Cloudflare Access)")
+            else:
+                if path == "/login" and self.command != "GET":
+                    return self._text(405, "use GET")
+                if method == "GET" and path == "/login":
+                    return self._login(urllib.parse.parse_qs(u.query).get("c", [""])[0])
+                if not self._authed():
+                    if method == "GET" and path == "/":
+                        return self._text(401, "Not logged in. On the VPS run: hands-dash url   and open that URL.")
+                    return self._json(401, {"error": "not logged in"})
             if method == "POST":
                 if not self._origin_ok():
                     return self._json(403, {"error": "bad origin"})
-                n = int(self.headers.get("Content-Length") or 0)
-                if n < 0:
-                    return self._json(400, {"error": "bad length"})
-                if n > (MAX_ENV_BODY if path.endswith("/env") else MAX_BODY):
+                if len(self._body) > (MAX_ENV_BODY if path.endswith("/env") else MAX_BODY):
                     return self._json(413, {"error": "too large"})
-                body = self.rfile.read(n) if n else b""
-                return self._post(path, body)
+                return self._post(path, self._body)
             return self._get(path, urllib.parse.parse_qs(u.query))
         except LookupError:
             return self._json(404, {"error": "not found"})
@@ -922,7 +999,7 @@ class Handler(BaseHTTPRequestHandler):
             sid, verb = _sid(parts[2]), parts[3]
             if verb == "ticket":
                 sessions.Store().get(sid)
-                return self._json(200, {"ticket": self.server.mint_ticket(self._login_sid(), sid),
+                return self._json(200, {"ticket": self.server.mint_ticket(self._principal(), sid),
                                         "ttl": sessions.TICKET_TTL})
             if verb == "resume":
                 try:
@@ -943,7 +1020,7 @@ class Handler(BaseHTTPRequestHandler):
         err = ws.handshake_error(self.headers) if self.command == "GET" else "websocket required"
         if err:
             return self._json(400, {"error": err})
-        if not ticket or not self.server.redeem_ticket(ticket, self._login_sid(), sid):
+        if not ticket or not self.server.redeem_ticket(ticket, self._principal(), sid):
             return self._json(403, {"error": "bad or expired ticket"})
         sessions.Store().get(sid)                                         # 404 if unknown
         proc = sessions.BACKEND.proc(sid)
@@ -975,6 +1052,8 @@ class Server(ThreadingHTTPServer):
         self._lock = threading.Lock()
         self._slots = threading.BoundedSemaphore(MAX_CONN)
         self._terminals = 0
+        self.public = publicaccess.Settings(log=log_line)      # ~/.config/hands/public.json, re-read on change
+        self.keys = publicaccess.KeyCache()                     # Cloudflare Access signing keys (JWKS)
         super().__init__(("127.0.0.1", port), Handler)
 
     # -- terminal tickets: minted by a CSRF-checked POST, redeemed once by the WebSocket upgrade
@@ -1088,8 +1167,59 @@ def ensure_running(port: int = DEFAULT_PORT) -> None:
         start(port)
 
 
+def public_main(argv: list[str], out=print) -> int:
+    """hands-dash public set|show|test|off. The running dashboard re-reads public.json on change: no restart."""
+    ap = argparse.ArgumentParser(prog="hands-dash public", description=publicaccess.__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="verb", required=True)
+    s = sub.add_parser("set", help="write ~/.config/hands/public.json (0600) and turn public access on")
+    s.add_argument("--host", action="append", required=True, metavar="H", help="public host name (repeatable)")
+    s.add_argument("--team", required=True, metavar="T", help="Zero Trust team domain, e.g. myteam.cloudflareaccess.com")
+    s.add_argument("--aud", required=True, metavar="A", help="the Access application's Audience (AUD) tag")
+    s.add_argument("--email", action="append", required=True, metavar="E", help="allowed email (repeatable)")
+    sub.add_parser("show", help="print the current config")
+    sub.add_parser("test", help="validate the config and fetch the team's signing keys")
+    sub.add_parser("off", help="remove public.json: non-local hosts get 403 again")
+    a = ap.parse_args(argv)
+    p = publicaccess.path()
+    if a.verb == "set":
+        try:
+            cfg = publicaccess.validate({"hosts": a.host, "team_domain": a.team, "aud": a.aud, "emails": a.email})
+        except publicaccess.ConfigError as e:
+            out(f"error: {e}")
+            return 2
+        publicaccess.save(cfg, p)
+        out(f"wrote {p} (0600). Public access ON for: {', '.join(cfg.hosts)}")
+        out("The running dashboard picks this up on its next request; no restart needed. Check: hands-dash public test")
+        return 0
+    if a.verb == "off":
+        gone = publicaccess.remove(p)
+        out(f"{'removed' if gone else 'no'} {p}: public access OFF (non-local hosts get 403). No restart needed.")
+        return 0
+    try:
+        cfg = publicaccess.load(p)
+    except publicaccess.ConfigError as e:
+        out(f"public access OFF: {e}")
+        return 1
+    if a.verb == "show":
+        out(json.dumps(cfg.as_dict(), indent=1))
+        out(f"issuer {cfg.issuer}\njwks   {cfg.jwks_url}")
+        return 0
+    out(f"config valid: hosts={', '.join(cfg.hosts)} team={cfg.team_domain} emails={len(cfg.emails)}")
+    try:
+        n = publicaccess.KeyCache().count(cfg.jwks_url)
+    except publicaccess.AccessError as e:
+        out(f"jwks fetch FAILED from {cfg.jwks_url}: {e}")
+        return 1
+    out(f"jwks OK: {n} RSA signing key(s) at {cfg.jwks_url}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     os.umask(0o077)
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["public"]:
+        return public_main(argv[1:])
     ap = argparse.ArgumentParser(prog="hands-dash", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["run", "start", "stop", "url"])
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
