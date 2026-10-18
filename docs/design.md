@@ -1,6 +1,6 @@
 # Phoenix Harness design system
 
-One design system for the whole app: Project builder, Session manager, File browser and everything
+One design system for the whole app: Project builder, Session manager and everything
 added later use these tokens and components. No page-specific colours, fonts or one-off styles; if a
 component is missing, add it here and to the shared CSS first. The canonical stylesheet is
 `hands/static/app.css` (since step 04); the static mock in `hands/static/mock/` (`mock.css`) is the
@@ -80,7 +80,7 @@ text label and a dot, step icons use ✓ ✗ ○ plus colour.
 ## Layout
 
 - **App shell** (`.app`): left sidebar + content. Sidebar holds app sections only (Project builder,
-  Session manager, File browser; a "Later" group reserves space for Environment variables, MCP
+  Session manager; a "Later" group reserves space for Environment variables, MCP
   servers), usage meters and the account footer. **Never** per-section controls.
 - **≤ 900 px**: sidebar becomes an off-canvas drawer (`.nav-toggle` + `.scrim`) opened from a top bar
   (☰, brand, current section). Grids collapse to one column; the builder's step rail moves to the
@@ -91,7 +91,7 @@ text label and a dot, step icons use ✓ ✗ ○ plus colour.
   content. The popover is `position: fixed` with its offset computed by JS from the `+` button
   (so the scrolling strip cannot clip it and it works in Safari); CSS anchor positioning is only an
   optional enhancement.
-- **Session manager / File browser**: no tabs; page header (`.page-head`) with title and the page's
+- **Session manager**: no tabs; page header (`.page-head`) with title and the page's
   own actions.
 
 ## Components
@@ -122,16 +122,9 @@ text label and a dot, step icons use ✓ ✗ ○ plus colour.
 | Sub-fields | `.subfields` (`.hidden` to collapse) | a group of fields revealed by a checkbox, with a left rule; used by the New project form's "Start from an existing repo" (repo, branch, ruleset) |
 | Breadcrumb | `.crumbs a .sep .here` | clickable ancestors, bold current |
 | View switch | `.seg button[aria-pressed]` | List / Grid |
-| File list | table rows with `.ftype(.dir .code .img .doc)` + `.fname` | type chip, name link, size (`.num`), modified, permissions (hidden on phone) |
-| File grid | `.fgrid .fcard[aria-selected] .thumb .fname .fmeta` | auto-fill 140 px cards |
-| Preview pane | `.card.preview` (+ `pre.log` for text) | actions row: Download, Copy path, Rename · Delete (danger, right) |
-| Upload | `.dropzone(.active)`, `.progress .fill` | drop target + per-file progress list with badges |
-| File browser page | `.page-head.fhead` (search, List/Grid `.seg`, New folder, Upload, Settings), `.fbar` (root `select.select`, `.crumbs`, sort `select`), `.fbrowser(.has-preview)` = `.card.flistcard` + `.card.preview` | built in `files.js` (step 14). Location in the hash (`#/files?root=&path=&file=&q=`). List = `table.flist` with sortable `th button[aria-sort]`, `.ftype` chip (`.bad` = blocked link), `.fsub` note, per-row ✎/🗑 `.ract` buttons (shown on hover/focus, always on phone). Preview: text in `pre.log`, raster images as `img.pimg` from `/api/files/image`, binary note; tools Download · Copy path · Edit · Rename · Delete. Edit = `.textarea` saved by upload with overwrite. Refusals (403/404/400) = `.notice.bad` "Access refused / Not found / Not allowed" in the list or preview. Phone: preview replaces the list (`‹ Files`), Permissions/Modified hidden |
-| Upload list | `.card` + `.uplist .upitem` (`.ftype`, `.upname`, state `.badge`, `.progress .fill`, `.error`) | one row per file: waiting / % / done / failed / skipped; same-name upload asks Replace via `confirmDialog` |
-| Roots settings | `dialog.dialog.wide`, `.rootrows .rootrow` (`.input.mono` + × , missing roots read-only with a hint), `label.check` for `.git` writes, `ul.denied` (`.badge.s-error` "denied" + mono path) | server errors inline under the list, the offending root gets `aria-invalid` |
 | Quiet text button | `.btn.quiet.sm.text` | quiet button with text at `--fs-1` (`.btn.quiet.sm` alone is the larger icon button) |
 | Select | `select.select` | native select in control style, accent focus ring |
-| Toasts | `#toasts.toasts .toast(.bad)` | now in app.css (step 14); used by the File browser for done/failed actions |
+| Toasts | `#toasts.toasts .toast(.bad)` | in app.css; `toast(text, bad)` in app.js shows done/failed actions without blocking the page (since step 17) |
 
 ## States
 

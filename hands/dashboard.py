@@ -16,9 +16,7 @@ Security model (the dashboard can start builds, so it is treated as a control pl
 - strict CSP, no inline script; everything an agent could have influenced (logs, prompts, diffs,
   verdicts) is rendered as text, never HTML
 - read-only over state files except: STOP file, and `hands <p> start|ack` run as subprocesses;
-  it owns ~/.config/hands/ui.json (closed tabs), files.json (file browser roots), sessions/, secrets/<slug>/
-- the file browser (hands/files.py) is the only route that touches folders outside ~/.config/hands:
-  allowed roots from files.json, secrets folders always denied, every path resolved by realpath
+  it owns ~/.config/hands/ui.json (closed tabs), sessions/, secrets/<slug>/
 - it never holds the GitHub token and never mounts anything
 """
 from __future__ import annotations
@@ -40,7 +38,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import config as cfgmod
-from . import files
 from . import gitops
 from . import sessions
 from . import spec as specmod
@@ -68,7 +65,6 @@ MAX_LOG_BYTES = 1_000_000
 STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8"),
                 "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                 "/sessions.js": ("sessions.js", "text/javascript; charset=utf-8"),
-                "/files.js": ("files.js", "text/javascript; charset=utf-8"),
                 "/app.css": ("app.css", "text/css; charset=utf-8"),
                 # xterm.js 5.5.0 + fit addon, vendored (no CDN; CSP is script-src 'self')
                 "/vendor/xterm.min.js": ("vendor/xterm.min.js", "text/javascript; charset=utf-8"),
@@ -726,9 +722,7 @@ class Handler(BaseHTTPRequestHandler):
                 n = int(self.headers.get("Content-Length") or 0)
                 if n < 0:
                     return self._json(400, {"error": "bad length"})
-                if path == "/api/files/upload":                      # streamed to disk, never read into memory
-                    return self._upload(urllib.parse.parse_qs(u.query), n)
-                if n > (MAX_ENV_BODY if path.endswith("/env") or path == "/api/files/settings" else MAX_BODY):
+                if n > (MAX_ENV_BODY if path.endswith("/env") else MAX_BODY):
                     return self._json(413, {"error": "too large"})
                 body = self.rfile.read(n) if n else b""
                 return self._post(path, body)
@@ -737,7 +731,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(404, {"error": "not found"})
         except PermissionError as e:
             return self._json(403, {"error": str(e)[:500] or "forbidden"})
-        except (sessions.Conflict, files.Conflict) as e:
+        except sessions.Conflict as e:
             return self._json(409, {"error": str(e)[:500]})
         except ValueError as e:
             return self._json(400, {"error": str(e)[:500]})
@@ -785,23 +779,6 @@ class Handler(BaseHTTPRequestHandler):
                                     "max_terminals": sessions.MAX_TERMINALS, "telegram_channel": sessions.TELEGRAM_CHANNEL})
         if len(parts) == 3 and parts[:2] == ["ws", "sessions"]:
             return self._terminal(_sid(parts[2]), (q.get("t") or [""])[0])
-        if len(parts) == 3 and parts[:2] == ["api", "files"]:
-            root, rel = (q.get("root") or [""])[0], (q.get("path") or [""])[0]
-            if parts[2] == "roots":
-                return self._json(200, files.roots_info())
-            if parts[2] == "list":
-                return self._json(200, files.listing(root, rel))
-            if parts[2] == "read":
-                return self._json(200, files.read_text(root, rel))
-            if parts[2] == "download":
-                return self._download(root, rel)
-            if parts[2] == "image":
-                try:
-                    return self._download(root, rel, image=True)
-                except files.TooLarge as e:
-                    return self._json(413, {"error": str(e)})
-            if parts[2] == "search":
-                return self._json(200, files.search(root, (q.get("q") or [""])[0]))
         if len(parts) >= 3 and parts[:2] == ["api", "p"]:
             name, rest = parts[2], parts[3:]
             if rest == ["env"]:
@@ -857,24 +834,6 @@ class Handler(BaseHTTPRequestHandler):
             cwd = req.get("cwd") if isinstance(req, dict) else None
             tg = req.get("telegram") if isinstance(req, dict) else None
             return self._json(200, sessions.start_new(cwd if isinstance(cwd, str) and cwd else None, tg))
-        if len(parts) == 3 and parts[:2] == ["api", "files"]:
-            try:
-                req = json.loads(body or b"{}")
-            except ValueError:
-                raise ValueError("bad json")
-            if not isinstance(req, dict):
-                raise ValueError("bad json")
-            verb = parts[2]
-            if verb == "settings":
-                files.save_settings(req)
-                return self._json(200, files.roots_info())
-            root, rel = req.get("root"), req.get("path")
-            if verb == "mkdir":
-                return self._json(200, files.mkdir(root, rel))
-            if verb == "rename":
-                return self._json(200, files.rename(root, rel, req.get("to_root"), req.get("to")))
-            if verb == "delete":
-                return self._json(200, files.delete(root, rel, req.get("recursive", False)))
         if len(parts) == 4 and parts[:2] == ["api", "sessions"]:
             sid, verb = _sid(parts[2]), parts[3]
             if verb == "ticket":
@@ -892,74 +851,6 @@ class Handler(BaseHTTPRequestHandler):
             if verb == "delete":
                 return self._json(200, sessions.delete(sid))
         raise LookupError(path)
-
-    # -- file browser streams (hands/files.py): bounded chunks, never the whole file in memory
-    def _download(self, root: str, rel: str, image: bool = False) -> None:
-        """Download (attachment, octet-stream) or, with image=True, a raster image preview (inline, its own
-        image/* type from files.IMAGE_TYPES; never SVG)."""
-        if image:
-            fd, size, name, ctype = files.open_image(root, rel)
-        else:
-            (fd, size, name), ctype = files.open_download(root, rel), "application/octet-stream"
-        try:
-            kind = "inline" if image else "attachment"
-            safe = re.fullmatch(r"[A-Za-z0-9 ._+()-]{1,150}", name)
-            disp = (f'{kind}; filename="{name}"' if safe else
-                    f"{kind}; filename*=UTF-8''" + urllib.parse.quote(name, safe="")[:600])
-            self.send_response(200)
-            for k, v in SECURITY_HEADERS.items():
-                self.send_header(k, v)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(size))
-            self.send_header("Content-Disposition", disp)
-            self.end_headers()
-            if self.command == "HEAD":
-                return
-            left = size
-            while left > 0:
-                chunk = os.read(fd, min(files.CHUNK, left))
-                if not chunk:
-                    break                        # file shrank: the client sees a short body and discards it
-                self.wfile.write(chunk)
-                left -= len(chunk)
-            if left:
-                self.close_connection = True
-        finally:
-            os.close(fd)
-
-    def _upload(self, q: dict, n: int) -> None:
-        if self.headers.get("Transfer-Encoding"):
-            self.close_connection = True
-            return self._json(411, {"error": "upload needs a Content-Length"})
-        if n > files.MAX_UPLOAD:
-            self.close_connection = True
-            return self._json(413, {"error": f"too large (max {files.MAX_UPLOAD // (1024 * 1024)} MB)"})
-        try:
-            up = files.Upload((q.get("root") or [""])[0], (q.get("path") or [""])[0], (q.get("overwrite") or [""])[0] == "1")
-        except Exception:
-            self.close_connection = True         # the unread body must never be parsed as the next request
-            raise
-        try:
-            left = n
-            while left > 0:
-                try:
-                    chunk = self.rfile.read(min(files.CHUNK, left))
-                except OSError:                  # client gone or stalled (socket timeout)
-                    chunk = b""
-                if not chunk:
-                    up.abort()
-                    self.close_connection = True
-                    try:
-                        return self._json(400, {"error": "upload ended early"})
-                    except OSError:
-                        return
-                up.write(chunk)
-                left -= len(chunk)
-            return self._json(200, up.commit())
-        except BaseException:
-            up.abort()
-            self.close_connection = True
-            raise
 
     # -- terminal WebSocket: every check runs before the 101 (Host and login already did in _dispatch)
     def _terminal(self, sid: str, ticket: str) -> None:

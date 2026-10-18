@@ -19,8 +19,7 @@ import tmpdirs  # noqa: E402,F401
 os.environ["HANDS_NO_NOTIFY"] = "1"
 os.environ["HANDS_TEST_ALLOW_ROOT"] = "1"
 
-from hands import config as cfgmod, dashboard, files, gitops, planner, projectenv, sessions  # noqa: E402
-import test_v13 as tf  # noqa: E402
+from hands import config as cfgmod, dashboard, gitops, planner, projectenv, sessions  # noqa: E402
 import test_v08 as t8  # noqa: E402
 from test_runner import Env, STEP1, GOOD1, EVAL_PASS  # noqa: E402
 
@@ -29,109 +28,6 @@ SECRET = t8.SECRET
 
 def git(*a, cwd=None):
     return subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True, text=True).stdout
-
-
-class TestFilesFixes(tf.Base):
-    """Review findings 1c, 3, 4, 5, 9."""
-
-    def project(self, name, state_dir):
-        (self.d.home / "projects").mkdir(exist_ok=True)
-        (self.d.home / "projects" / f"{name}.toml").write_text(
-            f'spec_dir = "{self.work}/sub"\napp_dir = "{self.work}/sub"\nstate_dir = "{state_dir}"\nimage = "h:1"\n')
-
-    def test_project_state_dirs_denied(self):
-        state = self.work / "proj" / "state"
-        (state / "attempts" / "S01-1").mkdir(parents=True)
-        (state / "attempts" / "S01-1" / "coder.json").write_text(f'{{"secret": "{SECRET}"}}')
-        (self.work / "proj" / "app").mkdir()
-        self.project("proj", state)
-        self.assertIn(str(state), files.denied_paths())
-        st, body = self.j(self.get("/api/files/list?" + self.q(root=str(self.work), path="proj/state")))
-        self.assertEqual(st, 403, body)
-        st, _, raw = self.get("/api/files/read?" + self.q(root=str(self.work), path="proj/state/attempts/S01-1/coder.json"))
-        self.assertEqual(st, 403)
-        self.assertNotIn(SECRET.encode(), raw)
-        st, body = self.j(self.get("/api/files/list?" + self.q(root=str(self.work), path="proj")))
-        self.assertEqual(st, 200)
-        self.assertEqual([e["name"] for e in body["entries"]], ["app"], "the state folder is not listed")
-        st, body = self.j(self.get("/api/files/search?" + self.q(root=str(self.work), q="coder")))
-        self.assertEqual(st, 200)
-        self.assertFalse(any("state" in h["path"] for h in body["hits"]))
-        self.assertIn("~/work/proj/state", files.denied_display())
-        # a project config pointing the state dir somewhere strange still only adds that path
-        self.project("weird", Path("/nonexistent/x"))
-        self.assertIn("/nonexistent/x", files.denied_paths())
-        self.assertEqual(self.j(self.get("/api/files/list?" + self.q(root=str(self.work), path="")))[0], 200)
-
-    def test_hidden_roots_in_settings_file_dropped(self):
-        (self.home / ".config" / "claude-harness").mkdir()
-        (self.home / ".config" / "claude-harness" / "token").write_text("tok\n")
-        (self.home / ".local").mkdir()
-        files.settings_path().write_text(json.dumps({"roots": [str(self.home / ".config"), str(self.home / ".local"),
-                                                               str(self.work)], "git_writes": False}))
-        self.assertEqual(files.settings()["roots"], [str(self.work)])
-        st, body = self.j(self.get("/api/files/list?" + self.q(root=str(self.home / ".config"), path="")))
-        self.assertIn(st, (403, 404), body)
-
-    def test_failed_upload_closes_the_connection(self):
-        (self.work / "taken.txt").write_text("old")
-        s = socket.create_connection(("127.0.0.1", self.d.port), timeout=10)
-        body = b"x" * 5000
-        q = self.q(root=str(self.work), path="taken.txt")
-        req = (f"POST /api/files/upload?{q} HTTP/1.1\r\nHost: 127.0.0.1:{self.d.port}\r\n"
-               f"Cookie: {dashboard.COOKIE}={self.d.sid}\r\nOrigin: http://127.0.0.1:{self.d.port}\r\nX-Hands: 1\r\n"
-               f"Content-Length: {len(body)}\r\n\r\n").encode()
-        s.sendall(req)                                   # headers first: the server answers 409 before the body
-        data = b""
-        while b"\r\n\r\n" not in data:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            data += chunk
-        self.assertTrue(data.startswith(b"HTTP/1.1 409"), data[:80])
-        self.assertIn(b"connection: close", data.lower())
-        head, _, tail = data.partition(b"\r\n\r\n")       # drain the 409 body (it may arrive in a later segment)
-        want = int(next(l.split(b":")[1] for l in head.lower().split(b"\r\n") if l.startswith(b"content-length:")))
-        while len(tail) < want:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            tail += chunk
-        self.assertEqual(len(tail), want, tail)
-        try:
-            s.sendall(body)                              # the leftover body must not be parsed as a request
-        except OSError:
-            pass
-        s.settimeout(5)
-        try:
-            rest = s.recv(65536)
-        except OSError:
-            rest = b""
-        s.close()
-        self.assertEqual(rest, b"", "the server must close the socket instead of reading the body as a request")
-        self.assertEqual(self.j(self.get("/api/files/list?" + self.q(root=str(self.work), path="")))[0], 200)
-
-    def test_git_guard_covers_folders_containing_git(self):
-        clone = self.work / "clone"
-        (clone / ".git" / "objects").mkdir(parents=True)
-        (clone / "src").mkdir()
-        (clone / "src" / "a.js").write_text("1")
-        self.assertEqual(self.post("/api/files/delete", {"root": str(self.work), "path": "clone", "recursive": True})[0], 403)
-        self.assertEqual(self.post("/api/files/rename", {"root": str(self.work), "path": "clone", "to": "clone2"})[0], 403)
-        self.assertTrue((clone / ".git").is_dir())
-        # a plain sub-folder of the clone is still fine
-        self.assertEqual(self.post("/api/files/rename", {"root": str(self.work), "path": "clone/src", "to": "clone/lib"})[0], 200)
-        files.save_settings({"roots": [str(self.work), str(self.other)], "git_writes": True})
-        self.assertEqual(self.post("/api/files/delete", {"root": str(self.work), "path": "clone", "recursive": True})[0], 200)
-        self.assertFalse(clone.exists())
-
-    def test_upload_temp_name_fits_name_max(self):
-        name = "é" * 120 + ".txt"                      # 244 bytes: allowed, but 124 characters only
-        st, body = self.j(self.post("/api/files/upload?" + self.q(root=str(self.work), path=name), raw=b"data",
-                                    headers={"Content-Type": "application/octet-stream"}))
-        self.assertEqual(st, 200, body)
-        self.assertEqual((self.work / name).read_bytes(), b"data")
-        self.assertFalse(any(p.name.startswith(".") and "upload" in p.name for p in self.work.iterdir()))
 
 
 class TestRedactionFixes(unittest.TestCase):

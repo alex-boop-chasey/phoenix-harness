@@ -89,12 +89,9 @@ In the browser:
 2. "+" → New project: the form shows "Start from an existing repo"; tick and untick it (do not submit).
 3. Session manager → New session with folder `~/ops`: the terminal shows Claude Code starting; type
    `/status`, then Stop, then Resume (the transcript comes back), then Delete.
-4. File browser: browse `harness/`, open `README.md` in the preview, search for `install`, open Settings
-   and check the denied list (`.config/hands`, `.ssh`, `.config/gh`, `.git-credentials`, `.claude`).
-5. Phone width (narrow the window to ~390 px): the drawer opens from the menu button, each section works.
+4. Phone width (narrow the window to ~390 px): the drawer opens from the menu button, each section works.
 
-Then retire the old File Browser container: `docs/retire-filebrowser.md` (stop + remove, keep the
-`filebrowser-old` container until you are happy with the new page).
+The File Browser container (127.0.0.1:8080) stays as it is: Phoenix 0.5.2 has no file browser page.
 
 ## 7. Rollback (builder, plus root if step 4 was done)
 

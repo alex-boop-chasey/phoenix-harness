@@ -237,26 +237,12 @@ relay (Allow / Deny buttons in Telegram, allowlisted senders only). The dashboar
 `~/.claude/channels` (and the sandbox/settings deny it to Claude); it only adds the flag to the argv.
 Setup and the permission-relay review: `docs/console-review.md` §8, `docs/telegram.md`.
 
-### File browser (0.5, step 13; `hands/files.py`)
+### File browser (removed in 0.5.2)
 
-The dashboard's only window onto the host file system, and the one place it writes outside
-`~/.config/hands`. It replaces the File Browser container (archived upstream) with Python under the same
-login, Host and CSRF checks. The boundary is a list of **allowed roots** in `~/.config/hands/files.json`
-(default `~/harness ~/projects ~/ops ~/claude-harness`; each must be an existing non-hidden folder inside
-home) plus a **deny list that no setting can override**: `~/.config/hands`, `~/.ssh`, `~/.config/gh`,
-`~/.git-credentials`, `~/.claude` (and `HANDS_CONFIG_HOME` / `CLAUDE_CONFIG_DIR`) and every project's
-`state_dir` (attempt files and session streams), compared by real path; roots from `files.json` go through
-the same rule as on save (inside home, not hidden, not denied); a folder containing a `.git` cannot be
-moved or deleted with `git_writes` off.
-Every request names a root and a relative path; `..`, NUL and absolute paths are refused before resolving,
-then `os.path.realpath` decides: a result outside every root or inside a denied folder is 403 whether it
-got there by symlink or otherwise, a loop or missing path is 404. Writes (mkdir, rename, delete, upload)
-additionally refuse a symlink as the final component, refuse `.git` trees unless `git_writes` is on,
-never overwrite without the flag and never delete a non-empty folder without `recursive: true`; delete
-and `shutil.rmtree` unlink links instead of following them. Download and upload stream in 64 kB chunks
-(upload: Content-Length required, 256 MB cap checked first, temp file + rename, nothing left on abort);
-text reads stop at 2 MB; listings at 5000 entries; search is bounded by hits, entries and time and
-never follows links. The refusal table lives in `tests/test_v13.py`.
+Steps 13-14 built a file browser page (`hands/files.py`, `/api/files/*`); 0.5.2 removed it at Alex's request:
+files on the VPS are browsed with the separate File Browser container on 127.0.0.1:8080, and the dashboard
+again touches nothing outside `~/.config/hands` and the project state it serves. The deny list and refusal
+table live in the git history (tag `v0.5.0-rc1`).
 
 ## Planner and project lifecycle (newproject.py, planner.py)
 

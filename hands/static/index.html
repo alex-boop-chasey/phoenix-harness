@@ -10,7 +10,6 @@
 <script src="/vendor/addon-fit.min.js" defer></script>
 <script src="/app.js" defer></script>
 <script src="/sessions.js" defer></script>
-<script src="/files.js" defer></script>
 </head>
 <body>
 <div class="app">
@@ -25,7 +24,6 @@
     <nav class="nav" id="nav" aria-label="App sections">
       <a href="#/builder" data-section="builder"><span class="ico">▦</span>Project builder</a>
       <a href="#/sessions" data-section="sessions"><span class="ico">▣</span>Session manager</a>
-      <a href="#/files" data-section="files"><span class="ico">▤</span>File browser</a>
     </nav>
     <div class="side-foot">
       <div id="usage" class="usage" aria-label="Claude plan usage"></div>
@@ -76,56 +74,6 @@
       </div>
     </section>
 
-    <section id="page-files" class="page" aria-label="File browser" hidden>
-      <div class="page-head fhead">
-        <h1>File browser</h1>
-        <form id="f-search" class="search" role="search" aria-label="Search file names">
-          <span aria-hidden="true">⌕</span>
-          <input id="f-q" type="search" placeholder="Search names in this root" aria-label="Search file names in this root" maxlength="200" autocomplete="off">
-        </form>
-        <div class="seg" role="group" aria-label="View">
-          <button id="f-vlist" type="button" aria-pressed="true">List</button><button id="f-vgrid" type="button" aria-pressed="false">Grid</button>
-        </div>
-        <button id="f-mkdir" class="btn" type="button" aria-label="New folder">＋ <span class="label">New folder</span></button>
-        <button id="f-upload" class="btn primary" type="button" aria-label="Upload files">↑ <span class="label">Upload</span></button>
-        <button id="f-settings" class="btn quiet" type="button" aria-label="File browser settings">⚙ <span class="label">Settings</span></button>
-        <input id="f-file" type="file" multiple hidden>
-      </div>
-      <div class="fbar">
-        <select id="f-root" class="select" aria-label="Root folder"></select>
-        <nav id="f-crumbs" class="crumbs" aria-label="Breadcrumb"></nav>
-        <label class="fsort inline muted small hide-sm" for="f-sort">Sort</label>
-        <select id="f-sort" class="select" aria-label="Sort by">
-          <option value="name:1">Name A–Z</option><option value="name:-1">Name Z–A</option>
-          <option value="modified:-1">Newest first</option><option value="modified:1">Oldest first</option>
-          <option value="size:-1">Largest first</option><option value="size:1">Smallest first</option>
-        </select>
-      </div>
-      <div id="f-drop" class="dropzone" hidden><span class="glyph" aria-hidden="true">↑</span><strong id="f-drop-t">Drop files to upload</strong><span class="small">Files only, not folders.</span></div>
-      <section id="f-uploads" class="card" aria-labelledby="f-up-h" hidden>
-        <div class="card-head"><h2 id="f-up-h">Uploads</h2><span id="f-up-count" class="muted small"></span><button id="f-up-clear" class="btn sm quiet text" type="button">Clear</button></div>
-        <div id="f-uplist" class="card-body uplist"></div>
-      </section>
-      <div id="fbrowser" class="fbrowser">
-        <section class="card flistcard" aria-labelledby="f-list-h">
-          <div class="card-head"><h2 id="f-list-h">Files</h2><span id="f-count" class="muted small"></span>
-            <label class="check small"><input id="f-hidden" type="checkbox" checked><span>Hidden files</span></label>
-            <button id="f-rename-here" class="btn sm quiet text" type="button" hidden>Rename folder</button>
-            <button id="f-delete-here" class="btn sm danger" type="button" hidden>Delete folder</button>
-          </div>
-          <div id="f-body" class="card-body"><p class="muted small">Loading…</p></div>
-        </section>
-        <section id="f-preview" class="card preview" aria-labelledby="f-p-h" hidden>
-          <div class="card-head">
-            <button id="f-back" class="btn sm quiet text show-sm" type="button" aria-label="Back to the file list">‹ Files</button>
-            <h2 id="f-p-h">File</h2><span id="f-p-meta" class="muted small"></span>
-            <button id="f-close" class="btn sm quiet hide-sm" type="button" aria-label="Close preview">×</button>
-          </div>
-          <div id="f-p-tools" class="card-head"></div>
-          <div id="f-p-body" class="pbody"></div>
-        </section>
-      </div>
-    </section>
   </div>
 </div>
 <div id="toasts" class="toasts" aria-live="polite"></div>

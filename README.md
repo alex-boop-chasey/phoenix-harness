@@ -1,6 +1,6 @@
 # Phoenix Harness 0.5.0 (hands runner)
 
-One app behind one login: Project builder, Session manager and File browser. What changed since 0.4.3:
+One app behind one login: Project builder and Session manager. What changed since 0.4.3:
 `CHANGELOG.md`; architecture `docs/architecture.md`; HTTP API `docs/api.md`; design system `docs/design.md`;
 security review `docs/review-0.5.md`; install plan `docs/install-0.5.md`.
 
@@ -30,9 +30,9 @@ From the Mac: `ssh -N -L 8090:127.0.0.1:8090 builder`, then on the VPS `hands-da
 (prompt, diff, acceptance logs, verdict) and progress notes; buttons: Start, Stop, Ack, Ack + clear model.
 Login codes are single use; sessions live in memory for 12 h (restart = log in again).
 Sections (0.5): Project builder (all of the above, projects as closable tabs), Session manager (persistent Claude
-Code terminals in tmux; one can be live on Telegram, setup: docs/telegram.md) and File browser (allowed roots under
-the home directory, secret folders always denied). Everything is served from the same process with the same
-login, Host/Origin/CSRF checks and CSP.
+Code terminals; one can be live on Telegram, setup: docs/telegram.md). Everything is served from the same process
+with the same login, Host/Origin/CSRF checks and CSP. Files on the VPS are browsed with the separate File Browser
+container (127.0.0.1:8080), not from Phoenix (0.5.2 removed the page).
 
 ## New projects (0.4.1)
 Dashboard → "+ New project" (slug + idea), or on the VPS: `echo "idea" | hands <slug> create`.
@@ -150,7 +150,7 @@ See CHANGELOG.md.
   containers (the planner sees key names only), rejects attempts that commit an env file or a secret
   value, and redacts secret values (8+ characters) as `[REDACTED:KEY]` in everything it stores, serves
   or sends (raw, JSON-escaped, URL-encoded and base64 forms); files it serves (attempts, runner.log) are
-  redacted again at read time, and the File browser never shows a project's state folder. Shorter values
+  redacted again at read time. Shorter values
   and other encodings (hex, custom) are not redacted; the dashboard's Environment panel manages the file.
   Details and the 0.5.0 review: `docs/review-0.5.md`.
 - Dashboard: any process running as builder can read state files anyway; the dashboard adds no new

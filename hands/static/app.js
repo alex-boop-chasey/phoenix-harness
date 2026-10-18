@@ -840,15 +840,14 @@ function tick() {
   const typing = a && (a.tagName === "TEXTAREA" || a.tagName === "INPUT") && !(a.closest && a.closest(".xterm"));
   if (typing) return;   // don't redraw while typing in a form (the terminal's own textarea is fine)
   if (sectionFromHash() === "sessions") { if (window.hands && window.hands.sessions) window.hands.sessions.poll(); ticks += 1; return; }
-  if (sectionFromHash() === "files") { if (ticks % 4 === 0) loadUsage(); ticks += 1; return; }   // the file browser reloads on navigation, not on a timer
   loadProjects().catch(() => {});
   if (ticks % 4 === 0) loadUsage();
   ticks += 1;
   refresh(ticks % 8 === 0);   // attempts list reloads every ~30 s
 }
 
-// ---- app shell: sections (#/builder, #/sessions, #/files) and the phone drawer
-const SECTIONS = { builder: "Project builder", sessions: "Session manager", files: "File browser" };
+// ---- app shell: sections (#/builder, #/sessions) and the phone drawer
+const SECTIONS = { builder: "Project builder", sessions: "Session manager" };
 function sectionFromHash() {
   const m = /^#\/([a-z]+)/.exec(location.hash || "");
   return m && SECTIONS[m[1]] ? m[1] : "builder";
@@ -869,7 +868,6 @@ function route() {
     const m = /^#\/sessions\/([0-9a-f-]{36})$/.exec(location.hash || "");
     window.hands.sessions.show(m ? m[1] : null);
   }
-  if (sec === "files" && window.hands && window.hands.files) window.hands.files.show();
 }
 function setNav(open) {
   document.body.classList.toggle("nav-open", open);
@@ -884,7 +882,6 @@ function initShell() {
   $("#tabs").addEventListener("scroll", updateTabShadows);
   window.addEventListener("resize", updateTabShadows);
   if (window.hands && window.hands.sessions) window.hands.sessions.init();   // sessions.js loads after this file
-  if (window.hands && window.hands.files) window.hands.files.init();         // files.js too
   route();
 }
 

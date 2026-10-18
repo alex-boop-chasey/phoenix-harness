@@ -385,118 +385,10 @@ assembled message, text must be UTF-8 (close codes 1002 / 1009 / 1007). Liveness
 of silence, close `1001` after 60 s without any client frame; a frame that stalls half-way closes
 with 1002; peer gone = 1006. The session itself keeps running when the viewer disconnects.
 
-## File browser (since 0.5, step 13)
+## File browser (removed in 0.5.2)
 
-A bounded view of a few folders under the builder home (`hands/files.py`). Same Host, login and CSRF
-rules as every other route; the download and upload routes stream in 64 kB chunks and never hold a
-file in memory. Errors: `400` bad request (NUL, `..`, absolute path, over-long name, wrong types),
-`403` denied (protected folder, outside the allowed roots, symlink leading there, write into `.git`,
-write through a symlink), `404` unknown root or missing path (also a symlink loop), `409` conflict
-(exists, not empty, overwrite not confirmed).
-
-**Allowed roots** come from `~/.config/hands/files.json`
-(`{"version": 1, "roots": ["/abs/path", ...], "git_writes": false}`, 0600, atomic write); default
-`~/harness ~/projects ~/ops ~/claude-harness`. A root must be an existing folder inside the home folder,
-not the home itself, not a hidden top-level folder (`~/.config`, `~/.ssh`, …), and not in a protected
-place by real path; `~` is expanded and symlinks resolved when saved. A root that later disappears is
-listed with `exists: false` and answers `404`; a root that is (or resolves into) a protected folder is
-dropped from the listing even if the file names it.
-
-**Always denied, whatever the settings say:** `~/.config/hands` (and `HANDS_CONFIG_HOME`), `~/.ssh`,
-`~/.config/gh`, `~/.git-credentials`, `~/.claude` (and `CLAUDE_CONFIG_DIR`), every project's `state_dir`
-(from `~/.config/hands/projects/*.toml`; attempt files and session streams, since 0.5.0), and any path whose real
-location (after `os.path.realpath`) is outside the allowed roots. Every request path is relative to a
-root (`root` = one of the configured roots, exactly; `path` = relative, `/`-separated); `..`, NUL,
-absolute paths, names over 255 bytes and paths over 4096 chars are refused before resolution
-(`%2e%2e` is decoded once by the URL layer and is then a literal name). Symlinks inside the roots work
-(a link to another allowed root answers with that root as `root`); a link out of bounds is listed with
-`ok: false` and refused on every operation; writes never go through a symlink in the final component.
-Writes inside a `.git` folder are refused unless `git_writes` is on. Delete removes a link, never what
-it points to; a non-empty folder needs `"recursive": true` (JSON boolean).
-
-### GET /api/files/roots
-
-```json
-{"roots": [{"name": "harness", "path": "/home/builder/harness", "exists": true}, ...],
- "git_writes": false, "home": "/home/builder",
- "denied": ["~/.config/hands", "~/.ssh", "~/.config/gh", "~/.git-credentials", "~/.claude"],
- "limits": {"max_upload": 268435456, "max_text": 2000000, "max_list": 5000, "max_hits": 500, "max_image": 33554432}}
-```
-
-`denied` (since step 14) lists the always-denied places for the settings view (`~/` form, no duplicates).
-
-### POST /api/files/settings
-
-Body (up to 64 kB): `{"roots": ["~/harness", "/home/builder/projects"], "git_writes": false}` — both keys,
-nothing else; 1–50 roots, each validated as above (one bad root → `400`, nothing saved). Response: as
-`GET /api/files/roots`.
-
-### GET /api/files/list?root=ROOT&path=REL
-
-```json
-{"root": "/home/builder/harness", "path": "hands", "git": false, "git_writes": false, "truncated": false,
- "entries": [{"name": "static", "type": "dir", "size": 4096, "modified": 1792300000, "mode": "0755"},
-             {"name": "files.py", "type": "file", "size": 15210, "modified": 1792300000, "mode": "0644"},
-             {"name": "lnk", "type": "link", "size": 12, "modified": 1792300000, "mode": "0777",
-              "ok": true, "target_type": "dir"}]}
-```
-
-`type`: `dir | file | link | other`; folders first, then by name; at most 5000 entries (`truncated`).
-`root`/`path` are canonical (symlinks resolved). `git` = the folder is inside a `.git` tree. A file
-instead of a folder → `400`.
-
-### GET /api/files/read?root=ROOT&path=REL
-
-`{"root", "path", "size", "truncated", "binary": false, "text": "..."}` — at most 2 MB of text
-(`truncated: true` beyond that). A file with a NUL in its first 8 kB or invalid UTF-8 answers
-`{"root", "path", "size", "truncated", "binary": true}` with no `text`. A folder → `400`.
-
-### GET /api/files/download?root=ROOT&path=REL
-
-The file as `application/octet-stream` with `Content-Length` and
-`Content-Disposition: attachment; filename="name"` (or `filename*=UTF-8''...` for names outside
-`[A-Za-z0-9 ._+()-]`), streamed; opened `O_NOFOLLOW`, regular files only (`400` otherwise).
-
-### GET /api/files/image?root=ROOT&path=REL
-
-A raster image for the preview (since step 14): served `inline` with its own type chosen by the real
-file's extension (`png jpg jpeg gif webp avif bmp ico`), same security headers (`nosniff`, CSP) and
-streaming as download; at most 32 MB (`413`). Anything else (SVG included: it can carry script) → `400`.
-
-### GET /api/files/search?root=ROOT&q=TEXT
-
-Case-insensitive substring match on names under the root: `{"root", "q", "hits": [{"path", "type",
-"size", "modified"}], "truncated"}`, sorted by path. Bounded: 500 hits, 100 000 entries visited, 5 s;
-symlinks are neither followed nor reported; `.git` and `node_modules` are skipped; `q` is 1–200 chars.
-
-### POST /api/files/mkdir
-
-Body `{"root", "path"}`. Creates one folder (mode 0755) whose parent exists. `409` if anything with
-that name exists. Response `{"ok": true, "root", "path"}`.
-
-### POST /api/files/rename
-
-Body `{"root", "path", "to", "to_root"?}` — moves or renames a file, folder or link to `to` (relative to
-`to_root`, default `root`; another allowed root is fine). The target must not exist (`409`), a folder
-cannot move into itself (`400`), the root itself cannot be moved (`400`), both ends obey the `.git` and
-symlink rules; a move across file systems is refused (`400`). Response `{"ok": true, "root", "path"}` for
-the new location.
-
-### POST /api/files/delete
-
-Body `{"root", "path", "recursive": false}`. Removes a file, a link (only the link) or an empty folder;
-`409 "the folder is not empty; …"` otherwise unless `recursive` is `true` (then `shutil.rmtree`, which
-unlinks symlinks instead of following them). The root itself → `400`. Response `{"ok": true}`.
-
-### POST /api/files/upload?root=ROOT&path=REL[&overwrite=1]
-
-Raw body = the file (any `Content-Type`); `Content-Length` required (`411` for chunked), at most
-**256 MB** (`413`, checked before anything is read). All checks run before the body is read: the parent
-must exist, the name may not be a symlink, a folder with that name → `409`, an existing file → `409`
-unless `overwrite=1`. The body streams into a temp file next to the target (`.<name>.upload-<pid>-<rand>`,
-0600, `O_EXCL`) and is renamed into place (mode 0644) on completion; a short or stalled body leaves
-nothing behind (`400 "upload ended early"` when the client is still there). Response
-`{"ok": true, "root", "path", "size"}`.
+The `/api/files/*` routes and `hands/files.py` from steps 13-14 are gone; see git tag `v0.5.0-rc1` for
+their contract.
 
 ## CLI entry points (context)
 
@@ -506,13 +398,11 @@ lock `~/.config/hands/dashboard.lock`). The watchdog cron keeps it running via
 
 ## Route inventory (for the coverage check)
 
-`/` `/app.js` `/sessions.js` `/files.js` `/app.css` `/vendor/xterm.min.js` `/vendor/addon-fit.min.js` `/vendor/xterm.min.css` `/login` ·
+`/` `/app.js` `/sessions.js` `/app.css` `/vendor/xterm.min.js` `/vendor/addon-fit.min.js` `/vendor/xterm.min.css` `/login` ·
 GET `/api/projects` `/api/usage` `/api/creating/<slug>` `/api/p/<name>` `/api/p/<name>/log`
 `/api/p/<name>/attempts` `/api/p/<name>/attempts/<attempt>/<file>` `/api/p/<name>/planfile`
-`/api/p/<name>/env` `/api/sessions` `/api/sessions/defaults` `/api/files/roots` `/api/files/list`
-`/api/files/read` `/api/files/download` `/api/files/image` `/api/files/search` ·
+`/api/p/<name>/env` `/api/sessions` `/api/sessions/defaults` ·
 POST `/api/usage/refresh` `/api/new` `/api/p/<name>/action/<action>` (stop, start, ack,
 ack-clear-model, plan, approve) `/api/p/<name>/hide` `/api/p/<name>/unhide` `/api/p/<name>/env`
-`/api/sessions/new` `/api/sessions/<uuid>/resume|stop|delete|ticket` `/api/files/settings`
-`/api/files/mkdir` `/api/files/rename` `/api/files/delete` `/api/files/upload` ·
+`/api/sessions/new` `/api/sessions/<uuid>/resume|stop|delete|ticket` ·
 WebSocket `/ws/sessions/<uuid>?t=<ticket>`

@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.5.2 (step 17: owner fixes, in progress)
+
+- File browser removed at Alex's request (`hands/files.py`, `files.js`, `/api/files/*`, its tests, rig
+  flows, mock pages and `docs/retire-filebrowser.md`). Files on the VPS are browsed with the separate File
+  Browser container on 127.0.0.1:8080, which stays as it is. The dashboard again touches nothing outside
+  `~/.config/hands` and the project state it serves.
 - Telegram (`hands/notify.py`): a failed send is retried up to 3 attempts (2 s, then 5 s backoff; HTTP
   429 waits for `retry_after`, other 4xx are not retried); one WARN names the exception class and reason
   (URLError reason, HTTP status) for every attempt, with the bot token redacted. Still best-effort: a
