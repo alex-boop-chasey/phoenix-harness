@@ -260,7 +260,7 @@ const Sessions = (() => {
     history.replaceState(null, "", "#/sessions");
   }
   async function newSession() {
-    if (!S.defaults) { try { S.defaults = await api("/api/sessions/defaults"); } catch (e) { alert(`failed: ${e.message}`); return; } }
+    if (!S.defaults) { try { S.defaults = await api("/api/sessions/defaults"); } catch (e) { toast(`Could not load the session defaults: ${e.message}`, true); return; } }
     let row;
     try { row = await folderDialog(S.defaults.cwd); }
     catch (e) { setConn("error", `New session failed: ${e.message}`); return; }
@@ -273,13 +273,9 @@ const Sessions = (() => {
   const tgTaken = (r) => S.rows.find((x) => x.live && x.telegram && (!r || x.id !== r.id));
   const tgBusy = (holder) => `another session is already live on Telegram (${title(holder)}); stop it or leave Telegram there first`;
   function folderDialog(def) {
-    if (typeof HTMLDialogElement !== "function" || !HTMLDialogElement.prototype.showModal) {
-      const v = prompt("Working folder for the new session (under your home folder):", def);
-      return v === null ? Promise.resolve(null) : start(v).catch((e) => { alert(`Could not start the session: ${e.message}`); return null; });
-    }
     return new Promise((resolve) => {
       let done = false;
-      const finish = (v) => { if (done) return; done = true; resolve(v); dlg.close(); dlg.remove(); };
+      const finish = (v) => { if (done) return; done = true; resolve(v); if (typeof dlg.close === "function") dlg.close(); dlg.remove(); };
       const input = el("input", { class: "input mono", id: "s-cwd", type: "text", value: def, spellcheck: "false", autocomplete: "off", "aria-describedby": "s-cwd-hint" });
       const err = el("div", { class: "error", id: "s-cwd-err" });
       const tg = el("input", { type: "checkbox", id: "s-tg-new" });
@@ -314,7 +310,7 @@ const Sessions = (() => {
         el("div", { class: "row" }, el("button", { class: "btn", type: "button", on: { click: () => finish(null) } }, "Cancel"), go));
       const dlg = el("dialog", { class: "dialog", "aria-labelledby": "s-dlg-title", on: { close: () => finish(null) } }, form);
       document.body.append(dlg);
-      dlg.showModal();
+      openDialog(dlg);
       input.focus();
       input.select();
     });
@@ -323,7 +319,7 @@ const Sessions = (() => {
     const r = selectedRow();
     if (!r || r.live) return;
     try { Object.assign(r, await post(`/api/sessions/${encodeURIComponent(r.id)}/resume`)); }
-    catch (e) { alert(`Could not resume: ${e.message}`); return; }
+    catch (e) { setConn("error", `Could not resume: ${e.message}`); toast(`Could not resume: ${e.message}`, true); return; }
     renderList();
     connect(r.id);
   }
@@ -363,7 +359,7 @@ const Sessions = (() => {
     const ok = await confirmDialog({ title: `Stop ${title(r)}?`, body: "Ends Claude's process. Its conversation is kept and you can resume it later from this list.", ok: "Stop session", okClass: "btn primary" });
     if (!ok) return;
     try { Object.assign(r, await post(`/api/sessions/${encodeURIComponent(r.id)}/stop`)); }
-    catch (e) { alert(`Could not stop: ${e.message}`); return; }
+    catch (e) { setConn("error", `Could not stop: ${e.message}`); toast(`Could not stop: ${e.message}`, true); return; }
     disconnect();
     setConn("stopped", "Session stopped. Resume to start it again (its history is kept).");
     renderList();
@@ -375,7 +371,7 @@ const Sessions = (() => {
       body: "Removes the session from this list and deletes its conversation transcript on the VPS. This cannot be undone.", ok: "Delete session" });
     if (!ok) return;
     try { await post(`/api/sessions/${encodeURIComponent(r.id)}/delete`); }
-    catch (e) { alert(`Could not delete: ${e.message}`); return; }
+    catch (e) { setConn("error", `Could not delete: ${e.message}`); toast(`Could not delete: ${e.message}`, true); return; }
     disconnect();
     S.rows = S.rows.filter((x) => x.id !== r.id);
     S.selected = null;

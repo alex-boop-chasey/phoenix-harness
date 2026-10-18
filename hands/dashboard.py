@@ -12,7 +12,10 @@ Security model (the dashboard can start builds, so it is treated as a control pl
   (in memory only, 12 h) in an HttpOnly SameSite=Strict cookie. No long-lived secret ever leaves the VPS.
 - Host must be exactly 127.0.0.1[:port] (blocks DNS rebinding, and keeps the cookie away from dev
   servers on "localhost"); POSTs also need a matching Origin and an X-Hands header (blocks CSRF)
-- bounded threads, socket timeouts, bounded reads
+- bounded threads, socket timeouts, bounded reads; a kept-alive connection may wait KEEPALIVE_IDLE seconds
+  for its next request (longer than any browser keeps an idle connection, so the browser always closes
+  first and never sends a POST into a socket we just closed: Safari reports that as "Load failed")
+- every request and connection error is logged to ~/.config/hands/dashboard.log (path only, no query)
 - strict CSP, no inline script; everything an agent could have influenced (logs, prompts, diffs,
   verdicts) is rendered as text, never HTML
 - read-only over state files except: STOP file, and `hands <p> start|ack` run as subprocesses;
@@ -60,6 +63,8 @@ LOCAL_HOST = re.compile(r"^127\.0\.0\.1(?::\d{1,5})?$")
 SESSION_TTL = 12 * 3600
 LOGIN_TTL = 300
 MAX_CONN = 32
+KEEPALIVE_IDLE = 120        # seconds a kept-alive connection may wait for its next request (step 17)
+LOG_MAX = 2_000_000         # dashboard.log is rotated to dashboard.log.1 at this size
 MAX_FILE = 2_000_000
 MAX_LOG_BYTES = 1_000_000
 STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8"),
@@ -88,6 +93,35 @@ def config_home() -> Path:
 
 def login_path() -> Path:
     return config_home() / "dashboard-login"
+
+
+def log_path() -> Path:
+    return config_home() / "dashboard.log"
+
+
+_LOG_LOCK = threading.Lock()
+
+
+def log_line(text: str) -> None:
+    """Append one UTC-stamped line to dashboard.log (0600, never through a symlink, rotated once at LOG_MAX).
+    Logging must never break a request: every failure here is swallowed."""
+    line = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {text}\n"
+    try:
+        with _LOG_LOCK:
+            p = log_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if os.lstat(p).st_size > LOG_MAX:
+                    os.replace(p, p.with_suffix(".log.1"))
+            except OSError:
+                pass
+            fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+            try:
+                os.write(fd, line.encode("utf-8", errors="replace"))
+            finally:
+                os.close(fd)
+    except OSError:
+        pass
 
 
 def mint_login_code() -> str:
@@ -648,8 +682,58 @@ class Handler(BaseHTTPRequestHandler):
     sys_version = ""
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, fmt, *args):     # quiet; errors only
-        pass
+    _requests = 0                          # on this connection
+    _started = 0.0
+
+    def handle_one_request(self):
+        """One request on this connection. The first request line must arrive within `timeout`; later ones
+        (keep-alive) may take KEEPALIVE_IDLE, so the browser gives up on an idle connection before we do.
+        Headers and body always use the short timeout. Socket errors are logged, never raised."""
+        try:
+            self.connection.settimeout(self.timeout if self._requests == 0 else KEEPALIVE_IDLE)
+            self.raw_requestline = self.rfile.readline(65537)
+            self.connection.settimeout(self.timeout)
+            self._started = time.monotonic()
+            if len(self.raw_requestline) > 65536:
+                self.requestline = self.request_version = self.command = ""
+                self.send_error(414)
+                return
+            if not self.raw_requestline:
+                self.close_connection = True
+                return
+            if not self.parse_request():
+                return
+            self._requests += 1
+            if self.command not in ("GET", "HEAD", "POST"):
+                self.send_error(501, f"Unsupported method ({self.command!r})")
+                return
+            getattr(self, f"do_{self.command}")()
+            self.wfile.flush()
+        except TimeoutError:
+            if self._requests:                                   # idle keep-alive connection: normal
+                log_line(f"idle {self.client_address[0]} closed after {self._requests} requests")
+            else:
+                log_line(f"ERR {self.client_address[0]} timed out before its first request")
+            self.close_connection = True
+        except (ConnectionError, OSError) as e:                  # reset, broken pipe, EBADF: the peer left
+            log_line(f"ERR {self.client_address[0]} {type(e).__name__} on {self._req_label()}")
+            self.close_connection = True
+
+    def _req_label(self) -> str:
+        """The request as it is logged: method and path only (the query may carry a login code or ticket)."""
+        path = urllib.parse.urlsplit(getattr(self, "path", "") or "").path
+        path = re.sub(r"[^\x21-\x7e]", "?", path)[:200]
+        return f"{getattr(self, 'command', '') or '-'} {path or '-'}"
+
+    def log_request(self, code="-", size="-"):
+        ms = round((time.monotonic() - self._started) * 1000) if self._started else 0
+        log_line(f"{self.client_address[0]} {self._req_label()} {code} {ms}ms")
+
+    def log_error(self, fmt, *args):
+        log_line(f"ERR {self.client_address[0]} {self._req_label()} {fmt % args}")
+
+    def log_message(self, fmt, *args):     # everything else http.server would print (nothing today)
+        log_line(fmt % args)
 
     # -- plumbing
     def _send(self, code: int, body: bytes, ctype: str, extra: dict | None = None) -> None:
@@ -658,8 +742,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        if self.close_connection:                 # e.g. a refused upload whose body was never read
+        if self.close_connection:
             self.send_header("Connection", "close")
+        else:
+            self.send_header("Keep-Alive", f"timeout={max(1, int(KEEPALIVE_IDLE) - 5)}")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -736,7 +822,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self._json(400, {"error": str(e)[:500]})
         except Exception as e:  # never leak a traceback page
-            sys.stderr.write(f"dashboard error: {type(e).__name__}: {e}\n")
+            log_line(f"ERR {self.client_address[0]} {self._req_label()} {type(e).__name__}: {str(e)[:300]}")
             return self._json(500, {"error": f"{type(e).__name__}"})
 
     def _login(self, code: str) -> None:

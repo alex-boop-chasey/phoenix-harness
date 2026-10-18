@@ -39,6 +39,16 @@ Baseline written 2026-10-17 (step 01), updated through step 16 (0.5.0). Server: 
 - **Errors:** unknown path/name → `404 {"error": "not found"}`; invalid input → `400 {"error": "<msg>"}`
   (message capped at 500 chars); anything unexpected → `500 {"error": "<ExceptionName>"}` — never a traceback.
 
+## Connections and the request log (since 0.5.2)
+
+HTTP/1.1 with keep-alive. The first request line of a connection must arrive within 10 s, and so must every
+header and body; a kept-alive connection may then wait `KEEPALIVE_IDLE` = 120 s for its next request (the
+`Keep-Alive: timeout=115` header says so). Browsers drop idle connections sooner than that, so they never
+send a request into a socket the server has just closed (Safari reported that as "Load failed" on the
+reopen POST). Every request is logged to `~/.config/hands/dashboard.log` (0600, rotated once at 2 MB) as
+`<utc> <client> <method> <path> <status> <ms>ms` with the path only (no query: login codes and tickets
+never reach the log); connection errors and server exceptions are `ERR` lines.
+
 ## Security headers (every response)
 
 ```

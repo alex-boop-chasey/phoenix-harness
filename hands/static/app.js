@@ -16,12 +16,35 @@ function el(tag, attrs, ...kids) {
 }
 
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  let r;
+  try { r = await fetch(path, opts); }
+  catch (e) {                         // no response at all (Safari: "Load failed"): the request may never have arrived
+    const err = new Error(`network error (${e && e.message ? e.message : "no response"})`);
+    err.network = true;
+    throw err;
+  }
   if (r.status === 401) { $("#main").replaceChildren(el("p", {}, "Not logged in. On the VPS run: hands-dash url")); throw new Error("401"); }
   const ct = r.headers.get("content-type") || "";
   const body = ct.includes("json") ? await r.json() : await r.text();
   if (!r.ok) throw new Error((body && body.error) || r.status);
   return body;
+}
+
+// ---- in-page notices: never a browser dialog (they block the page and look foreign)
+function toast(msg, bad) {
+  const box = document.getElementById("toasts");
+  if (!box) return;
+  const t = el("div", { class: bad ? "toast bad" : "toast", role: bad ? "alert" : "status" },
+    el("span", { class: "dot", "aria-hidden": "true" }), el("span", {}, msg),
+    el("button", { class: "x", type: "button", "aria-label": "Dismiss", on: { click: () => t.remove() } }, "×"));
+  box.append(t);
+  setTimeout(() => t.remove(), bad ? 9000 : 4000);
+}
+// showModal() where it exists; otherwise the dialog opens non-modally, fixed near the top (old Safari)
+function openDialog(dlg) {
+  if (typeof dlg.showModal === "function") { dlg.showModal(); return; }
+  dlg.classList.add("fallback");
+  dlg.setAttribute("open", "");
 }
 
 const badge = (s) => el("span", { class: `badge s-${String(s || "").replace(/[^a-z_]/g, "")}` }, s || "?");
@@ -113,7 +136,7 @@ async function closeTab(p) {
     ok: "Close tab" });
   if (!ok) return;
   try { await api(`/api/p/${encodeURIComponent(p.name)}/hide`, { method: "POST", headers: { "X-Hands": "1" } }); }
-  catch (e) { alert(`failed: ${e.message}`); return; }
+  catch (e) { toast(`Could not close ${p.name}: ${e.message}`, true); return; }
   const open = projects.filter((x) => !x.hidden);
   const i = open.findIndex((x) => x.name === p.name);
   const next = open[i + 1] || open[i - 1];
@@ -130,8 +153,11 @@ async function closeTab(p) {
 
 async function reopen(name) {
   closeMenu(false);
-  try { await api(`/api/p/${encodeURIComponent(name)}/unhide`, { method: "POST", headers: { "X-Hands": "1" } }); }
-  catch (e) { alert(`failed: ${e.message}`); return; }
+  const unhide = () => api(`/api/p/${encodeURIComponent(name)}/unhide`, { method: "POST", headers: { "X-Hands": "1" } });
+  try {
+    try { await unhide(); }
+    catch (e) { if (!e.network) throw e; await unhide(); }   // idempotent: one retry when no response came back
+  } catch (e) { toast(`Could not reopen ${name}: ${e.message}`, true); return; }
   projects = projects.map((x) => (x.name === name ? { ...x, hidden: false } : x));
   select(name);
 }
@@ -214,14 +240,11 @@ function menuKey(ev) {
   else if (ev.key === "n" || ev.key === "N") { ev.preventDefault(); closeMenu(false); showNew(); }
 }
 
-// ---- confirmation dialog (<dialog>; falls back to window.confirm where showModal is missing)
+// ---- confirmation dialog (<dialog>; non-modal fallback where showModal is missing; never a browser dialog)
 function confirmDialog({ title, body, warn, ok, okClass }) {
-  if (typeof HTMLDialogElement !== "function" || !HTMLDialogElement.prototype.showModal) {
-    return Promise.resolve(confirm(`${title}\n\n${warn ? warn + "\n\n" : ""}${body}`));
-  }
   return new Promise((resolve) => {
     let done = false;
-    const finish = (v) => { if (done) return; done = true; resolve(v); dlg.close(); dlg.remove(); };
+    const finish = (v) => { if (done) return; done = true; resolve(v); if (typeof dlg.close === "function") dlg.close(); dlg.remove(); };
     const cancel = el("button", { class: "btn", type: "button", on: { click: () => finish(false) } }, "Cancel");
     const okBtn = el("button", { class: okClass || "btn danger", type: "button", on: { click: () => finish(true) } }, ok || "OK");
     const dlg = el("dialog", { class: "dialog", "aria-labelledby": "dlg-title", on: { close: () => finish(false) } },
@@ -230,13 +253,13 @@ function confirmDialog({ title, body, warn, ok, okClass }) {
       el("p", { class: "muted" }, body),
       el("div", { class: "row" }, cancel, okBtn));
     document.body.append(dlg);
-    dlg.showModal();
+    openDialog(dlg);
     cancel.focus();
   });
 }
 
 async function action(name, act, label) {
-  if (!confirm(`${label} for ${name}?`)) return;
+  if (!(await confirmDialog({ title: `${label} for ${name}?`, body: `Runs \`hands ${name} ${act}\` on the VPS.`, ok: label, okClass: "btn primary" }))) return;
   const out = document.getElementById("action-out");
   out.textContent = `${label}…`;
   try {
@@ -538,7 +561,7 @@ function showNew() {
     const q = importing
       ? `Create the GitHub repo ${slug.value}-specs, add a deploy key to ${repo.value} and set everything up? ${repo.value} itself is not changed.`
       : `Create GitHub repos ${slug.value}-specs and ${slug.value}-app and set everything up?`;
-    if (!confirm(q)) return;
+    if (!(await confirmDialog({ title: importing ? `Set up ${slug.value} from ${repo.value}?` : `Create ${slug.value}?`, body: q, ok: "Create", okClass: "btn primary" }))) return;
     submit.disabled = true;
     out.textContent = "Starting…";
     const body = { slug: slug.value, description: desc.value };
@@ -655,13 +678,13 @@ const cmdView = (c) => {
 };
 
 async function planAction(name, act, label, headSha) {
-  if (!confirm(`${label}?`)) return;
+  if (!(await confirmDialog({ title: `${label}?`, body: `Project ${name}.`, ok: label, okClass: "btn primary" }))) return;
   try {
     await api(`/api/p/${encodeURIComponent(name)}/action/${act}`, { method: "POST",
       headers: { "X-Hands": "1", "Content-Type": "application/json" },
       body: JSON.stringify({ feedback: act === "plan" ? planFeedback : "", head_sha: headSha || "" }) });
     if (act === "plan") planFeedback = "";
-  } catch (e) { alert(`failed: ${e.message}`); }
+  } catch (e) { toast(`${label} failed: ${e.message}`, true); }
   refresh(false);
 }
 
@@ -826,7 +849,7 @@ async function loadUsage() {
     const u = await api("/api/usage");
     const stale = !u.at || Date.now() / 1000 - u.at > 3 * 3600;
     const btn = el("button", { class: "linkbtn", title: "Refresh usage (one tiny Haiku reply)",
-      on: { click: async () => { try { await api("/api/usage/refresh", { method: "POST", headers: { "X-Hands": "1" } }); btn.textContent = "…"; } catch (e) { alert(e.message); } } } },
+      on: { click: async () => { try { await api("/api/usage/refresh", { method: "POST", headers: { "X-Hands": "1" } }); btn.textContent = "…"; } catch (e) { toast(`Usage refresh failed: ${e.message}`, true); } } } },
       u.refreshing ? "…" : "↻");
     $("#usage").replaceChildren(meter("Session", u.five_hour, false), meter("Week", u.seven_day, true),
       el("span", { class: stale ? "muted stale" : "muted" }, u.at ? `as of ${new Date(u.at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "no usage data yet"), btn);

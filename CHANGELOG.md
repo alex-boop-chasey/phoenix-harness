@@ -6,6 +6,13 @@
   flows, mock pages and `docs/retire-filebrowser.md`). Files on the VPS are browsed with the separate File
   Browser container on 127.0.0.1:8080, which stays as it is. The dashboard again touches nothing outside
   `~/.config/hands` and the project state it serves.
+- Requirement 5 (errors inside the page): no `alert`, `confirm` or `prompt` anywhere; confirmations use the
+  shared `<dialog>` (non-modal fallback where `showModal` is missing), failures a toast or the page's
+  status line. Reopening a closed project retries once when the request got no response.
+- Dashboard connections: a kept-alive connection waits 120 s for its next request (headers/bodies still
+  10 s), so the browser always closes first; Safari's "Load failed" on the reopen POST came from the
+  server closing idle connections after 10 s. Every request and connection error is logged to
+  `~/.config/hands/dashboard.log` (path only, 0600, rotated at 2 MB).
 - Telegram (`hands/notify.py`): a failed send is retried up to 3 attempts (2 s, then 5 s backoff; HTTP
   429 waits for `retry_after`, other 4xx are not retried); one WARN names the exception class and reason
   (URLError reason, HTTP status) for every attempt, with the bot token redacted. Still best-effort: a
