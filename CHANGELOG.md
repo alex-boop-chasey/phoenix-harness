@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+- Telegram (`hands/notify.py`): a failed send is retried up to 3 attempts (2 s, then 5 s backoff; HTTP
+  429 waits for `retry_after`, other 4xx are not retried); one WARN names the exception class and reason
+  (URLError reason, HTTP status) for every attempt, with the bot token redacted. Still best-effort: a
+  failed notification never raises or fails the runner. Tests: `tests/test_notify.py`.
+
 ## 0.5.1 (release candidate, 2026-10-17)
 
 Closes the open-DNS hole in the build containers (`hands <p> check` used to warn "DNS to outside
