@@ -14,7 +14,7 @@ import signal
 import time
 from pathlib import Path
 
-from . import accview, activity, claude, docker, gitops, projectenv, prompts, rounds, usage, workspace
+from . import accview, activity, claude, docker, gitops, merge, projectenv, prompts, rounds, usage, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -422,10 +422,30 @@ class Runner:
             self.escalate(str(e))
         self.state.data["round"] = {"id": rnd, "branch": name, "base_sha": base, "pre_tag": tag,
                                     "spec_commit": self.spec.commit if self.spec else "",
-                                    "opened_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "status": "open"}
+                                    "opened_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "status": "open",
+                                    **self.round_request(rnd)}
         self.state.save()
+        merge.append_event(self.state, "opened", self.state.data["round"])
         self.log(f"opened round C{rnd}: branch {name} from {base[:9]}, tag {tag}" + ("" if c.push else " (push disabled)"))
         self.send(f"round C{rnd} opened on {name} (base {base[:9]}, tag {tag})")
+
+    def round_request(self, rnd: int) -> dict:
+        """The amendment's description and PR for the round record, from the planner's plan.json (round n of
+        amend mode); tolerant: a hand-written spec has none."""
+        try:
+            pj = json.loads((self.cfg.state_dir / "plan" / "plan.json").read_text())
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(pj, dict) or pj.get("mode") != "amend" or pj.get("round") != rnd:
+            return {}
+        out = {}
+        if isinstance(pj.get("request"), str) and pj["request"].strip():
+            out["request"] = pj["request"].strip()[:400]
+        if isinstance(pj.get("pr"), int):
+            out["pr"] = pj["pr"]
+        if isinstance(pj.get("pr_url"), str):
+            out["pr_url"] = pj["pr_url"][:300]
+        return out
 
     def sync_branch(self, branch: str) -> None:
         """Make the app clone consistent with origin/<branch> (push accepted commits, fast-forward, escalate on

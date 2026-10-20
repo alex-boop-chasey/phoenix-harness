@@ -58,6 +58,7 @@ class Config:
     # set by `hands <p> create`; `destroy` only deletes GitHub repos of managed projects
     managed: bool = False
     imported: bool = False              # app repo existed before hands (never deleted by destroy)
+    is_self: bool = False               # TOML `self = true`: Phoenix building itself (U4); rounds are merged by Install update, not the tap
     github_org: str = ""
     repo_specs: str = ""
     repo_app: str = ""
@@ -72,6 +73,8 @@ def load(name: str, path: Path | None = None) -> Config:
     if not path.is_file():
         raise SystemExit(f"config not found: {path}")
     raw = tomllib.loads(path.read_text())
+    if "self" in raw:
+        raw["is_self"] = raw.pop("self")
     known = {f.name for f in fields(Config)}
     unknown = set(raw) - known
     if unknown:
