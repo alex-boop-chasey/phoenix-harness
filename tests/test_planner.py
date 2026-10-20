@@ -203,6 +203,17 @@ class TestPlanner(tn.Base):
         trees = [e["path"] for t in self.gh.trees.values() for e in t]
         self.assertNotIn(".github/CODEOWNERS", trees)
 
+    def test_fresh_plan_rejects_round_ids_and_tests_changed(self):
+        raw = json.loads(GOOD["steps.json"])
+        raw["steps"][0]["id"] = "C1-01"
+        raw["tests_changed"] = [{"path": "acceptance/s01.test.mjs", "change": "change", "why": "x"}]
+        bad = {**GOOD, "steps.json": json.dumps(raw)}
+        self.queue({"role": "planner", "files": bad}, {"role": "planner", "files": GOOD})
+        self.assertEqual(planner.plan(self.cfg()), 0)
+        p = json.loads((self.tmp / "prompts.jsonl").read_text().splitlines()[1])["prompt"]
+        self.assertIn("ids starting with C<n>- are reserved for amendment rounds", p)
+        self.assertIn("tests_changed is only for amendments", p)
+
     def test_three_bad_rounds_fail_without_pr(self):
         bad = {**GOOD, ".github/CODEOWNERS": "* @evil\n"}
         self.queue(*[{"role": "planner", "files": bad}] * 3)
@@ -697,6 +708,44 @@ class TestAmend(TestPlanner):
         err = planner.read_state(self.cfg())["error"]
         self.assertIn("S01 already passed; it differs from the runner's record", err)
         self.assertIn("acceptance/s01.test.mjs", err)
+
+    def test_new_file_a_passed_step_would_own_is_rejected(self):
+        self.approved()
+        from hands import rounds
+        from hands.state import State
+        st = State(self.cfg().state_dir)
+        st.step("S01").update(rounds.make_record(self.cfg().spec_dir, "S01"))
+        st.save()
+        raw = json.loads(AMEND["steps.json"])
+        raw["steps"][0]["acceptance"] = ["node --test acceptance/s01.test.mjs"]      # unchanged entry
+        sneaky = {**AMEND, "acceptance/s01.test.mjs.snap": "x"}                     # not matched by S01's pattern: fine
+        self.queue({"role": "planner", "files": sneaky})
+        self.assertEqual(planner.plan(self.cfg(), "add pricing", amend=True), 0)
+        # a step owning a directory: a file added under it is refused
+        self.assertEqual(planner.approve(self.cfg(), planner.read_state(self.cfg())["head_sha"]), 0)
+        raw2 = json.loads((self.cfg().spec_dir / "steps.json").read_text())
+        raw2["steps"][1]["acceptance_files"] = ["c1/"]
+        st = State(self.cfg().state_dir)
+        st.step("C1-01").update({"status": "passed", "commit": "b" * 40, "spec_commit": "", **rounds.make_record(self.cfg().spec_dir, "C1-01")})
+        st.save()
+        self.assertEqual(st.data["steps"]["C1-01"]["spec_files"], ["c1-01.test.mjs"])
+        w = Path(tempfile.mkdtemp())
+        git("clone", "-q", str(self.remote / "site-specs.git"), str(w / "c"))
+        (w / "c" / "steps.json").write_text(json.dumps(raw2))
+        (w / "c" / "acceptance" / "c1").mkdir()
+        (w / "c" / "acceptance" / "c1" / "keep").write_text("")
+        git("add", "-A", cwd=w / "c")
+        git("-c", "user.name=x", "-c", "user.email=x@x", "commit", "-qm", "dir", cwd=w / "c")
+        git("push", "-q", "origin", "main", cwd=w / "c")
+        st.step("C1-01").update(rounds.make_record(w / "c", "C1-01"))
+        st.save()
+        c2 = {**C1_01, "id": "C2-01", "title": "blog", "acceptance": ["node --test acceptance/c2-01.test.mjs"]}
+        files = {"steps.json": json.dumps({**raw2, "steps": raw2["steps"] + [c2]}), "acceptance/c2-01.test.mjs": "x",
+                 "acceptance/c1/extra.test.mjs": "x", "PLAN.md": AMEND["PLAN.md"]}
+        self.queue({"role": "planner", "files": files}, {"role": "planner", "files": files}, {"role": "planner", "files": files})
+        self.assertEqual(planner.plan(self.cfg(), "add blog", amend=True), 1)
+        self.assertIn("C1-01: now owns acceptance file(s) it did not pass with: acceptance/c1/extra.test.mjs",
+                      planner.read_state(self.cfg())["error"])
 
     def test_unpushed_app_commit_refuses_amend(self):
         self.approved()

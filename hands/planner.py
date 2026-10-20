@@ -436,7 +436,8 @@ the change below, then append it to the plan. The runner enforces these rules an
   "why": "<one line>"}}, exactly one entry per existing file you change or remove (replace any list from an
   earlier amendment). The runner compares it with the real diff: an unlisted change, a listed file that is
   unchanged, or a listed file of a built step rejects the output; the reviewer must tick the list explicitly.
-  New test files are simply added (not listed).
+  New test files are simply added (not listed) unless a built step's acceptance pattern would match them (then
+  the built step would run a test it never passed with: use a new path).
 - PLAN.md: add a section `## Amendment {round}` (what changes and why, decisions for the reviewer); you may
   summarise `tests_changed` there under `## {tests_heading}` for the human, but steps.json is the source of truth.
 - docs/design.md and docs/plan.md: extend them (new or amended `##` sections, new `### Task N: ...` headings
@@ -911,7 +912,8 @@ def approve(cfg: Config, expected_sha: str = "", ack_shared: bool = False, ack_d
                 raise PlanError("this amendment changes settings that apply to every step:\n" + "\n".join(lines)
                                 + "\nre-run with --ack-shared to approve them")
             log("acknowledging shared settings changes (--ack-shared):\n" + "\n".join(lines))
-        tests = [x for x in (st.get("tests_changed") or []) if isinstance(x, dict)]
+        tests = [x if isinstance(x, dict) else {"path": str(x), "change": "change", "why": ""}
+                 for x in (st.get("tests_changed") or []) if isinstance(x, (dict, str))]
         if tests:
             lines = [f"  {x.get('path')} ({x.get('change')}): {x.get('why') or '(no reason given)'}" for x in tests]
             if not ack_tests:

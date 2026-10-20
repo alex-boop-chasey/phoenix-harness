@@ -10,7 +10,8 @@ Cloudflare, the File Browser container, `~/.ssh` or `~/.claude`.
 afterwards). No build or planner may be running (`hands smoke status` → runner alive: False; no
 `plan.lock` held). Existing projects need nothing: passed steps without a `spec_hash` record (built before
 0.5.7, e.g. `smoke`) are simply not hash-checked; a `tests_changed` list in an old `plan.json` is read as
-`change` entries.
+`change` entries (dashboard and CLI alike). A project amended under 0.5.6 whose `C1-` steps are still
+pending at upgrade time builds them on `change/C1` from now on, not on `main` (none exists today).
 
 ## 2. Merge (builder)
 

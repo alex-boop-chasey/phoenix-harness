@@ -18,8 +18,9 @@ def acceptance_plan(spec: Spec, step: Step, regression_steps: list[Step] = ()) -
     `regression_steps` (passed steps, in a change round: their tests must stay green), then the step's own.
     Duplicates are dropped, keeping the first owner."""
     cmds: list[tuple[str, str]] = [(c, "") for c in (*spec.setup, *spec.regression)]
+    own = set(_step_cmds(spec, step))
     for s in regression_steps:
-        cmds += [(c, s.id) for c in _step_cmds(spec, s)]
+        cmds += [(c, step.id if c in own else s.id) for c in _step_cmds(spec, s)]
     cmds += [(c, step.id) for c in _step_cmds(spec, step)]
     seen, out = set(), []
     for c, who in cmds:

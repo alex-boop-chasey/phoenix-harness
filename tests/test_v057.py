@@ -286,6 +286,58 @@ class TestRounds(unittest.TestCase):
         self.assertEqual(origin_ref(e, "main"), origin_ref(e, "refs/heads/change/C1"))     # main untouched by round 2
         self.assertEqual(r2.state.data["steps"]["C2-01"]["round"], 2)
 
+    def test_unpushed_round0_commit_is_pushed_before_the_round_opens(self):
+        b = Built([C1])
+        e = b.e
+        # an accepted round-0 commit whose push failed: local main is ahead of origin/main
+        (e.cfg.app_dir / "src" / "late.js").write_text("x")
+        git(e.cfg.app_dir, "add", "-A")
+        git(e.cfg.app_dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "S02: late")
+        late = gitops.head(e.cfg.app_dir)
+        e.queue(CODER_P, EVAL_PASS)
+        r = e.runner()
+        self.assertEqual(r.run(), 0, r.state.data.get("reason"))
+        self.assertEqual(origin_ref(e, "main"), late)                       # pushed first
+        self.assertEqual(r.state.data["round"]["base_sha"], late)            # the round starts from it
+        self.assertEqual(origin_ref(e, "refs/tags/hands/pre-C1"), late)
+        self.assertIn("src/late.js", git(e.tmp / "app.git", "ls-tree", "-r", "--name-only", "change/C1").split())
+
+    def test_passed_step_removed_from_spec_escalates(self):
+        b = Built([C1])
+        e = b.e
+
+        def drop(raw, src):
+            raw["steps"] = [s for s in raw["steps"] if s["id"] != "S02"]
+        b.amend([], mutate=drop)
+        e.queue(CODER_P, EVAL_PASS)
+        r = e.runner()
+        self.assertEqual(r.run(), 2)
+        self.assertIn("S02: no longer in steps.json", r.state.data["reason"])
+        self.assertEqual(e.prompt_records(), [])
+
+    def test_new_file_matched_by_a_passed_steps_pattern_escalates(self):
+        """S01 runs `bash acceptance/check.sh` (owns that file). A later amendment may not add a file S01's
+        acceptance would pick up; with a dir pattern that is a real risk, so the record checks ownership now."""
+        e = Env([{**STEP1, "acceptance": ["for f in acceptance/s01/*.sh; do bash $f || exit 1; done"],
+                  "acceptance_files": ["s01/"]}], extra_acceptance={"s01/check.sh": "test -f src/a.js\n"})
+        e.queue(GOOD1, EVAL_PASS)
+        r = e.runner()
+        self.assertEqual(r.run(), 0)
+        self.assertEqual(r.state.data["steps"]["S01"]["spec_files"], ["s01/check.sh"])
+        src = e.tmp / "specsrc"
+        (src / "acceptance" / "s01" / "extra.sh").write_text("exit 1\n")
+        raw = json.loads((src / "steps.json").read_text())
+        raw["steps"].append(C1)
+        (src / "steps.json").write_text(json.dumps(raw))
+        git(src, "add", "-A")
+        git(src, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "amend")
+        git(src, "push", "-q", "origin", "main")
+        e.queue(CODER_P, EVAL_PASS)
+        r2 = e.runner()
+        self.assertEqual(r2.run(), 2)
+        self.assertIn("S01: now owns acceptance file(s) it did not pass with: acceptance/s01/extra.sh", r2.state.data["reason"])
+        self.assertEqual(rounds.check_record(e.cfg.spec_dir, "S01", r2.state.data["steps"]["S01"]).startswith("S01: now owns"), True)
+
     def test_prompt_cli_and_status_show_the_round(self):
         b = Built([C1])
         e = b.e
@@ -312,6 +364,9 @@ class TestRounds(unittest.TestCase):
         b = specmod.Step(id="C1-01", title="", goal="", acceptance=["c"])
         self.assertEqual(prompts.acceptance_plan(sp, b, [a]), [("s", ""), ("r", ""), ("a", "S01"), ("e2e acceptance/a.spec", "S01"), ("c", "C1-01")])
         self.assertEqual(prompts.acceptance_commands(sp, b), ["s", "r", "c"])
+        # a command the current step lists itself is its own, even when a passed step runs it too
+        shared = specmod.Step(id="C1-02", title="", goal="", acceptance=["a", "d"])
+        self.assertEqual(prompts.acceptance_plan(sp, shared, [a]), [("s", ""), ("r", ""), ("a", "C1-02"), ("e2e acceptance/a.spec", "S01"), ("d", "C1-02")])
         self.assertEqual(rounds.round_of("C12-03"), 12)
         self.assertEqual(rounds.round_of("S01"), 0)
         self.assertEqual(rounds.round_of("C0-1"), 0)

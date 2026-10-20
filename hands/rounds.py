@@ -111,6 +111,11 @@ def check_record(spec_root: Path, sid: str, rec: dict) -> str:
     if entry is None:
         return f"{sid}: no longer in steps.json"
     have = read_files(spec_root, files)
+    now = accview.owned(raw, sid, accview.all_files(spec_root))
+    extra = sorted(now - set(files))
+    if extra:                                   # a new file its acceptance would run (its pattern matches it)
+        return (f"{sid}: now owns acceptance file(s) it did not pass with: "
+                + ", ".join(f"acceptance/{p}" for p in extra[:5]))
     if step_hash(entry, have) == want:
         return ""
     missing = [p for p, b in have.items() if b is None]

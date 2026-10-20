@@ -366,8 +366,8 @@ class Runner:
         known = {s.id for s in self.spec.steps}
         bad = []
         for sid, s in sorted(self.state.data["steps"].items()):
-            if s.get("status") != "passed" or sid not in known:
-                continue
+            if s.get("status") != "passed" or (sid not in known and not s.get("spec_hash")):
+                continue                        # records without a hash (built before 0.5.7) only get the WARN below
             why = rounds.check_record(self.spec.root, sid, s)
             if why:
                 bad.append(why)
@@ -414,6 +414,8 @@ class Runner:
                     gitops.push_ref(app, name, f"refs/heads/{name}")
             return base
 
+        if c.push:
+            self.sync_branch(c.branch)          # accepted round-0 commits whose push failed go to origin first
         try:
             base = self._net(f"round C{rnd} open", op)
         except rounds.RoundError as e:
@@ -424,6 +426,23 @@ class Runner:
         self.state.save()
         self.log(f"opened round C{rnd}: branch {name} from {base[:9]}, tag {tag}" + ("" if c.push else " (push disabled)"))
         self.send(f"round C{rnd} opened on {name} (base {base[:9]}, tag {tag})")
+
+    def sync_branch(self, branch: str) -> None:
+        """Make the app clone consistent with origin/<branch> (push accepted commits, fast-forward, escalate on
+        divergence); retried, escalates when the push keeps failing."""
+        c = self.cfg
+        for tries in range(1, 4):
+            st, detail = self._net("app sync", lambda: gitops.sync_app(c.app_dir, branch, c.push))
+            if st in ("ok", "pushed"):
+                if st == "pushed":
+                    self.log(f"pushed previously accepted commits {detail}".strip())
+                return
+            if st == "diverged":
+                self.escalate(f"app repo {detail}; reconcile by hand (the runner never force-pushes)")
+            self.log(f"push failed ({detail}); retry {tries}/3")
+            if tries == 3:
+                self.escalate(f"cannot push accepted work to origin: {detail}")
+            self.nap(60 * tries)
 
     def next_step(self) -> specmod.Step | None:
         c = self.cfg
@@ -439,18 +458,7 @@ class Runner:
             cur = rounds.record(self.state.data)
             if want > (int(cur["id"]) if cur else 0):
                 self.open_round(want)
-        for tries in range(1, 4):
-            st, detail = self._net("app sync", lambda: gitops.sync_app(c.app_dir, self.branch, c.push))
-            if st in ("ok", "pushed"):
-                if st == "pushed":
-                    self.log(f"pushed previously accepted commits {detail}".strip())
-                break
-            if st == "diverged":
-                self.escalate(f"app repo {detail}; reconcile by hand (the runner never force-pushes)")
-            self.log(f"push failed ({detail}); retry {tries}/3")
-            if tries == 3:
-                self.escalate(f"cannot push accepted work to origin: {detail}")
-            self.nap(60 * tries)
+        self.sync_branch(self.branch)
         assert self.spec
         known = {s.id for s in self.spec.steps}
         for sid, s in self.state.data["steps"].items():
