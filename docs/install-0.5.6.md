@@ -43,7 +43,9 @@ The self-test (fake docker, no Claude usage) runs before anything is copied; not
    `<slug>-specs`. Approve merges it and the runner starts on the new step; passed steps stay passed.
 3. **Fresh planning unchanged:** a new project plans and approves as before (PR `hands/plan`).
 4. **Refusals:** `hands <p> plan` on an approved project prints `already approved; use plan --amend` and the
-   plan state in the dashboard is unchanged (not "failed").
+   plan state in the dashboard is unchanged (not "failed"). `hands <p> approve` on an amendment with
+   shared-settings changes (or a plan with new domains) refuses and prints the old and new values; it needs
+   `--ack-shared` (`--ack-domains`).
 
 ## 5. Rollback
 

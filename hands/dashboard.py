@@ -474,9 +474,11 @@ def spawn_cli(log: Path, argv_tail: list[str], stdin_text: str = "") -> None:
     threading.Thread(target=p.wait, daemon=True).start()
 
 
-def plan_action(name: str, action: str, feedback: str, head_sha: str = "", shared_ack: bool = False) -> dict:
-    """plan | amend | approve. `amend` = `hands NAME plan --amend` with the change request on stdin; approving an
-    amendment that changes shared settings (regression, allowed_paths, ...) needs shared_ack (the review tick)."""
+def plan_action(name: str, action: str, feedback: str, head_sha: str = "", shared_ack: bool = False,
+                domains_ack: bool = False) -> dict:
+    """plan | amend | approve. `amend` = `hands NAME plan --amend` with the change request on stdin. Approving a
+    plan that adds network domains needs domains_ack, an amendment that changes shared settings (regression,
+    allowed_paths, ...) needs shared_ack: the review ticks, passed on to the CLI as --ack-domains / --ack-shared."""
     from . import planner
     cfg = load_cfg(name)
     if not cfg.managed:
@@ -494,6 +496,8 @@ def plan_action(name: str, action: str, feedback: str, head_sha: str = "", share
             raise ValueError("the plan changed since this page showed it; review the new version, then approve")
         if action == "approve" and st.get("shared_changed") and not shared_ack:
             raise ValueError("this amendment changes shared settings; tick the box confirming you checked them, then approve")
+        if action == "approve" and st.get("domains") and not domains_ack:
+            raise ValueError("this plan adds network domains; tick the box confirming you checked them, then approve")
         if action == "plan" and st.get("state") == "approved":
             raise ValueError("the plan was already approved; use Amend plan to add to it")
         if action == "amend":
@@ -508,7 +512,8 @@ def plan_action(name: str, action: str, feedback: str, head_sha: str = "", share
         if action in ("plan", "amend"):            # visible at once; the child takes the lock and reads prev_state
             planner.write_state(cfg, state="planning", error="", prev_state=st.get("state") or "none",
                                 **({"mode": "amend"} if action == "amend" else {}))
-        argv = {"plan": [name, "plan"], "amend": [name, "plan", "--amend"], "approve": [name, "approve", head_sha]}[action]
+        argv = {"plan": [name, "plan"], "amend": [name, "plan", "--amend"],
+                "approve": [name, "approve", head_sha] + (["--ack-shared"] if shared_ack else []) + (["--ack-domains"] if domains_ack else [])}[action]
         spawn_cli(d / "plan.log", argv, feedback if action in ("plan", "amend") else "")
     return {"rc": 0, "output": f"{action} started"}
 
@@ -998,7 +1003,8 @@ class Handler(BaseHTTPRequestHandler):
             fb = str(req.get("feedback", "")) if isinstance(req, dict) else ""
             hs = str(req.get("head_sha", "")) if isinstance(req, dict) else ""
             ack = req.get("shared_ack") is True if isinstance(req, dict) else False
-            return self._json(200, plan_action(parts[2], parts[4], fb, hs, ack))
+            dack = req.get("domains_ack") is True if isinstance(req, dict) else False
+            return self._json(200, plan_action(parts[2], parts[4], fb, hs, ack, dack))
         if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "action":
             return self._json(200, run_action(parts[2], parts[4]))
         if len(parts) == 4 and parts[:2] == ["api", "p"] and parts[3] in ("hide", "unhide"):

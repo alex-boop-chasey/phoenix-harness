@@ -707,7 +707,7 @@ async function planAction(name, act, label, headSha) {
     await api(`/api/p/${encodeURIComponent(name)}/action/${act}`, { method: "POST",
       headers: { "X-Hands": "1", "Content-Type": "application/json" },
       body: JSON.stringify({ feedback: act === "plan" || act === "amend" ? planFeedback : "", head_sha: headSha || "",
-        shared_ack: act === "approve" ? sharedAck : false }) });
+        shared_ack: act === "approve" ? sharedAck : false, domains_ack: act === "approve" ? domainAck : false }) });
     if (act === "plan" || act === "amend") planFeedback = "";
     if (act === "approve") { sharedAck = false; domainAck = false; }
   } catch (e) { toast(`${label} failed: ${e.message}`, true); }

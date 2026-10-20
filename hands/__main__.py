@@ -57,6 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--confirm", default="")
     ap.add_argument("--then-plan", action="store_true")
     ap.add_argument("--amend", action="store_true", help="plan: amend the approved plan (change request on stdin)")
+    ap.add_argument("--ack-shared", action="store_true", help="approve: accept the amendment's shared-settings changes")
+    ap.add_argument("--ack-domains", action="store_true", help="approve: accept the plan's new network domains")
     ap.add_argument("--from-repo", default="", metavar="OWNER/REPO")
     ap.add_argument("--branch", default="")
     ap.add_argument("--ruleset", action="store_true")
@@ -89,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.command == "plan":
             fb = sys.stdin.read() if not sys.stdin.isatty() else ""
             return planner.plan(cfg, fb, amend=a.amend)
-        return planner.approve(cfg, a.arg or "")
+        return planner.approve(cfg, a.arg or "", ack_shared=a.ack_shared, ack_domains=a.ack_domains)
     r = Runner(cfg)
     st = r.state
     cmd = a.command

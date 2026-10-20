@@ -17,8 +17,11 @@ From `main` 1c3f3bb (0.5.3). 0.5.4 and 0.5.5 were abandoned (kept on tag `keep-0
   PLAN.md under `## Tests changed/removed` (removed files become deletions in the PR); existing pins stay as
   they are (no pins at all is fine when the base had none; only new pins are age-checked); an amendment must
   add at least one step. Shared settings (setup, regression, e2e_command, allowed_paths,
-  allow_text_paths, always_refs) may change but are flagged with old and new values; the dashboard refuses
-  Approve until the reviewer ticks them (`shared_ack`, like the network-domains tick).
+  allow_text_paths, always_refs) may change but are flagged with old and new values; Approve is refused until
+  the reviewer ticks them (`shared_ack`, like the network-domains tick). Both ticks are now enforced
+  server-side and by the CLI: `hands <p> approve [sha] --ack-shared --ack-domains`; without the flag the
+  CLI prints the old and new values (or the domains) it would be acknowledging and refuses; with it, the
+  acknowledged values go to plan.log. The dashboard passes its ticks on as those flags.
 - Each amendment round opens its own branch and PR `hands/amend-C<round>`; approve is the same sha-pinned
   squash merge and start. Early refusals (build running, a fresh plan awaiting review, no steps.json, empty
   change request, plain `plan` on an approved project) leave the plan state as it was and only set `error`.

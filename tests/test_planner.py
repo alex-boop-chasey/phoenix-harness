@@ -537,7 +537,7 @@ class TestAmend(TestPlanner):
                 dashboard.plan_action("site", "approve", "", st["head_sha"])
             self.assertIn("shared settings", str(cm.exception))
             dashboard.plan_action("site", "approve", "", st["head_sha"], shared_ack=True)
-            self.assertEqual(spawned, [(["site", "approve", st["head_sha"]], "")])
+            self.assertEqual(spawned, [(["site", "approve", st["head_sha"], "--ack-shared"], "")])
         finally:
             dashboard.spawn_cli = orig
 
@@ -652,6 +652,57 @@ class TestAmend(TestPlanner):
         self.assertEqual(planner.plan(self.cfg(), "add pricing", amend=True), 0)
         self.assertIn("pins: astro@7.3.0 became 7.4.0", self.prompts()[1])
         self.assertIn("not listed in PLAN.md", self.prompts()[2])
+
+    def test_cli_approve_gates_shared_settings_and_domains(self):
+        self.approved()
+        files = {**AMEND, "steps.json": _amend_steps(regression=["node --test acceptance/*.test.mjs"]),
+                 "allowed-domains": "api.resend.com\n"}
+        self.queue({"role": "planner", "files": files})
+        self.assertEqual(planner.plan(self.cfg(), "add pricing", amend=True), 0)
+        self.assertEqual(planner.approve(self.cfg()), 1)
+        err = planner.read_state(self.cfg())["error"]
+        self.assertIn("regression: (none)  ->  node --test acceptance/*.test.mjs", err)
+        self.assertIn("--ack-shared", err)
+        self.assertEqual(planner.approve(self.cfg(), ack_shared=True), 1)
+        err = planner.read_state(self.cfg())["error"]
+        self.assertIn("api.resend.com", err)
+        self.assertIn("--ack-domains", err)
+        self.assertEqual(self.started, ["site"])
+        self.assertEqual(planner.read_state(self.cfg())["state"], "ready")
+        self.assertEqual(planner.approve(self.cfg(), ack_shared=True, ack_domains=True), 0)
+        log = (planner.pdir(self.cfg()) / "plan.log").read_text()
+        self.assertIn("acknowledging shared settings changes (--ack-shared):\n  regression: (none)  ->  node --test acceptance/*.test.mjs", log)
+        self.assertIn("acknowledging new network domains (--ack-domains): api.resend.com", log)
+        self.assertEqual(self.started, ["site", "site"])
+        # the dashboard gates both ticks server-side and passes them on to the CLI
+        from hands import dashboard
+        self.queue({"role": "planner", "files": {**files, "allowed-domains": "api.resend.com\napi.stripe.com\n",
+                                                  "steps.json": _amend_steps([C1_01, {**C1_01, "id": "C2-01", "title": "blog"}])}})
+        self.assertEqual(planner.plan(self.cfg(), "add blog", amend=True), 0)
+        sha = planner.read_state(self.cfg())["head_sha"]
+        spawned = []
+        orig = dashboard.spawn_cli
+        dashboard.spawn_cli = lambda log, argv, stdin_text="": spawned.append(argv)
+        try:
+            with self.assertRaises(ValueError) as cm:
+                dashboard.plan_action("site", "approve", "", sha, shared_ack=True)
+            self.assertIn("network domains", str(cm.exception))
+            self.assertEqual(planner.read_state(self.cfg())["domains"], ["api.stripe.com"])   # only the new one
+            dashboard.plan_action("site", "approve", "", sha, shared_ack=True, domains_ack=True)
+            self.assertEqual(spawned, [["site", "approve", sha, "--ack-shared", "--ack-domains"]])
+        finally:
+            dashboard.spawn_cli = orig
+
+    def test_cli_approve_main_arg_parsing(self):
+        from hands.__main__ import main as cli
+        seen = []
+        orig = planner.approve
+        planner.approve = lambda cfg, sha="", ack_shared=False, ack_domains=False: seen.append((sha, ack_shared, ack_domains)) or 0
+        try:
+            self.assertEqual(cli(["site", "approve", "a" * 40, "--ack-shared", "--ack-domains"]), 0)
+            self.assertEqual(seen, [("a" * 40, True, True)])
+        finally:
+            planner.approve = orig
 
     def test_mark_done_records_spec_commit(self):
         self.approved(passed=())

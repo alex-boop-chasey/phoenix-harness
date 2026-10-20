@@ -308,8 +308,9 @@ when it passed, `mark-done` records it too); a changed or removed existing accep
 PLAN.md under `## Tests changed/removed` (removed files become deletions in the PR); a dropped or re-versioned
 pin (no pins at all is fine when the base had none; only new pins are age-checked); an amendment that adds no
 step. Changes to shared settings (setup, regression, e2e_command, allowed_paths,
-allow_text_paths, always_refs) are accepted but flagged (`shared_changed`, old vs new): the dashboard refuses
-Approve until the reviewer ticks them. Each round opens its own branch `hands/amend-C<round>` and PR; approve
+allow_text_paths, always_refs) are accepted but flagged (`shared_changed`, old vs new): Approve is refused
+until the reviewer ticks them, in the dashboard (`shared_ack`, server-side) and in the CLI (`--ack-shared`,
+which prints the old and new values); new network domains need the same (`domains_ack` / `--ack-domains`). Each round opens its own branch `hands/amend-C<round>` and PR; approve
 is the same sha-pinned squash merge; the runner then picks up the first non-passed step as usual. Early
 refusals (build running, a fresh plan awaiting review, no steps.json, empty change request) leave the plan
 state untouched and only set `error`.

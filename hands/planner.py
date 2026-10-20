@@ -860,8 +860,14 @@ def _plan(cfg: Config, feedback: str, log: Log, amend: bool = False) -> int:
     return 0
 
 
-def approve(cfg: Config, expected_sha: str = "") -> int:
-    """Merge exactly the reviewed plan commit. expected_sha = the head the human was shown (dashboard)."""
+def _fmt(v) -> str:
+    return json.dumps(v) if not isinstance(v, list) else (", ".join(v) if v else "(none)")
+
+
+def approve(cfg: Config, expected_sha: str = "", ack_shared: bool = False, ack_domains: bool = False) -> int:
+    """Merge exactly the reviewed plan commit. expected_sha = the head the human was shown (dashboard).
+    A plan that adds network domains needs ack_domains; an amendment that changes shared settings needs
+    ack_shared (CLI flags --ack-domains / --ack-shared; the dashboard sends them from its review ticks)."""
     log = Log(cfg)
     d = pdir(cfg)
     d.mkdir(parents=True, exist_ok=True)
@@ -877,6 +883,19 @@ def approve(cfg: Config, expected_sha: str = "") -> int:
             raise PlanError(f"nothing to approve (plan state: {st.get('state')})")
         if expected_sha and expected_sha != st["head_sha"]:
             raise PlanError("the plan changed since you looked at it; review the new version, then approve again")
+        shared = [x for x in (st.get("shared_changed") or []) if isinstance(x, dict)]
+        if shared:
+            lines = [f"  {x.get('key')}: {_fmt(x.get('old'))}  ->  {_fmt(x.get('new'))}" for x in shared]
+            if not ack_shared:
+                raise PlanError("this amendment changes settings that apply to every step:\n" + "\n".join(lines)
+                                + "\nre-run with --ack-shared to approve them")
+            log("acknowledging shared settings changes (--ack-shared):\n" + "\n".join(lines))
+        new_domains = [d for d in (st.get("domains") or []) if isinstance(d, str)]
+        if new_domains:
+            if not ack_domains:
+                raise PlanError("this plan adds network access for the build containers: " + ", ".join(new_domains)
+                                + "\nre-run with --ack-domains to allow them")
+            log("acknowledging new network domains (--ack-domains): " + ", ".join(new_domains))
         if Lock.held(cfg.state_dir / "runner.lock"):
             raise PlanError("the build is already running")
         gh = github()

@@ -300,7 +300,9 @@ detached, log `state/plan/plan.log`. `200 {"rc": 0, "output": "plan started"}` (
 `amend` (0.5.6) takes `{"feedback": "<change request>"}` (required, ≤8000 chars) and spawns
 `hands <name> plan --amend` with it on stdin; refused when the spec branch has no `steps.json` yet or a fresh
 plan is waiting for review. `approve` of an amendment whose `shared_changed` is non-empty additionally
-requires `{"shared_ack": true}` (the review tick; 400 `"this amendment changes shared settings; …"` otherwise).
+requires `{"shared_ack": true}` (the review tick; 400 `"this amendment changes shared settings; …"` otherwise), and
+`approve` of a plan whose `domains` is non-empty requires `{"domains_ack": true}` (400 `"this plan adds network
+domains; …"`). The ticks are passed to the CLI as `--ack-shared` / `--ack-domains`, which enforces them too.
 
 ### POST /api/p/NAME/hide and /api/p/NAME/unhide  (since 0.5, step 05)
 
