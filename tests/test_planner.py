@@ -338,6 +338,11 @@ def _amend_steps(extra_steps=None, base=None, **top):
     return json.dumps(raw)
 
 
+def _tc(*entries):
+    """tests_changed entries: (path, change, why)."""
+    return [{"path": p, "change": c, "why": w} for p, c, w in entries]
+
+
 C1_01 = {"id": "C1-01", "title": "pricing page", "goal": "add /pricing", "depends_on": ["S01"],
          "refs": ["docs/design.md#architecture"], "acceptance": ["node --test acceptance/c1-01.test.mjs"]}
 AMEND = {"steps.json": _amend_steps(),
@@ -465,7 +470,7 @@ class TestAmend(TestPlanner):
         raw["steps"][0]["goal"] = "make it differently"
         edited = {**AMEND, "steps.json": json.dumps(raw)}
         test_changed = {**AMEND, "acceptance/s01.test.mjs": "import { test } from 'node:test';\ntest('x', () => { throw 1; });\n",
-                        "PLAN.md": AMEND["PLAN.md"].replace("(none)", "- acceptance/s01.test.mjs (tightened)")}
+                        "steps.json": _amend_steps(tests_changed=_tc(("acceptance/s01.test.mjs", "change", "tightened")))}
         self.queue({"role": "planner", "files": edited}, {"role": "planner", "files": test_changed},
                    {"role": "planner", "files": {**AMEND, "acceptance/s01.test.mjs": GOOD["acceptance/s01.test.mjs"]}})
         self.assertEqual(planner.plan(self.cfg(), "add pricing", amend=True), 0,
@@ -474,19 +479,55 @@ class TestAmend(TestPlanner):
         self.assertIn("S01 already passed", p[1])
         self.assertIn("S01 already passed", p[2])
         self.assertIn("acceptance/s01.test.mjs", p[2])
+        self.assertIn("belongs to a step that already passed", p[2])
 
     def test_existing_test_changes_must_be_listed(self):
         self.approved(passed=())                       # nothing built yet: S01 may change, but visibly
         new_test = "import { test } from 'node:test';\ntest('x2', () => {});\n"
         unlisted = {**AMEND, "acceptance/s01.test.mjs": new_test}
-        listed = {**unlisted, "PLAN.md": AMEND["PLAN.md"].replace("(none)", "- acceptance/s01.test.mjs: covers the footer too")}
-        self.queue({"role": "planner", "files": unlisted}, {"role": "planner", "files": listed})
-        self.assertEqual(planner.plan(self.cfg(), "add pricing", amend=True), 0)
-        self.assertIn("Tests changed/removed", self.prompts()[1])
-        self.assertIn("acceptance/s01.test.mjs", self.prompts()[1])
+        wrong_kind = {**unlisted, "steps.json": _amend_steps(tests_changed=_tc(("acceptance/s01.test.mjs", "remove", "x")))}
+        extra = {**unlisted, "steps.json": _amend_steps(tests_changed=_tc(("acceptance/s01.test.mjs", "change", "footer"),
+                                                                           ("acceptance/c1-01.test.mjs", "change", "new?")))}
+        stale = {**AMEND, "steps.json": _amend_steps(tests_changed=_tc(("acceptance/s01.test.mjs", "change", "footer")))}
+        listed = {**unlisted, "steps.json": _amend_steps(tests_changed=_tc(("acceptance/s01.test.mjs", "change", "covers the footer too")))}
+        self.queue({"role": "planner", "files": unlisted}, {"role": "planner", "files": wrong_kind},
+                   {"role": "planner", "files": extra})
+        self.assertEqual(planner.plan(self.cfg(), "add pricing", amend=True), 1)
+        p = self.prompts()
+        self.assertIn("is not in steps.json `tests_changed`", p[1])
+        self.assertIn("acceptance/s01.test.mjs", p[1])
+        self.assertIn("says 'remove' but the file was changed", p[2])
+        self.assertIn("acceptance/c1-01.test.mjs is not an existing acceptance file", planner.read_state(self.cfg())["error"])
+        # retry of the same amendment: the list must match the diff exactly in both directions
+        self.queue({"role": "planner", "files": stale}, {"role": "planner", "files": listed})
+        self.assertEqual(planner.plan(self.cfg(), "add pricing", amend=True), 0,
+                         (planner.pdir(self.cfg()) / "plan.log").read_text())
+        p = self.prompts()
+        self.assertIn("lists acceptance/s01.test.mjs but the file is unchanged", p[4])
         st = planner.read_state(self.cfg())
-        self.assertEqual(st["tests_changed"], ["acceptance/s01.test.mjs"])
-        self.assertIn("Tests changed/removed:** acceptance/s01.test.mjs", self.gh.pulls[2]["body"])
+        self.assertEqual(st["tests_changed"], _tc(("acceptance/s01.test.mjs", "change", "covers the footer too")))
+        self.assertIn("Tests changed/removed (needs an explicit tick):**\n- `acceptance/s01.test.mjs` (change): covers the footer too",
+                      self.gh.pulls[2]["body"])
+        # the CLI refuses without --ack-tests (printing the list) and the dashboard without the tick
+        self.assertEqual(planner.approve(self.cfg(), st["head_sha"]), 1)
+        err = planner.read_state(self.cfg())["error"]
+        self.assertIn("changes or removes existing acceptance tests", err)
+        self.assertIn("acceptance/s01.test.mjs (change): covers the footer too", err)
+        from hands import dashboard
+        spawned = []
+        orig = dashboard.spawn_cli
+        dashboard.spawn_cli = lambda log, argv, stdin_text="": spawned.append((argv, stdin_text))
+        try:
+            with self.assertRaises(ValueError) as cm:
+                dashboard.plan_action("site", "approve", "", st["head_sha"])
+            self.assertIn("existing tests", str(cm.exception))
+            dashboard.plan_action("site", "approve", "", st["head_sha"], tests_ack=True)
+            self.assertEqual(spawned, [(["site", "approve", st["head_sha"], "--ack-tests"], "")])
+            self.assertEqual(dashboard.plan_info(self.cfg())["tests_changed"][0]["change"], "change")
+        finally:
+            dashboard.spawn_cli = orig
+        self.assertEqual(planner.approve(self.cfg(), st["head_sha"], ack_tests=True), 0)
+        self.assertIn("acknowledging changed/removed tests", (planner.pdir(self.cfg()) / "plan.log").read_text())
 
     def test_pins_rules(self):
         self.approved()
@@ -607,15 +648,20 @@ class TestAmend(TestPlanner):
         self.approved(passed=())
         raw = json.loads(AMEND["steps.json"])
         raw["steps"][0]["acceptance"] = ["node --test acceptance/c1-01.test.mjs"]
-        files = {**AMEND, "steps.json": json.dumps(raw),
-                 "PLAN.md": AMEND["PLAN.md"].replace("(none)", "- acceptance/s01.test.mjs: removed, folded into c1-01")}
-        self.queue({"role": "planner", "files": files, "delete": ["acceptance/s01.test.mjs"]})
+        raw["tests_changed"] = _tc(("acceptance/s01.test.mjs", "remove", "folded into c1-01"))
+        files = {**AMEND, "steps.json": json.dumps(raw)}
+        # the first output forgets the list; the fix round does NOT re-create the file (the harness re-applies
+        # the recorded deletion to the fresh clone), so listing it is enough
+        missing_list = {**files, "steps.json": json.dumps({**raw, "tests_changed": []})}
+        self.queue({"role": "planner", "files": missing_list, "delete": ["acceptance/s01.test.mjs"]},
+                   {"role": "planner", "files": {"steps.json": files["steps.json"]}})
         self.assertEqual(planner.plan(self.cfg(), "merge the tests", amend=True), 0,
                          (planner.pdir(self.cfg()) / "plan.log").read_text())
+        self.assertIn("was removed but is not in steps.json", self.prompts()[1])
         st = planner.read_state(self.cfg())
         self.assertIn("acceptance/s01.test.mjs", st["files"])
-        self.assertEqual(st["tests_changed"], ["acceptance/s01.test.mjs"])
-        self.assertEqual(planner.approve(self.cfg()), 0)
+        self.assertEqual(st["tests_changed"], _tc(("acceptance/s01.test.mjs", "remove", "folded into c1-01")))
+        self.assertEqual(planner.approve(self.cfg(), ack_tests=True), 0)
         self.assertFalse((self.cfg().spec_dir / "acceptance" / "s01.test.mjs").exists())
         self.assertTrue((self.cfg().spec_dir / "acceptance" / "c1-01.test.mjs").is_file())
 
@@ -626,10 +672,31 @@ class TestAmend(TestPlanner):
         st.step("S01")["spec_commit"] = "f" * 40
         st.save()
         changed = {**AMEND, "acceptance/s01.test.mjs": "changed\n",
-                   "PLAN.md": AMEND["PLAN.md"].replace("(none)", "- acceptance/s01.test.mjs")}
+                   "steps.json": _amend_steps(tests_changed=_tc(("acceptance/s01.test.mjs", "change", "x")))}
         self.queue({"role": "planner", "files": changed}, {"role": "planner", "files": {**AMEND, "acceptance/s01.test.mjs": GOOD["acceptance/s01.test.mjs"]}})
         self.assertEqual(planner.plan(self.cfg(), "add pricing", amend=True), 0)
         self.assertIn("S01 already passed; acceptance/s01.test.mjs must stay byte-identical", self.prompts()[1])
+
+    def test_runner_record_catches_a_passed_step_edited_on_the_spec_branch(self):
+        """The spec branch itself was changed by hand after S01 passed (a hand-merged PR): the git comparison
+        against the base sees nothing, the runner's spec_hash record does."""
+        self.approved()
+        from hands import rounds
+        from hands.state import State
+        st = State(self.cfg().state_dir)
+        st.step("S01").update({**rounds.make_record(self.cfg().spec_dir, "S01"), "spec_commit": "f" * 40})
+        st.save()
+        w = Path(tempfile.mkdtemp())
+        git("clone", "-q", str(self.remote / "site-specs.git"), str(w / "c"))
+        (w / "c" / "acceptance" / "s01.test.mjs").write_text("hand edited\n")
+        git("add", "-A", cwd=w / "c")
+        git("-c", "user.name=x", "-c", "user.email=x@x", "commit", "-qm", "hand edit", cwd=w / "c")
+        git("push", "-q", "origin", "main", cwd=w / "c")
+        self.queue({"role": "planner", "files": AMEND}, {"role": "planner", "files": AMEND}, {"role": "planner", "files": AMEND})
+        self.assertEqual(planner.plan(self.cfg(), "add pricing", amend=True), 1)
+        err = planner.read_state(self.cfg())["error"]
+        self.assertIn("S01 already passed; it differs from the runner's record", err)
+        self.assertIn("acceptance/s01.test.mjs", err)
 
     def test_unpushed_app_commit_refuses_amend(self):
         self.approved()
@@ -646,12 +713,13 @@ class TestAmend(TestPlanner):
         self.approved(passed=())
         bumped = {**AMEND, "steps.json": _amend_steps(pins={"astro": "7.4.0"})}
         sneaky = {**AMEND, "acceptance/s01.test.mjs": "x\n",
-                  "PLAN.md": AMEND["PLAN.md"].replace("(none)", "- acceptance/s01.test.mjs.snap")}
+                  "steps.json": _amend_steps(tests_changed=_tc(("acceptance/s01.test.mjs.snap", "change", "x")))}
         self.queue({"role": "planner", "files": bumped}, {"role": "planner", "files": sneaky},
                    {"role": "planner", "files": {**AMEND, "acceptance/s01.test.mjs": GOOD["acceptance/s01.test.mjs"]}})
         self.assertEqual(planner.plan(self.cfg(), "add pricing", amend=True), 0)
         self.assertIn("pins: astro@7.3.0 became 7.4.0", self.prompts()[1])
-        self.assertIn("not listed in PLAN.md", self.prompts()[2])
+        self.assertIn("acceptance/s01.test.mjs was changed but is not in steps.json", self.prompts()[2])
+        self.assertIn("acceptance/s01.test.mjs.snap is not an existing acceptance file", self.prompts()[2])
 
     def test_cli_approve_gates_shared_settings_and_domains(self):
         self.approved()
@@ -697,10 +765,11 @@ class TestAmend(TestPlanner):
         from hands.__main__ import main as cli
         seen = []
         orig = planner.approve
-        planner.approve = lambda cfg, sha="", ack_shared=False, ack_domains=False: seen.append((sha, ack_shared, ack_domains)) or 0
+        planner.approve = lambda cfg, sha="", ack_shared=False, ack_domains=False, ack_tests=False: \
+            seen.append((sha, ack_shared, ack_domains, ack_tests)) or 0
         try:
-            self.assertEqual(cli(["site", "approve", "a" * 40, "--ack-shared", "--ack-domains"]), 0)
-            self.assertEqual(seen, [("a" * 40, True, True)])
+            self.assertEqual(cli(["site", "approve", "a" * 40, "--ack-shared", "--ack-domains", "--ack-tests"]), 0)
+            self.assertEqual(seen, [("a" * 40, True, True, True)])
         finally:
             planner.approve = orig
 

@@ -348,6 +348,7 @@ def detail(name: str) -> dict:
                    "push": cfg.push, "branch": cfg.branch},
         "metrics": read_jsonl(sd / "metrics.jsonl", 30),
         "progress": read_jsonl(sd / "progress.jsonl", 30),
+        "round": st.get("round") if isinstance(st.get("round"), dict) else None,
     })
     sst = st.get("steps") or {}
     steps, spec_err, spec_commit = [], None, ""
@@ -358,7 +359,7 @@ def detail(name: str) -> dict:
             x = sst.get(s.id, {})
             steps.append({"id": s.id, "title": s.title, "type": s.type, "status": x.get("status", "pending"),
                           "attempts": x.get("attempts", 0), "commit": x.get("commit", ""),
-                          "reasons": (x.get("reasons") or [])[:12]})
+                          "reasons": (x.get("reasons") or [])[:12], "round": x.get("round", 0)})
     except Exception as e:      # spec mid-refresh or invalid: still show state
         spec_err = f"{type(e).__name__}: {e}"
         for sid, x in sst.items():
@@ -416,6 +417,8 @@ def plan_info(cfg) -> dict:
                                   "mode", "round", "app_sha", "request", "branch")}
     for k in ("new_steps", "tests_changed", "shared_changed"):
         out[k] = st.get(k) if isinstance(st.get(k), list) else []
+    out["tests_changed"] = [x if isinstance(x, dict) else {"path": str(x), "change": "change", "why": ""}
+                            for x in out["tests_changed"]]
     out["running"] = running
     act = read_json(d / "plan-activity.json", None)
     if isinstance(act, dict) and st.get("state") == "planning":
@@ -475,7 +478,7 @@ def spawn_cli(log: Path, argv_tail: list[str], stdin_text: str = "") -> None:
 
 
 def plan_action(name: str, action: str, feedback: str, head_sha: str = "", shared_ack: bool = False,
-                domains_ack: bool = False) -> dict:
+                domains_ack: bool = False, tests_ack: bool = False) -> dict:
     """plan | amend | approve. `amend` = `hands NAME plan --amend` with the change request on stdin. Approving a
     plan that adds network domains needs domains_ack, an amendment that changes shared settings (regression,
     allowed_paths, ...) needs shared_ack: the review ticks, passed on to the CLI as --ack-domains / --ack-shared."""
@@ -498,6 +501,8 @@ def plan_action(name: str, action: str, feedback: str, head_sha: str = "", share
             raise ValueError("this amendment changes shared settings; tick the box confirming you checked them, then approve")
         if action == "approve" and st.get("domains") and not domains_ack:
             raise ValueError("this plan adds network domains; tick the box confirming you checked them, then approve")
+        if action == "approve" and st.get("tests_changed") and not tests_ack:
+            raise ValueError("this amendment changes or removes existing tests; tick the box confirming you checked them, then approve")
         if action == "plan" and st.get("state") == "approved":
             raise ValueError("the plan was already approved; use Amend plan to add to it")
         if action == "amend":
@@ -513,7 +518,8 @@ def plan_action(name: str, action: str, feedback: str, head_sha: str = "", share
             planner.write_state(cfg, state="planning", error="", prev_state=st.get("state") or "none",
                                 **({"mode": "amend"} if action == "amend" else {}))
         argv = {"plan": [name, "plan"], "amend": [name, "plan", "--amend"],
-                "approve": [name, "approve", head_sha] + (["--ack-shared"] if shared_ack else []) + (["--ack-domains"] if domains_ack else [])}[action]
+                "approve": [name, "approve", head_sha] + (["--ack-shared"] if shared_ack else []) + (["--ack-domains"] if domains_ack else [])
+                + (["--ack-tests"] if tests_ack else [])}[action]
         spawn_cli(d / "plan.log", argv, feedback if action in ("plan", "amend") else "")
     return {"rc": 0, "output": f"{action} started"}
 
@@ -1004,7 +1010,8 @@ class Handler(BaseHTTPRequestHandler):
             hs = str(req.get("head_sha", "")) if isinstance(req, dict) else ""
             ack = req.get("shared_ack") is True if isinstance(req, dict) else False
             dack = req.get("domains_ack") is True if isinstance(req, dict) else False
-            return self._json(200, plan_action(parts[2], parts[4], fb, hs, ack, dack))
+            tack = req.get("tests_ack") is True if isinstance(req, dict) else False
+            return self._json(200, plan_action(parts[2], parts[4], fb, hs, ack, dack, tack))
         if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "action":
             return self._json(200, run_action(parts[2], parts[4]))
         if len(parts) == 4 and parts[:2] == ["api", "p"] and parts[3] in ("hide", "unhide"):

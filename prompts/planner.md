@@ -104,8 +104,10 @@ Skip brainstorming for the whole project: read `/app`, the existing docs and PLA
 requested change (extend `docs/design.md`, add `### Task N` headings to `docs/plan.md`), and APPEND steps.
 The rules in that section are enforced by the runner: existing steps keep their id, place and order;
 steps already built may not change (entry or owned acceptance files); new ids use the given `C<round>-`
-prefix; every existing acceptance file you change or remove is listed in PLAN.md under
-`## Tests changed/removed`; existing pins stay. Shared settings may change only when the new steps need it.
+prefix; every existing acceptance file you change or remove is declared in steps.json `tests_changed`
+(`[{"path": "acceptance/<file>", "change": "change"|"remove", "why": "..."}]`, matched exactly against the
+real diff; PLAN.md may summarise it for the human); existing pins stay. Shared settings may change only when
+the new steps need it. Built steps' entries and owned tests are immutable; docs may change in later rounds.
 
 ## Output contract (exactly these files; anything else is discarded)
 1. `steps.json` — the machine spec (schema below).

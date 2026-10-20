@@ -5,10 +5,12 @@
   hands <p> approve                                      merge that exact PR head, refresh the spec, start the build
 
 Amend mode (0.5.6): the approved spec may only grow. Existing steps keep their place; steps the runner
-already built are compared byte for byte with the spec commit they passed on; changed or removed
-existing tests must be listed in PLAN.md under "Tests changed/removed"; changes to shared settings
-(regression, allowed_paths, ...) are flagged for an explicit tick in the dashboard. The planner sees the
-app repo at the built commit read-only at /app (a .git-less archive, extracted with the export tar rules).
+already built are immutable (their steps.json entry and the acceptance files they own are compared with the
+runner's per-step record, `spec_hash`, and with the spec commit they passed on); changed or removed existing
+tests must be listed as data in steps.json `tests_changed` (checked against the real diff, exactly) and
+ticked by the reviewer; changes to shared settings (regression, allowed_paths, ...) are flagged for their own
+tick. The planner sees the app repo at the built commit read-only at /app (a .git-less archive, extracted
+with the export tar rules). 0.5.7: an amendment is refused while a change round is open (built, not merged).
 
 Trust: the planner session is untrusted like any agent (it reads web search results). Its output is
 exported through a --network none container, size/type-checked, limited to the spec output contract,
@@ -26,7 +28,7 @@ from dataclasses import dataclass
 from base64 import b64encode
 from pathlib import Path
 
-from . import accview, claude, codesummary, docker, gitops, workspace
+from . import accview, claude, codesummary, docker, gitops, rounds, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -106,7 +108,7 @@ class AmendBase:
     round: int
     raw: dict                       # base steps.json
     files: list[str]                # acceptance files at base_sha, relative to acceptance/
-    passed: dict[str, str]          # passed step id -> spec commit it passed on ("" = unknown: use base_sha)
+    passed: dict[str, dict]         # passed step id -> its state record (spec_commit, spec_hash, spec_files, ...)
     info: dict | None = None        # filled by check_amend: new_steps, tests_changed, shared_changed
 
 
@@ -141,6 +143,13 @@ def check_output(cfg: Config, candidate: Path, changed: list[str], amend: AmendB
     errs += check_playwright(candidate)
     if not errs:
         errs += check_pins(sp, cfg.min_release_age_days, specmod._pins(amend.raw.get("pins")) if amend else None)
+    if not amend:
+        for s in sp.steps:
+            if rounds.round_of(s.id):
+                errs.append(f"step id {s.id!r}: ids starting with C<n>- are reserved for amendment rounds; "
+                            f"a fresh plan uses ids like S01")
+        if sp.tests_changed:
+            errs.append("tests_changed is only for amendments (a fresh plan has no existing tests to change); remove it")
     if len(sp.steps) > MAX_STEPS:
         errs.append(f"{len(sp.steps)} steps; keep it under {MAX_STEPS} (plan a first release)")
     if not any(s.type == "code" for s in sp.steps):
@@ -177,47 +186,11 @@ def _acceptance_at(spec_dir: Path, commit: str) -> list[str]:
     return sorted(x[len("acceptance/"):] for x in out.decode(errors="replace").split("\0") if x.startswith("acceptance/"))
 
 
-def _owned(raw: dict, sid: str, files: list[str]) -> set[str]:
-    """Acceptance files step `sid` owns in spec `raw` (same rules as accview.views; shared files excluded)."""
-    entry = next((s for s in raw.get("steps") or [] if isinstance(s, dict) and s.get("id") == sid), None)
-    if entry is None:
-        return set()
-    try:
-        step = specmod.Step(id=sid, title="", goal="", e2e=list(entry.get("e2e") or []),
-                            acceptance_files=list(entry.get("acceptance_files") or []),
-                            acceptance=list(entry.get("acceptance") or []))
-        sp = specmod.Spec(root=Path("."), commit="", allowed_paths=[], allow_text_paths=[],
-                          setup=list(raw.get("setup") or []), regression=list(raw.get("regression") or []),
-                          e2e_command=str(raw.get("e2e_command") or ""), always_refs=[], steps=[])
-        shared: set[str] = set()
-        for pat in accview.shared_patterns(sp):
-            shared |= accview._match(pat, files)
-        owned: set[str] = set()
-        for pat in accview.step_patterns(step):
-            owned |= accview._match(pat, files)
-        return owned - shared
-    except (specmod.SpecError, TypeError, ValueError):
-        return set()
+_owned = accview.owned
 
 
 def _canon(x) -> str:
     return json.dumps(x, sort_keys=True, separators=(",", ":"))
-
-
-def tests_section(plan_md: str) -> str:
-    """Body of PLAN.md's "Tests changed/removed" section ("" when absent)."""
-    out, on, level = [], False, 0
-    for ln in plan_md.splitlines():
-        m = re.match(r"^(#{1,6})\s+(.*?)\s*#*\s*$", ln)
-        if m:
-            if on and len(m.group(1)) <= level:
-                break
-            if m.group(2).strip().rstrip(":").lower() == TESTS_HEADING.lower():
-                on, level = True, len(m.group(1))
-                continue
-        if on:
-            out.append(ln)
-    return "\n".join(out)
 
 
 def amend_base(cfg: Config, base_sha: str, rnd: int) -> AmendBase:
@@ -230,7 +203,7 @@ def amend_base(cfg: Config, base_sha: str, rnd: int) -> AmendBase:
     for sid, st in sorted((State(cfg.state_dir).data.get("steps") or {}).items()):
         if isinstance(st, dict) and st.get("status") == "passed":
             sc = st.get("spec_commit") or ""
-            passed[sid] = sc if re.fullmatch(r"[0-9a-f]{40}", sc) else ""
+            passed[sid] = {**st, "spec_commit": sc if re.fullmatch(r"[0-9a-f]{40}", sc) else ""}
     return AmendBase(base_sha=base_sha, round=rnd, raw=raw, files=accview.all_files(cfg.spec_dir), passed=passed)
 
 
@@ -256,7 +229,8 @@ def check_amend(cfg: Config, candidate: Path, sp, ab: AmendBase) -> list[str]:
                         f"e.g. {prefix}01")
     # steps the runner already built: entry and owned tests byte-identical to the spec commit they passed on
     passed_owned: set[str] = set()
-    for sid, sc in ab.passed.items():
+    for sid, rec in ab.passed.items():
+        sc = rec.get("spec_commit") or ""
         commit = sc or ab.base_sha
         at = _git_bytes(cfg.spec_dir, "show", f"{commit}:steps.json")
         try:
@@ -267,6 +241,7 @@ def check_amend(cfg: Config, candidate: Path, sp, ab: AmendBase) -> list[str]:
             raw_at, commit = ab.raw, ab.base_sha         # commit unknown or unreadable: freeze against the base
         base_entry = next((s for s in raw_at["steps"] if isinstance(s, dict) and s.get("id") == sid), None)
         cand_entry = next((s for s in raw_cand.get("steps") or [] if isinstance(s, dict) and s.get("id") == sid), None)
+        passed_owned |= {p for p in (rec.get("spec_files") or []) if isinstance(p, str)}
         if base_entry is None or cand_entry is None:
             continue                                    # missing ones were reported above
         if _canon(base_entry) != _canon(cand_entry):
@@ -280,9 +255,12 @@ def check_amend(cfg: Config, candidate: Path, sp, ab: AmendBase) -> list[str]:
             if want is None or got != want:
                 errs.append(f"{sid} already passed; acceptance/{f} must stay byte-identical "
                             f"({'removed' if got is None else 'changed'})")
-    # other existing tests may change, but only visibly
-    listed = tests_section((candidate / "PLAN.md").read_text(errors="replace"))
-    tests_changed = []
+        # the runner's own record is the final arbiter (independent of the spec repo's history)
+        why = rounds.check_record(candidate, sid, rec)
+        if why and not any(e.startswith(f"{sid} already passed") for e in errs):
+            errs.append(f"{sid} already passed; it differs from the runner's record: {why}")
+    # other existing tests may change or go, but only as listed in steps.json `tests_changed` (exactly)
+    actual: dict[str, str] = {}
     for f in ab.files:
         if f in passed_owned:
             continue
@@ -290,11 +268,28 @@ def check_amend(cfg: Config, candidate: Path, sp, ab: AmendBase) -> list[str]:
         have = candidate / "acceptance" / f
         got = have.read_bytes() if have.is_file() and not have.is_symlink() else None
         if want is not None and got != want:
-            path = f"acceptance/{f}"
-            tests_changed.append(path)
-            if not re.search(r"(?<![\w./-])" + re.escape(path) + r"(?![\w.-])", listed):
-                errs.append(f"{path} was {'removed' if got is None else 'changed'} but is not listed in PLAN.md under "
-                            f'"## {TESTS_HEADING}" (one line per existing test you change or remove, with the reason)')
+            actual[f"acceptance/{f}"] = "remove" if got is None else "change"
+    listed = {x["path"]: x for x in sp.tests_changed}
+    base_paths = {f"acceptance/{f}" for f in ab.files}
+    for path, kind in sorted(actual.items()):
+        if path not in listed:
+            errs.append(f"{path} was {'removed' if kind == 'remove' else 'changed'} but is not in steps.json "
+                        f'`tests_changed` (add {{"path": "{path}", "change": "{kind}", "why": "..."}})')
+        elif listed[path]["change"] != kind:
+            errs.append(f"tests_changed: {path} says {listed[path]['change']!r} but the file was "
+                        f"{'removed' if kind == 'remove' else 'changed'}")
+    for path, x in sorted(listed.items()):
+        if path in actual:
+            continue
+        if path not in base_paths:
+            errs.append(f"tests_changed: {path} is not an existing acceptance file (only files that exist in the "
+                        f"approved spec go there; new tests are simply added)")
+        elif path in {f"acceptance/{p}" for p in passed_owned}:
+            errs.append(f"tests_changed: {path} belongs to a step that already passed and cannot change")
+        else:
+            errs.append(f"tests_changed lists {path} but the file is unchanged; the list must match the real "
+                        f"changes exactly (remove the entry, or make the change)")
+    tests_changed = [listed[p] for p in sorted(actual) if p in listed]
     shared_changed = []
     for k in SHARED_KEYS:
         old, new = ab.raw.get(k), raw_cand.get(k)
@@ -436,9 +431,14 @@ the change below, then append it to the plan. The runner enforces these rules an
   may not change at all: not their steps.json entry, not the acceptance files they own.
 - New steps go at the END of steps.json with ids `{prefix}01`, `{prefix}02`, ... (this is amendment round
   {round}); `depends_on` may only name earlier steps.
-- PLAN.md: add a section `## Amendment {round}` (what changes and why, decisions for the reviewer) and a
-  section `## {tests_heading}` listing every EXISTING acceptance/ file you changed or removed, one per line
-  with the reason, or `(none)`. Unlisted changes to existing tests are rejected.
+- Existing acceptance/ files (of steps not built yet, or shared) may change or go, but ONLY as declared in
+  steps.json top-level `tests_changed`: a list of {{"path": "acceptance/<file>", "change": "change"|"remove",
+  "why": "<one line>"}}, exactly one entry per existing file you change or remove (replace any list from an
+  earlier amendment). The runner compares it with the real diff: an unlisted change, a listed file that is
+  unchanged, or a listed file of a built step rejects the output; the reviewer must tick the list explicitly.
+  New test files are simply added (not listed).
+- PLAN.md: add a section `## Amendment {round}` (what changes and why, decisions for the reviewer); you may
+  summarise `tests_changed` there under `## {tests_heading}` for the human, but steps.json is the source of truth.
 - docs/design.md and docs/plan.md: extend them (new or amended `##` sections, new `### Task N: ...` headings
   for the new steps); keep existing anchors that steps reference.
 - `pins`: keep every existing pin; add pins only for packages the new steps add. An amendment adding no
@@ -586,10 +586,13 @@ def app_snapshot(cfg: Config, log: Log) -> tuple[str, Path]:
     `git archive` of the pinned sha is extracted with the export tar rules (regular files only, no ../, no
     links, size caps), so no host step follows a link. Refuses a dirty clone (never discards anyone's work)."""
     try:
-        gitops.git(cfg.app_dir, "fetch", "-q", "origin", cfg.branch)
+        # the clone may sit on a merged change branch (change/C<n>); unpushed work is judged against THAT branch
+        cur = gitops.git(cfg.app_dir, "rev-parse", "--abbrev-ref", "HEAD", check=False).strip() or cfg.branch
+        against = cur if cur != "HEAD" and gitops.remote_sha(cfg.app_dir, f"refs/heads/{cur}") else cfg.branch
+        gitops.git(cfg.app_dir, "fetch", "-q", "origin", against)
         ahead = gitops.git(cfg.app_dir, "rev-list", "--count", "FETCH_HEAD..HEAD").strip()
         if ahead not in ("", "0"):
-            raise PlanError(f"the app clone has {ahead} commit(s) not on origin/{cfg.branch} (an accepted step whose push "
+            raise PlanError(f"the app clone has {ahead} commit(s) not on origin/{against} (an accepted step whose push "
                             f"failed?); start the runner once so it pushes, or push by hand, then amend")
         sha = gitops.refresh_app(cfg.app_dir, cfg.branch)
     except gitops.GitError as e:
@@ -645,6 +648,14 @@ def make_work(cfg: Config, work: Path, overlay: Path | None) -> None:
                 dst = work / rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 dst.write_bytes(src.read_bytes())
+        # the overlay is the planner's previous full output: a contract file it removed must stay removed in the
+        # fresh clone (otherwise a fix round silently brings a deleted test back)
+        tracked = (_git_bytes(cfg.spec_dir, "ls-files", "-z") or b"").decode(errors="replace").split("\0")
+        for rel in tracked:
+            if rel and ALLOWED.match(rel) and ".." not in rel.split("/") and not (overlay / rel).exists():
+                f = work / rel
+                if f.is_file() and not f.is_symlink():
+                    f.unlink()
 
 
 # ---------------------------------------------------------------- GitHub
@@ -745,6 +756,11 @@ def _plan(cfg: Config, feedback: str, log: Log, amend: bool = False) -> int:
         raise Refusal("a fresh plan is waiting for review; approve it or re-plan it before amending")
     if not amend and prev_state == "approved":
         raise Refusal("this project's plan was already approved; use `plan --amend` (dashboard: Amend plan) to add to it")
+    from .state import State
+    rr = rounds.record(State(cfg.state_dir).data)
+    if amend and rr and rr.get("status") == "open":
+        raise Refusal(f"round C{rr['id']} is built on {rr.get('branch')} but not merged into {cfg.branch}; merge it "
+                      f"first (one open change round at a time)")
     idea_file = cfg.spec_dir.parent / "description.txt"
     if not idea_file.is_file():
         raise Refusal(f"{idea_file} missing (the idea)")
@@ -755,6 +771,7 @@ def _plan(cfg: Config, feedback: str, log: Log, amend: bool = False) -> int:
         raise Refusal("the spec repo already has steps.json on main; use `plan --amend` (dashboard: Amend plan) to add to it")
     if amend and not (cfg.spec_dir / "steps.json").is_file():
         raise Refusal("no steps.json on the spec branch yet: nothing to amend (run the planner first)")
+
     retry = prev_state == "failed" and prev.get("mode") == "amend"              # last attempt of this round failed
     rnd_amend = int(prev.get("round") or 0) + (0 if (amending_again or retry) else 1)
     extra = {"mode": "amend", "round": rnd_amend} if amend else {"mode": "fresh"}
@@ -835,7 +852,9 @@ def _plan(cfg: Config, feedback: str, log: Log, amend: bool = False) -> int:
                 f"**Change request:** {amend_ctx['request'].strip()[:2000]}\n\n"
                 f"**New steps:** {', '.join(info['new_steps'])}\n\n"
                 f"**App repo at:** {amend_ctx['app_sha']}\n\n"
-                + (f"**Tests changed/removed:** {', '.join(info['tests_changed'])}\n\n" if info["tests_changed"] else "")
+                + (("**Tests changed/removed (needs an explicit tick):**\n"
+                    + "".join(f"- `{x['path']}` ({x['change']}): {x.get('why') or ''}\n" for x in info["tests_changed"]) + "\n")
+                   if info["tests_changed"] else "")
                 + (f"**Shared settings changed:** {', '.join(x['key'] for x in info['shared_changed'])} (needs an explicit tick)\n\n"
                    if info["shared_changed"] else "")
                 + (f"**Adds network access for:** {', '.join(new_domains)}\n\n" if new_domains else "")
@@ -864,10 +883,12 @@ def _fmt(v) -> str:
     return json.dumps(v) if not isinstance(v, list) else (", ".join(v) if v else "(none)")
 
 
-def approve(cfg: Config, expected_sha: str = "", ack_shared: bool = False, ack_domains: bool = False) -> int:
+def approve(cfg: Config, expected_sha: str = "", ack_shared: bool = False, ack_domains: bool = False,
+            ack_tests: bool = False) -> int:
     """Merge exactly the reviewed plan commit. expected_sha = the head the human was shown (dashboard).
     A plan that adds network domains needs ack_domains; an amendment that changes shared settings needs
-    ack_shared (CLI flags --ack-domains / --ack-shared; the dashboard sends them from its review ticks)."""
+    ack_shared; one that changes or removes existing tests needs ack_tests (CLI flags --ack-domains /
+    --ack-shared / --ack-tests; the dashboard sends them from its review ticks)."""
     log = Log(cfg)
     d = pdir(cfg)
     d.mkdir(parents=True, exist_ok=True)
@@ -890,6 +911,13 @@ def approve(cfg: Config, expected_sha: str = "", ack_shared: bool = False, ack_d
                 raise PlanError("this amendment changes settings that apply to every step:\n" + "\n".join(lines)
                                 + "\nre-run with --ack-shared to approve them")
             log("acknowledging shared settings changes (--ack-shared):\n" + "\n".join(lines))
+        tests = [x for x in (st.get("tests_changed") or []) if isinstance(x, dict)]
+        if tests:
+            lines = [f"  {x.get('path')} ({x.get('change')}): {x.get('why') or '(no reason given)'}" for x in tests]
+            if not ack_tests:
+                raise PlanError("this amendment changes or removes existing acceptance tests:\n" + "\n".join(lines)
+                                + "\nre-run with --ack-tests to approve them")
+            log("acknowledging changed/removed tests (--ack-tests):\n" + "\n".join(lines))
         new_domains = [d for d in (st.get("domains") or []) if isinstance(d, str)]
         if new_domains:
             if not ack_domains:

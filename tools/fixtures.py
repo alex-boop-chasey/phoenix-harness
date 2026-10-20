@@ -352,6 +352,8 @@ def p_cafe(cfg_home: Path, root: Path) -> None:
     cand.mkdir(parents=True)
     amended = json.loads(json.dumps(base))
     amended["regression"] = ["pnpm test", "pnpm run lint"]
+    amended["tests_changed"] = [{"path": "acceptance/s02.test.mjs", "change": "change",
+                                 "why": "also asserts the menu page links to the order form"}]
     amended["steps"].append({"id": "C1-01", "title": "Online ordering form", "depends_on": ["S02"],
                              "goal": "Order form on the menu page posting to the existing API; confirmation email stub.",
                              "acceptance": ["node --test acceptance/c1-01.test.mjs"]})
@@ -366,7 +368,8 @@ def p_cafe(cfg_home: Path, root: Path) -> None:
                                                                            "acceptance/s02.test.mjs"],
         "steps": 4, "domains": [], "warnings": [], "pr": 4, "pr_url": "https://github.com/acme/cafe-specs/pull/4",
         "branch": "hands/amend-C1", "head_sha": sha("cafe-head"), "base_sha": sha("cafe-base"), "app_sha": sha("cafe-app"),
-        "new_steps": ["C1-01"], "tests_changed": ["acceptance/s02.test.mjs"],
+        "new_steps": ["C1-01"], "tests_changed": [{"path": "acceptance/s02.test.mjs", "change": "change",
+                                                   "why": "also asserts the menu page links to the order form"}],
         "shared_changed": [{"key": "regression", "old": ["pnpm test"], "new": ["pnpm test", "pnpm run lint"]}],
         "started": NOW - 900, "updated": NOW - 60}))
     (plan / "plan.log").write_text("".join(f"{time.strftime('%H:%M:%S', time.gmtime(NOW - 900 + i * 100))} {l}\n" for i, l in enumerate([
