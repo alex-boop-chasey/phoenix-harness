@@ -354,3 +354,136 @@ class TestCliAndPlanner(unittest.TestCase):
         with self.assertRaises(planner.Refusal) as cm:
             planner._plan(p.cfg, "more", planner.Log(p.cfg), amend=True)
         self.assertNotIn("not merged", str(cm.exception))
+
+
+class TestDashboardRounds(unittest.TestCase):
+    def setUp(self):
+        from test_v04 import Dash
+        self.p = Round()
+        self.d = Dash()
+        (self.d.home / "projects").mkdir()
+        c = self.p.cfg
+        self.toml = self.d.home / "projects" / "t.toml"
+        self.toml.write_text(f'spec_dir = "{c.spec_dir}"\napp_dir = "{c.app_dir}"\nstate_dir = "{c.state_dir}"\n'
+                             f'image = "hands:test"\nclaude_env = "{c.claude_env}"\n')
+
+    def tearDown(self):
+        self.d.close()
+
+    def post(self, path, body):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.d.port, timeout=30)
+        h = {"Host": f"127.0.0.1:{self.d.port}", "Content-Type": "application/json", "X-Hands": "1",
+             "Cookie": f"{dashboard_mod().COOKIE}={self.d.sid}", "Origin": f"http://127.0.0.1:{self.d.port}"}
+        c.request("POST", path, body=json.dumps(body).encode(), headers=h)
+        r = c.getresponse()
+        raw = r.read()
+        c.close()
+        return r.status, json.loads(raw)
+
+    def get(self, path):
+        st, _, raw = self.d.req("GET", path)
+        self.assertEqual(st, 200, raw)
+        return json.loads(raw)
+
+    def test_round_state_in_list_and_detail_then_merge_and_discard_taps(self):
+        import time
+        p = self.p
+        row = [x for x in self.get("/api/projects") if x["name"] == "t"][0]
+        self.assertEqual(row["round"], {"id": 1, "status": "open", "passed": 2, "total": 2, "merge_ready": True, "self": False})
+        d = self.get("/api/p/t")
+        m = d["round"]["merge"]
+        self.assertEqual((m["ready"], m["branch_sha"], m["main_sha"], m["self"], m["all_passed"]), (True, p.head, p.main, False, True))
+        self.assertEqual([x["event"] for x in d["round"]["history"]], ["opened"])
+        self.assertEqual(d["round"]["history"][0]["id"], 1)
+        self.assertEqual([s["id"] for s in d["steps"] if s["round"] == 1], ["C1-01", "C1-02"])
+        # refusals: bad sha, wrong sha, self project
+        st, r = self.post("/api/p/t/action/merge", {"branch_sha": "abc", "main_sha": p.main})
+        self.assertEqual(st, 400, r)
+        self.assertIn("40-hex", r["error"])
+        st, r = self.post("/api/p/t/action/merge", {"branch_sha": p.main, "main_sha": p.main})
+        self.assertEqual(st, 400, r)
+        self.assertIn("moved", r["error"])
+        self.toml.write_text(self.toml.read_text() + "self = true\n")
+        row = [x for x in self.get("/api/projects") if x["name"] == "t"][0]
+        self.assertEqual((row["round"]["merge_ready"], row["round"]["self"]), (False, True))
+        self.assertIn("Install update", self.get("/api/p/t")["round"]["merge"]["why"])
+        st, r = self.post("/api/p/t/action/merge", {"branch_sha": p.head, "main_sha": p.main})
+        self.assertEqual(st, 400, r)
+        self.assertIn("Install update", r["error"])
+        self.assertEqual(origin_ref(p.e, "change/C1"), p.head)
+        self.assertEqual(p.state().data["round"]["status"], "open")
+        self.toml.write_text(self.toml.read_text().replace("self = true\n", ""))
+        # the tap: record goes merging at once, the spawned CLI finishes the merge
+        st, r = self.post("/api/p/t/action/merge", {"branch_sha": p.head, "main_sha": p.main})
+        self.assertEqual(st, 200, r)
+        self.assertEqual(r["output"], "merge started")
+        for _ in range(300):
+            rec = p.state().data["round"]
+            if rec["status"] == "merged":
+                break
+            self.assertEqual(rec["status"], "merging")
+            time.sleep(0.1)
+        self.assertEqual(rec["status"], "merged")
+        self.assertEqual(origin_ref(p.e, "main"), rec["merged_sha"])
+        d = self.get("/api/p/t")
+        self.assertEqual(d["round"]["merge"]["state"], "merged")
+        self.assertIn("merged round C1", d["round"]["log"])
+        self.assertEqual([x["event"] for x in d["round"]["history"]], ["opened", "merged"])
+        row = [x for x in self.get("/api/projects") if x["name"] == "t"][0]
+        self.assertEqual((row["round"]["status"], row["round"]["merge_ready"]), ("merged", False))
+        st, r = self.post("/api/p/t/action/merge", {"branch_sha": p.head, "main_sha": p.main})
+        self.assertEqual(st, 400)
+        st, r = self.post("/api/p/t/action/discard", {"branch_sha": p.head})
+        self.assertEqual(st, 400)
+
+    def test_discard_tap(self):
+        import time
+        p = self.p
+        st, r = self.post("/api/p/t/action/discard", {"branch_sha": p.main})
+        self.assertEqual(st, 400, r)
+        self.assertIn("moved", r["error"])
+        with Lock(p.cfg.state_dir / "runner.lock"):
+            st, r = self.post("/api/p/t/action/discard", {"branch_sha": p.head})
+            self.assertEqual(st, 400, r)
+            self.assertIn("running", r["error"])
+        st, r = self.post("/api/p/t/action/discard", {"branch_sha": p.head})
+        self.assertEqual(st, 200, r)
+        for _ in range(300):
+            if "round" not in p.state().data:
+                break
+            time.sleep(0.1)
+        self.assertNotIn("round", p.state().data)
+        self.assertEqual(origin_ref(p.e, "change/C1"), "")
+        d = self.get("/api/p/t")
+        self.assertEqual(d["round"]["merge"]["state"], "none")
+        self.assertEqual([x["event"] for x in d["round"]["history"]], ["opened", "discarded"])
+        self.assertEqual([s["status"] for s in d["steps"]], ["passed", "passed", "pending", "pending"])
+        row = [x for x in self.get("/api/projects") if x["name"] == "t"][0]
+        self.assertIsNone(row["round"])
+
+
+def dashboard_mod():
+    from hands import dashboard
+    return dashboard
+
+
+class TestOpenRoundRequest(unittest.TestCase):
+    def test_round_record_carries_the_amendment_request_and_pr(self):
+        b = Built([C1])
+        e = b.e
+        pd = e.cfg.state_dir / "plan"
+        pd.mkdir(parents=True, exist_ok=True)
+        (pd / "plan.json").write_text(json.dumps({"mode": "amend", "round": 1, "state": "approved", "request": "add a pricing page\nwith tiers",
+                                                  "pr": 7, "pr_url": "https://x/pull/7"}))
+        e.queue(CODER_P, EVAL_PASS)
+        r = e.runner()
+        self.assertEqual(r.run(), 0)
+        rec = r.state.data["round"]
+        self.assertEqual((rec["request"], rec["pr"], rec["pr_url"]), ("add a pricing page\nwith tiers", 7, "https://x/pull/7"))
+        ev = merge.events(e.cfg.state_dir)
+        self.assertEqual((ev[0]["event"], ev[0]["pr"]), ("opened", 7))
+        sent = []
+        merge.merge_round(e.cfg, State(e.cfg.state_dir), log, sent.append, origin_ref(e, "change/C1"), b.main)
+        self.assertEqual(git(e.tmp / "app.git", "log", "-1", "--format=%s", "main").strip(), "Change C1: add a pricing page")
+        self.assertIn("add a pricing page", sent[-1])

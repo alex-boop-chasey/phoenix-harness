@@ -243,7 +243,18 @@ def summary(name: str) -> dict:
             "passed": sum(1 for x in steps.values() if x.get("status") == "passed"),
             "current": st.get("current"), "updated_at": st.get("updated_at"),
             "activity": read_json(cfg.state_dir / "activity.json", None) if st.get("current") else None,
-            "hidden": name in hidden_projects()}
+            "hidden": name in hidden_projects(), "round": round_chip(cfg, st)}
+
+
+def round_chip(cfg, st: dict) -> dict | None:
+    """The projects list's round state: {id, status, passed, total, merge_ready, self} or None (round 0)."""
+    from . import merge, rounds
+    rec = rounds.record(st)
+    if not rec:
+        return None
+    t = merge.tap_state(cfg, st, None)
+    return {"id": rec["id"], "status": t["state"], "passed": t["passed"], "total": t["total"],
+            "merge_ready": t["ready"], "self": t["self"]}
 
 
 # ---------------------------------------------------------------- UI state (closed tabs): ~/.config/hands/ui.json
@@ -367,8 +378,22 @@ def detail(name: str) -> dict:
                           "attempts": x.get("attempts", 0), "commit": x.get("commit", ""),
                           "reasons": (x.get("reasons") or [])[:12]})
     out.update({"steps": steps, "spec_error": spec_err, "spec_commit": spec_commit,
-                "managed": cfg.managed, "setup": setup_info(cfg), "create": create_info(name), "plan": plan_info(cfg)})
+                "managed": cfg.managed, "setup": setup_info(cfg), "create": create_info(name), "plan": plan_info(cfg),
+                "round": round_info(cfg, st, [s["id"] for s in steps] if not spec_err else None)})
     return out
+
+
+def round_info(cfg, st: dict, step_ids: list[str] | None) -> dict:
+    """The change-rounds section: the live record, what the Merge tap may do (`merge`), every round's history
+    (`history`, from rounds.jsonl) and the tail of the last merge/discard log."""
+    from . import merge, rounds
+    rec = rounds.record(st)
+    try:
+        text, _ = read_file(cfg.state_dir / "round.log", 20_000, tail=True)
+    except OSError:
+        text = ""
+    return {"record": rec, "merge": merge.tap_state(cfg, st, step_ids), "history": merge.events(cfg.state_dir)[-20:],
+            "log": text[-4000:], "branch": cfg.branch}
 
 
 def _count_lines(path: Path, pred) -> int:
@@ -522,6 +547,49 @@ def plan_action(name: str, action: str, feedback: str, head_sha: str = "", share
                 + (["--ack-tests"] if tests_ack else [])}[action]
         spawn_cli(d / "plan.log", argv, feedback if action in ("plan", "amend") else "")
     return {"rc": 0, "output": f"{action} started"}
+
+
+def round_action(name: str, action: str, branch_sha: str, main_sha: str = "") -> dict:
+    """merge | discard: the sha-pinned taps. Validated here (same refusals as the CLI), then `hands NAME merge|discard`
+    runs detached with its log in state/round.log; the record goes `merging`/`discarding` at once so the page shows
+    progress and the tap cannot be pressed twice. A `self` project has no merge tap (Install update merges it)."""
+    from . import merge, rounds
+    from .state import State
+    cfg = load_cfg(name)
+    sha = re.compile(r"^[0-9a-f]{40}$")
+    if not sha.match(branch_sha or "") or (action == "merge" and not sha.match(main_sha or "")):
+        raise ValueError("branch_sha and main_sha must be full 40-hex commit ids (reload the page and try again)")
+    with _CREATE_MUTEX:
+        st = State(cfg.state_dir)
+        rec = rounds.record(st.data)
+        if Lock.held(cfg.state_dir / "runner.lock"):
+            raise ValueError("the build is running; stop it first")
+        if Lock.held(planner_lock(cfg)):
+            raise ValueError("the planner is running")
+        try:
+            if action == "merge":
+                t = merge.check_tap(cfg, st.data, None)
+                if t["branch_sha"] != branch_sha or t["main_sha"] != main_sha:
+                    raise merge.MergeError("the branch head or main moved since this page showed it; reload and look again")
+            else:
+                t = merge.tap_state(cfg, st.data, None)
+                if not rec or t["state"] != "open":
+                    raise merge.MergeError(f"no open round to discard (state: {t['state']})")
+                if t["branch_sha"] != branch_sha:
+                    raise merge.MergeError("the branch head moved since this page showed it; reload and look again")
+        except merge.MergeError as e:
+            raise ValueError(str(e))
+        rec["status"] = "merging" if action == "merge" else "discarding"
+        rec.pop("error", None)
+        st.save()
+        argv = [name, action, "--branch-sha", branch_sha] + (["--main-sha", main_sha] if action == "merge" else [])
+        spawn_cli(cfg.state_dir / "round.log", argv)
+    return {"rc": 0, "output": f"{action} started"}
+
+
+def planner_lock(cfg) -> Path:
+    from . import planner
+    return planner.pdir(cfg) / "plan.lock"
 
 
 def create_info(slug: str) -> dict | None:
@@ -1012,6 +1080,15 @@ class Handler(BaseHTTPRequestHandler):
             dack = req.get("domains_ack") is True if isinstance(req, dict) else False
             tack = req.get("tests_ack") is True if isinstance(req, dict) else False
             return self._json(200, plan_action(parts[2], parts[4], fb, hs, ack, dack, tack))
+        if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "action" and parts[4] in ("merge", "discard"):
+            try:
+                req = json.loads(body or b"{}")
+            except ValueError:
+                raise ValueError("bad json")
+            if not isinstance(req, dict):
+                raise ValueError("bad json")
+            return self._json(200, round_action(parts[2], parts[4], str(req.get("branch_sha", "") or ""),
+                                                str(req.get("main_sha", "") or "")))
         if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "action":
             return self._json(200, run_action(parts[2], parts[4]))
         if len(parts) == 4 and parts[:2] == ["api", "p"] and parts[3] in ("hide", "unhide"):

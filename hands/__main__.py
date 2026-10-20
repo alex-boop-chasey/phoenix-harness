@@ -285,7 +285,10 @@ def round_cmd(cfg, cmd: str, branch_sha: str, main_sha: str) -> int:
         return 2
     try:
         if cmd == "merge":
-            merge.check_tap(cfg, st.data, None)
+            if cfg.is_self:
+                raise merge.MergeError(merge.SELF_WHY)
+            if rounds.record(st.data) and rounds.record(st.data).get("status") != "merging":   # the tap checked already
+                merge.check_tap(cfg, st.data, None)
             rec = merge.merge_round(cfg, st, st.log, notifier.send, branch_sha, main_sha)
             print(f"merged round C{rec['id']} into {cfg.branch} at {rec['merged_sha'][:9]}; rollback by hand: "
                   f"git reset --hard {rec['pre_tag']} (before) / unsquashed work at {rec['merged_tag']}")
