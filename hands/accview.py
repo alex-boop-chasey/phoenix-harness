@@ -112,6 +112,30 @@ def shared_patterns(spec: Spec) -> list[str]:
     return pats
 
 
+def owned(raw: dict, sid: str, files: list[str]) -> set[str]:
+    """Acceptance files step `sid` owns in the raw steps.json `raw` (same rules as views: shared files excluded).
+    Used by the runner's per-step integrity record and the planner's amend validator; empty when unparsable."""
+    entry = next((s for s in raw.get("steps") or [] if isinstance(s, dict) and s.get("id") == sid), None)
+    if entry is None:
+        return set()
+    try:
+        step = Step(id=sid, title="", goal="", e2e=list(entry.get("e2e") or []),
+                    acceptance_files=list(entry.get("acceptance_files") or []),
+                    acceptance=list(entry.get("acceptance") or []))
+        sp = Spec(root=Path("."), commit="", allowed_paths=[], allow_text_paths=[],
+                  setup=list(raw.get("setup") or []), regression=list(raw.get("regression") or []),
+                  e2e_command=str(raw.get("e2e_command") or ""), always_refs=[], steps=[])
+        shared: set[str] = set()
+        for pat in shared_patterns(sp):
+            shared |= _match(pat, files)
+        mine: set[str] = set()
+        for pat in step_patterns(step):
+            mine |= _match(pat, files)
+        return mine - shared
+    except (SpecError, TypeError, ValueError):
+        return set()
+
+
 def validate(spec: Spec) -> None:
     """Called by spec.load: strict parse of every command, and no symlinks under acceptance/."""
     links = symlinks(spec.root)

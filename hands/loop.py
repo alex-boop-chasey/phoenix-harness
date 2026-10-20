@@ -14,7 +14,7 @@ import signal
 import time
 from pathlib import Path
 
-from . import accview, activity, claude, docker, gitops, projectenv, prompts, usage, workspace
+from . import accview, activity, claude, docker, gitops, projectenv, prompts, rounds, usage, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -40,7 +40,7 @@ def failure_signature(reasons: list[str]) -> str:
     """Fingerprint of a check failure, for 'same failure twice in a row -> stop and ask'.
     Only SPECIFIC markers count (a file:line compile error, a named failing test, a specific pnpm error
     code); generic wrappers and timings are ignored. Empty -> never escalate early on this."""
-    if not reasons or not reasons[0].startswith("acceptance command failed"):
+    if not reasons or not reasons[0].startswith(("acceptance command failed", "regression: acceptance")):
         return ""
     import re
     tail = "\n".join(reasons[1:])
@@ -81,6 +81,23 @@ class Runner:
     @property
     def stop_file(self) -> Path:
         return self.cfg.state_dir / "STOP"
+
+    @property
+    def branch(self) -> str:
+        """The app branch the runner builds and pushes: the open change round's, else cfg.branch."""
+        return rounds.active_branch(self.state.data, self.cfg.branch)
+
+    @property
+    def round_id(self) -> int:
+        r = rounds.record(self.state.data)
+        return int(r["id"]) if r and r.get("status") == "open" else 0
+
+    def regression_steps(self) -> list[specmod.Step]:
+        """In a change round every passed step's acceptance runs again for each new step (regression rule).
+        Round 0 (fresh plan) keeps the spec's own `regression` list only."""
+        if not self.spec or not self.round_id:
+            return []
+        return [s for s in self.spec.steps if self.state.passed(s.id) and s.type == "code"]
 
     def load_project_env(self) -> None:
         """(Re)read project.env: the dashboard may change it between steps. Secret values feed the redactor,
@@ -342,6 +359,72 @@ class Runner:
                     self.escalate(f"{what} failed 3 times: {e}")
                 self.nap(60 * n)
 
+    def check_passed_records(self) -> None:
+        """Passed step entries and their owned acceptance files are immutable: re-check every record with a hash
+        against the spec just loaded (a hand-merged spec PR cannot bypass the amend validator this way)."""
+        assert self.spec
+        known = {s.id for s in self.spec.steps}
+        bad = []
+        for sid, s in sorted(self.state.data["steps"].items()):
+            if s.get("status") != "passed" or sid not in known:
+                continue
+            why = rounds.check_record(self.spec.root, sid, s)
+            if why:
+                bad.append(why)
+        if bad:
+            self.escalate("passed step(s) changed in the spec since they passed (amendments only append; "
+                          "restore them, or reset-step to rebuild): " + " | ".join(bad[:5]))
+
+    def open_round(self, rnd: int) -> None:
+        """Branch change/C<rnd> from origin/<cfg.branch> and tag hands/pre-C<rnd> at that base, both pushed, then
+        the record. Every part is idempotent, so a crash in the middle just re-runs it next time."""
+        c, app = self.cfg, self.cfg.app_dir
+        name, tag = rounds.branch_name(rnd), rounds.pre_tag(rnd)
+        cur = rounds.record(self.state.data)
+        if cur and cur.get("status") == "open":
+            self.escalate(f"round C{cur['id']} is built on {cur.get('branch')} but not merged; merge it before "
+                          f"round C{rnd} can build")
+
+        def op() -> str:
+            if c.push:
+                gitops.git(app, "fetch", "-q", "origin", c.branch)
+                base = gitops.git(app, "rev-parse", "FETCH_HEAD").strip()
+                remote_branch = gitops.remote_sha(app, f"refs/heads/{name}")
+                remote_tag = gitops.remote_sha(app, f"refs/tags/{tag}")
+            else:
+                base = gitops.git(app, "rev-parse", c.branch).strip()
+                remote_branch = remote_tag = ""
+            if remote_tag and remote_tag != base:
+                raise rounds.RoundError(f"tag {tag} already exists on origin at {remote_tag[:9]}, not at the base "
+                                        f"{base[:9]}; a round C{rnd} was opened before (never moved by the runner)")
+            if remote_branch:
+                gitops.git(app, "fetch", "-q", "origin", name)
+                gitops.git(app, "checkout", "-q", "-B", name, "FETCH_HEAD")
+            else:
+                gitops.git(app, "checkout", "-q", "-B", name, base)
+            local_tag = gitops.git(app, "rev-parse", "-q", "--verify", f"refs/tags/{tag}^{{commit}}", check=False).strip()
+            if local_tag and local_tag != base:
+                raise rounds.RoundError(f"tag {tag} exists locally at {local_tag[:9]}, not at the base {base[:9]}")
+            if not local_tag:
+                gitops.git(app, "tag", tag, base)
+            if c.push:
+                if not remote_tag:
+                    gitops.push_ref(app, f"refs/tags/{tag}", f"refs/tags/{tag}")
+                if not remote_branch:
+                    gitops.push_ref(app, name, f"refs/heads/{name}")
+            return base
+
+        try:
+            base = self._net(f"round C{rnd} open", op)
+        except rounds.RoundError as e:
+            self.escalate(str(e))
+        self.state.data["round"] = {"id": rnd, "branch": name, "base_sha": base, "pre_tag": tag,
+                                    "spec_commit": self.spec.commit if self.spec else "",
+                                    "opened_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "status": "open"}
+        self.state.save()
+        self.log(f"opened round C{rnd}: branch {name} from {base[:9]}, tag {tag}" + ("" if c.push else " (push disabled)"))
+        self.send(f"round C{rnd} opened on {name} (base {base[:9]}, tag {tag})")
+
     def next_step(self) -> specmod.Step | None:
         c = self.cfg
         commit = self._net("spec fetch", lambda: gitops.refresh_spec(c.spec_dir, c.spec_branch))
@@ -349,8 +432,15 @@ class Runner:
             self.spec = specmod.load(c.spec_dir, commit)
         except specmod.SpecError as e:
             self.escalate(f"spec invalid at {commit[:9]}: {e}")
+        self.check_passed_records()
+        pending = next((s for s in self.spec.steps if not self.state.passed(s.id)), None)
+        if pending is not None:
+            want = rounds.round_of(pending.id)
+            cur = rounds.record(self.state.data)
+            if want > (int(cur["id"]) if cur else 0):
+                self.open_round(want)
         for tries in range(1, 4):
-            st, detail = self._net("app sync", lambda: gitops.sync_app(c.app_dir, c.branch, c.push))
+            st, detail = self._net("app sync", lambda: gitops.sync_app(c.app_dir, self.branch, c.push))
             if st in ("ok", "pushed"):
                 if st == "pushed":
                     self.log(f"pushed previously accepted commits {detail}".strip())
@@ -414,7 +504,8 @@ class Runner:
         (adir / "prompt.md").write_text(prompts.coder(
             spec, step, attempt=attempt, max_attempts=max_attempts, progress=progress,
             git_log=gitops.log_oneline(c.app_dir), feedback=st.get("reasons", []), prev_diff=prev_diff,
-            acc_files=acc_files, env_vars=self.env_names(), imported=c.imported))
+            acc_files=acc_files, env_vars=self.env_names(), imported=c.imported,
+            regression_steps=self.regression_steps(), round_id=self.round_id))
         agents = json.loads((c.runner_home / "prompts" / "agents.json").read_text())
         cmd = self.claude_cmd(model=self.model, system_file="coder.md", max_turns=c.max_turns,
                               extra=["--agents", json.dumps(agents), "--disallowedTools", "WebFetch"])
@@ -511,13 +602,14 @@ class Runner:
 
         # ---- accept: record first, then push (an unpushed accepted commit is pushed by sync_app next round)
         st.update({"status": "passed", "attempts": attempt, "commit": commit, "reasons": [],
-                   "spec_commit": spec.commit, "passed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+                   "spec_commit": spec.commit, "passed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                   "round": self.round_id, "branch": self.branch, **rounds.make_record(spec.root, step.id)})
         self.state.data.pop("current", None)
         self.state.save()
         self.uncounted.pop(step.id, None)
         pushed = "push disabled"
         if c.push:
-            ok, err = gitops.push_branch(c.app_dir, c.branch)
+            ok, err = gitops.push_branch(c.app_dir, self.branch)
             pushed = "pushed" if ok else f"push failed ({err[:200]}); will retry next step"
         self.state.append_jsonl("progress.jsonl", {
             "step": step.id, "title": step.title, "commit": commit, "attempts": attempt,
@@ -564,12 +656,12 @@ class Runner:
         """Each command runs in its own container; the result is that container's exit code.
         Output goes to a host file via the container's stdout, so nothing in the container can forge it."""
         c, spec = self.cfg, self.spec
-        cmds = prompts.acceptance_commands(spec, step)
+        plan = prompts.acceptance_plan(spec, step, self.regression_steps())
         verify = self.fresh_clone("verify", commit)
         store = docker.volume_create(c, f"hands-{c.name}-accept-{secrets.token_hex(4)}")
         report: list[dict] = []
         try:
-            for i, cmd in enumerate(cmds):
+            for i, (cmd, owner) in enumerate(plan):
                 logf = adir / f"accept-{i}.log"
                 logf.write_text(f"### {cmd}\n")
                 t0 = time.time()
@@ -579,12 +671,14 @@ class Runner:
                     env=self.common_env("accept"), env_files=self.env_files(claude_token=False),
                     stdout=logf, stderr=logf, timeout_s=c.accept_timeout_min * 60, append_stdout=True))
                 self.redact_files(logf)
-                report.append({"cmd": cmd, "rc": rc})
+                report.append({"cmd": cmd, "rc": rc, "for": owner})
                 self.log(f"acceptance {step.id}#{attempt} [{i}] rc={rc} {time.time() - t0:.0f}s: {cmd}")
                 if rc != 0:
                     tail = "\n".join(logf.read_text(errors="replace").splitlines()[-80:])
                     why = "timed out" if rc == 124 else f"exit {rc}"
-                    return report, [f"acceptance command failed ({why}): `{cmd}`", f"last output:\n{tail}"]
+                    what = (f"regression: acceptance of passed step {owner} failed" if owner and owner != step.id
+                            else "acceptance command failed")
+                    return report, [f"{what} ({why}): `{cmd}`", f"last output:\n{tail}"]
             return report, None
         finally:
             docker.volume_rm(c, store)

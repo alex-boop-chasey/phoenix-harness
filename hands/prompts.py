@@ -6,17 +6,31 @@ import json
 from .spec import Spec, Step, render_refs
 
 
-def acceptance_commands(spec: Spec, step: Step) -> list[str]:
-    cmds = [*spec.setup, *spec.regression, *step.acceptance]
+def _step_cmds(spec: Spec, step: Step) -> list[str]:
+    cmds = list(step.acceptance)
     if step.e2e:
         cmds.append(spec.e2e_command.replace("{files}", " ".join(f"acceptance/{e}" for e in step.e2e)))
-    # de-duplicate, keep order
+    return cmds
+
+
+def acceptance_plan(spec: Spec, step: Step, regression_steps: list[Step] = ()) -> list[tuple[str, str]]:
+    """(command, owner) pairs in run order: setup + regression (owner ""), then every step in
+    `regression_steps` (passed steps, in a change round: their tests must stay green), then the step's own.
+    Duplicates are dropped, keeping the first owner."""
+    cmds: list[tuple[str, str]] = [(c, "") for c in (*spec.setup, *spec.regression)]
+    for s in regression_steps:
+        cmds += [(c, s.id) for c in _step_cmds(spec, s)]
+    cmds += [(c, step.id) for c in _step_cmds(spec, step)]
     seen, out = set(), []
-    for c in cmds:
+    for c, who in cmds:
         if c not in seen:
             seen.add(c)
-            out.append(c)
+            out.append((c, who))
     return out
+
+
+def acceptance_commands(spec: Spec, step: Step, regression_steps: list[Step] = ()) -> list[str]:
+    return [c for c, _ in acceptance_plan(spec, step, regression_steps)]
 
 
 IMPORTED_NOTE = (
@@ -49,7 +63,8 @@ def env_section(env_vars: list[tuple[str, bool]] | None, *, for_builder: bool) -
 
 def coder(spec: Spec, step: Step, *, attempt: int, max_attempts: int, progress: list[dict],
           git_log: str, feedback: list[str], prev_diff: str, acc_files: list[str] | None = None,
-          env_vars: list[tuple[str, bool]] | None = None, imported: bool = False) -> str:
+          env_vars: list[tuple[str, bool]] | None = None, imported: bool = False,
+          regression_steps: list[Step] = (), round_id: int = 0) -> str:
     parts = [
         f"# Step {step.id}: {step.title}",
         f"Attempt {attempt} of {max_attempts}. Spec commit {spec.commit[:12]}.",
@@ -59,9 +74,14 @@ def coder(spec: Spec, step: Step, *, attempt: int, max_attempts: int, progress: 
         parts.append("## Notes from the spec\n" + step.notes)
     if imported:
         parts.append(IMPORTED_NOTE)
+    plan = acceptance_plan(spec, step, regression_steps)
+    regress = [c for c, who in plan if who and who != step.id]
     parts.append(
         "## Acceptance (the runner runs these, in order, in a clean clone after you finish)\n"
-        + _bullets(acceptance_commands(spec, step))
+        + _bullets([c for c, _ in plan])
+        + ((f"\n\nThis is change round C{round_id}: the commands below are the acceptance tests of steps already "
+            "built (regression). They run again for this step and must stay green; you may not change the tests, "
+            "so change the code until both old and new tests pass.\n" + _bullets(regress)) if regress else "")
         + "\n\nAcceptance tests live in `/workspace/acceptance/` (read-only)."
         + (("\nFiles there for this step: " + ", ".join(f"`acceptance/{f}`" for f in acc_files[:60])
             + (" ..." if len(acc_files) > 60 else "")) if acc_files is not None else "")

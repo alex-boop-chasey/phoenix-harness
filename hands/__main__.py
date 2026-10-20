@@ -36,7 +36,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import accview, claude, docker, gitops, prompts
+from . import accview, claude, docker, gitops, prompts, rounds
 from . import spec as specmod
 from . import config as cfgmod
 from .config import RUNNER_HOME, load
@@ -59,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--amend", action="store_true", help="plan: amend the approved plan (change request on stdin)")
     ap.add_argument("--ack-shared", action="store_true", help="approve: accept the amendment's shared-settings changes")
     ap.add_argument("--ack-domains", action="store_true", help="approve: accept the plan's new network domains")
+    ap.add_argument("--ack-tests", action="store_true", help="approve: accept the amendment's changed/removed tests")
     ap.add_argument("--from-repo", default="", metavar="OWNER/REPO")
     ap.add_argument("--branch", default="")
     ap.add_argument("--ruleset", action="store_true")
@@ -91,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.command == "plan":
             fb = sys.stdin.read() if not sys.stdin.isatty() else ""
             return planner.plan(cfg, fb, amend=a.amend)
-        return planner.approve(cfg, a.arg or "", ack_shared=a.ack_shared, ack_domains=a.ack_domains)
+        return planner.approve(cfg, a.arg or "", ack_shared=a.ack_shared, ack_domains=a.ack_domains, ack_tests=a.ack_tests)
     r = Runner(cfg)
     st = r.state
     cmd = a.command
@@ -144,6 +145,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"model override: {d['model_override']}")
         if d.get("current"):
             print(f"current: {d['current']}")
+        rr = rounds.record(d)
+        if rr:
+            print(f"round C{rr['id']}: {rr.get('status')} on {rr.get('branch')} (base {str(rr.get('base_sha', ''))[:9]}, "
+                  f"tag {rr.get('pre_tag')})")
         print(f"totals: {d.get('total_sessions', 0)} sessions, ~${d.get('total_cost_usd', 0)} (API-equivalent estimate)")
         try:
             sp = specmod.load(cfg.spec_dir, gitops.head(cfg.spec_dir))
@@ -191,7 +196,8 @@ def main(argv: list[str] | None = None) -> int:
         print(prompts.coder(sp, step, attempt=x["attempts"] + 1, max_attempts=step.max_attempts or cfg.default_max_attempts,
                             progress=st.read_jsonl("progress.jsonl")[-cfg.progress_notes:],
                             git_log=gitops.log_oneline(cfg.app_dir), feedback=x.get("reasons", []), prev_diff="",
-                            acc_files=accview.visible(sp, step, passed)))
+                            acc_files=accview.visible(sp, step, passed), regression_steps=r.regression_steps(),
+                            round_id=r.round_id))
         return 0
 
     if cmd == "stop":
@@ -224,13 +230,19 @@ def main(argv: list[str] | None = None) -> int:
             print("runner is running; stop it first")
             return 1
         x = st.step(a.arg)
+        if cmd == "reset-step" and x.get("status") == "passed" and rounds.is_open(st.data) \
+                and int(x.get("round") or 0) < r.round_id:
+            print(f"{a.arg} passed in round C{int(x.get('round') or 0)} and round C{r.round_id} is open: passed steps of "
+                  f"earlier rounds are never rebuilt; add a C{r.round_id}- step (plan --amend) instead")
+            return 1
         if cmd == "mark-done":
             try:
                 spec_commit = gitops.head(cfg.spec_dir)      # so a later `plan --amend` can compare this step
             except gitops.GitError:
                 spec_commit = ""
             x.update({"status": "passed", "commit": "human", "spec_commit": spec_commit,
-                      "passed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+                      "passed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                      "round": r.round_id, "branch": r.branch, **rounds.make_record(cfg.spec_dir, a.arg)})
             st.append_jsonl("progress.jsonl", {"step": a.arg, "title": "(human step)", "commit": "", "summary": "done by a human"})
         else:
             st.data["steps"][a.arg] = {"status": "pending", "attempts": 0, "reasons": []}
@@ -404,7 +416,7 @@ def check(r: Runner) -> int:
         return 1
     r.recover()                         # never leave an unaccepted candidate where a push could pick it up
     try:
-        line(True, f"app repo vs origin: {gitops.ahead_behind(cfg.app_dir, cfg.branch)} (report only, nothing pushed)")
+        line(True, f"app repo vs origin: {gitops.ahead_behind(cfg.app_dir, r.branch)} (report only, nothing pushed)")
     except gitops.GitError as e:
         line(False, f"app repo fetch: {e}")
     for model in dict.fromkeys([cfg.coder_model, cfg.eval_model, cfg.fallback_model]):

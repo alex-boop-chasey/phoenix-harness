@@ -42,6 +42,7 @@ class Spec:
     always_refs: list[str]
     steps: list[Step]
     pins: dict = field(default_factory=dict)       # npm package -> exact version (checked for release age)
+    tests_changed: list[dict] = field(default_factory=list)   # amendment: existing acceptance files changed/removed
 
     def step(self, sid: str) -> Step:
         for s in self.steps:
@@ -53,7 +54,8 @@ class Spec:
 STEP_KEYS = {"id", "title", "goal", "type", "refs", "depends_on", "acceptance", "e2e", "acceptance_files",
              "max_attempts", "notes"}
 TOP_KEYS = {"version", "project", "allowed_paths", "allow_text_paths", "setup", "regression", "e2e_command", "always_refs",
-            "steps", "pins"}
+            "steps", "pins", "tests_changed"}
+TEST_CHANGE = re.compile(r"^acceptance/[A-Za-z0-9._/@+-]+$")
 NPM_NAME = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
 EXACT_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 
@@ -75,6 +77,31 @@ def _pins(v) -> dict:
         if not isinstance(k, str) or not NPM_NAME.match(k) or not isinstance(ver, str) or not EXACT_VERSION.match(ver):
             raise SpecError(f"pins: {k!r}: {ver!r} must be a valid npm name and an exact version like 1.2.3")
     return dict(v)
+
+
+def _tests_changed(v) -> list[dict]:
+    """[{"path": "acceptance/<file>", "change": "change"|"remove", "why": "..."}]: the machine-readable list of
+    existing acceptance files an amendment changes or removes (checked against the real diff by the planner)."""
+    if v is None:
+        return []
+    if not isinstance(v, list) or len(v) > 500:
+        raise SpecError("tests_changed: must be a list of {path, change, why} objects")
+    out, seen = [], set()
+    for i, x in enumerate(v):
+        if not isinstance(x, dict) or set(x) - {"path", "change", "why"}:
+            raise SpecError(f"tests_changed[{i}]: must be an object with path, change and (optional) why")
+        path, change, why = x.get("path"), x.get("change"), x.get("why", "")
+        if not isinstance(path, str) or not TEST_CHANGE.match(path) or ".." in path.split("/"):
+            raise SpecError(f"tests_changed[{i}]: path must be acceptance/<file>")
+        if change not in ("change", "remove"):
+            raise SpecError(f"tests_changed[{i}]: change must be \"change\" or \"remove\"")
+        if not isinstance(why, str) or len(why) > 400:
+            raise SpecError(f"tests_changed[{i}]: why must be a string of at most 400 characters")
+        if path in seen:
+            raise SpecError(f"tests_changed: {path} listed twice")
+        seen.add(path)
+        out.append({"path": path, "change": change, "why": why})
+    return out
 
 
 def load(root: Path, commit: str = "") -> Spec:
@@ -154,6 +181,7 @@ def load(root: Path, commit: str = "") -> Spec:
         always_refs=_strlist(raw.get("always_refs"), "always_refs"),
         steps=steps,
         pins=_pins(raw.get("pins")),
+        tests_changed=_tests_changed(raw.get("tests_changed")),
     )
     if any(s.e2e for s in steps) and "{files}" not in spec.e2e_command:
         raise SpecError("e2e_command with a {files} placeholder is required when any step lists e2e specs")

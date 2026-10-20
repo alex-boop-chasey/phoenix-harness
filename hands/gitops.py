@@ -109,6 +109,23 @@ def push_branch(app_dir: Path, branch: str) -> tuple[bool, str]:
     return p.returncode == 0, p.stderr.decode(errors="replace").strip()
 
 
+def remote_sha(repo: Path, ref: str) -> str:
+    """sha of `ref` (refs/heads/x or refs/tags/x) on origin, "" when it does not exist. Raises GitError offline."""
+    out = git(repo, "ls-remote", "--exit-code", "origin", ref, check=False)
+    for line in out.splitlines():
+        sha, _, name = line.partition("\t")
+        if name.strip() == ref:
+            return sha.strip()
+    # distinguish "no such ref" from "cannot reach origin"
+    git(repo, "ls-remote", "origin", "HEAD")
+    return ""
+
+
+def push_ref(repo: Path, src: str, dst: str) -> None:
+    """Push one ref without force; raises GitError when refused."""
+    git(repo, "push", "-q", "origin", f"{src}:{dst}", timeout=300)
+
+
 def diff(repo: Path, *args: str) -> str:
     """A diff that agent-written .gitattributes / textconv / external diff drivers cannot hide or alter."""
     return git(repo, "-c", "core.attributesFile=/dev/null", "-c", "diff.external=", "diff", "--text",
