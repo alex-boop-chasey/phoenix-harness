@@ -76,7 +76,9 @@ Python 3.12 stdlib only, no pip dependencies. Dashboard UI is vanilla JS with a 
   specs/                             clone of <slug>-specs (steps.json, docs/, acceptance/, allowed-domains)
   app/                               clone of <slug>-app — the runner's own clone; agents never touch it
   state/                             runner-owned state (never mounted into any container):
-    state.json                       status, steps {status, attempts, commit, reasons}, totals, current
+    state.json                       status, steps {status, attempts, commit, reasons, spec_commit, spec_hash,
+                                     spec_files, round, branch}, round {id, branch, base_sha, pre_tag, status},
+                                     totals, current
     runner.lock, runner.log, STOP, watchdog.json, activity.json
     metrics.jsonl, progress.jsonl, attempts.jsonl
     attempts/<STEP>-<n>/             prompt.md, coder.json (full stream, NOT served), coder.stderr,
@@ -91,8 +93,11 @@ Python 3.12 stdlib only, no pip dependencies. Dashboard UI is vanilla JS with a 
 ## Data flow of one build step (`Runner.attempt`, loop.py)
 
 1. **Sync**: fetch the spec repo, pin working tree to `origin/<branch>` (`gitops.refresh_spec`),
-   validate `steps.json` (`spec.load`); sync the app clone with origin (push accepted commits,
-   escalate on divergence — the runner never force-pushes). Pick the first non-passed step.
+   validate `steps.json` (`spec.load`); re-check every passed step's integrity record (0.5.7, below); pick
+   the first non-passed step and, when its id says `C<n>-` and round n is not open yet, open the change
+   round (branch `change/C<n>` from `origin/<branch>`, tag `hands/pre-C<n>`, both pushed, record in
+   state.json); sync the app clone with origin on the active branch (push accepted commits, escalate on
+   divergence — the runner never force-pushes).
 2. **Acceptance view** (`accview.build`): copy into `state/acc-view/` only the acceptance files this
    step may see (shared + passed steps' + its own); mounted read-only at `/workspace/acceptance`.
 3. **Coder session**: fresh clone of the app repo at HEAD into `state/work/` (origin removed);
@@ -115,15 +120,19 @@ Python 3.12 stdlib only, no pip dependencies. Dashboard UI is vanilla JS with a 
    `Hands-Attempt` and `Hands-Model` trailers; diff recorded with attribute/textconv-proof `gitops.diff`.
 6. **Acceptance (runner-run)**: fresh `--no-hardlinks` clone of the committed tree into `state/verify/`,
    fresh pnpm-store volume. Each command from `setup + regression + step.acceptance (+ e2e_command)`
-   runs in its own container; pass/fail is the container's exit code, output streams to a host file so
+   runs in its own container (in a change round also every passed step's own `acceptance` and e2e, in spec
+   order, before the step's own: the regression rule, 0.5.7; a failure there reads "regression: acceptance
+   of passed step S01 failed"); pass/fail is the container's exit code, output streams to a host file so
    nothing inside can forge it. First failure rejects the attempt.
 7. **Independent evaluator**: another fresh clone + volume; read-only session (Write/Edit/Agent/WebFetch
    disallowed) gets the diff, acceptance report and coder summary plus a random nonce, and must end with
    `VERDICT: {"pass": bool, "reasons": [...], "nonce": ...}`. Verdict parsing is fail-closed
    (`claude.parse_verdict` on a clean session's own result only); wrong/missing nonce = no verdict;
    3 failures → tag `hands/unreviewed/...`, reset, escalate.
-8. **Accept or reject**: pass → state updated first, then push (an unpushed accepted commit is pushed by
-   the next round's sync); progress note + Telegram. Fail → tag `hands/failed/<step>-<n>`, hard reset to
+8. **Accept or reject**: pass → state updated first (`commit`, `spec_commit`, `round`, `branch`, and the
+   integrity record `spec_hash` = sha256 over the step's canonical steps.json entry and the bytes of the
+   acceptance files it owns, listed in `spec_files`; `mark-done` writes the same), then push to the active
+   branch (an unpushed accepted commit is pushed by the next round's sync); progress note + Telegram. Fail → tag `hands/failed/<step>-<n>`, hard reset to
    base, reasons recorded, attempt counted; escalates on max attempts, a coder-reported SPEC_PROBLEM, or
    the same specific failure signature twice in a row.
 
@@ -296,6 +305,8 @@ syntax for allowed-domains), retried up to 3 rounds, then PR `hands/plan` is ope
 `approve`: merges exactly the reviewed head sha (squash) after checking the PR and base haven't moved,
 re-validates the merged spec, then starts the build. The dashboard's Approve button re-sends the sha it
 displayed, and highlights risky acceptance commands and new network domains for human review.
+## Change requests (amend mode and change rounds)
+
 `plan --amend` (0.5.6, dashboard "Amend plan"): once a spec is approved the plan may only grow. The change
 request (stdin) goes to the same planner session with the spec clone at `/workspace`, the app repo at the
 built commit read-only at `/app` (a `git archive` of the pinned sha, extracted on the host with the export
@@ -304,16 +315,51 @@ is dirty or has commits not on origin, so an accepted-but-unpushed step is never
 from `state.json`. On top of the fresh-plan checks the validator rejects: a missing or reordered existing
 step; a new id without the `C<round>-` prefix; any change to a step the runner already built (its
 `steps.json` entry and the acceptance files it owns are compared byte for byte with the spec commit recorded
-when it passed, `mark-done` records it too); a changed or removed existing acceptance file not listed in
-PLAN.md under `## Tests changed/removed` (removed files become deletions in the PR); a dropped or re-versioned
-pin (no pins at all is fine when the base had none; only new pins are age-checked); an amendment that adds no
-step. Changes to shared settings (setup, regression, e2e_command, allowed_paths,
+when it passed, `mark-done` records it too, and since 0.5.7 the runner's own record `spec_hash`/`spec_files`
+is the final arbiter, independent of the spec repo's history); a changed or removed existing acceptance file
+that is not declared in steps.json `tests_changed` (`[{"path", "change": "change"|"remove", "why"}]`, 0.5.7:
+the list must match the real diff of existing `acceptance/**` files exactly, in both directions; a file of a
+built step may not appear; PLAN.md may summarise it but is not the source of truth; removed files become
+deletions in the PR); a dropped or re-versioned pin (no pins at all is fine when the base had none; only new
+pins are age-checked); an amendment that adds no step; in a fresh plan, ids that look like `C<n>-` or a
+`tests_changed` list. Changes to shared settings (setup, regression, e2e_command, allowed_paths,
 allow_text_paths, always_refs) are accepted but flagged (`shared_changed`, old vs new): Approve is refused
 until the reviewer ticks them, in the dashboard (`shared_ack`, server-side) and in the CLI (`--ack-shared`,
-which prints the old and new values); new network domains need the same (`domains_ack` / `--ack-domains`). Each round opens its own branch `hands/amend-C<round>` and PR; approve
-is the same sha-pinned squash merge; the runner then picks up the first non-passed step as usual. Early
-refusals (build running, a fresh plan awaiting review, no steps.json, empty change request) leave the plan
-state untouched and only set `error`.
+which prints the old and new values); changed or removed tests need their own tick (`tests_ack` /
+`--ack-tests`, which prints the list with reasons); new network domains need the same (`domains_ack` /
+`--ack-domains`). Each round opens its own branch `hands/amend-C<round>` and PR; approve is the same
+sha-pinned squash merge; the runner then picks up the first non-passed step as usual. Early refusals (build
+running, a fresh plan awaiting review, no steps.json, empty change request, an open change round) leave the
+plan state untouched and only set `error`. Fix rounds of the planner (output rejected, up to 3 tries) start
+from a fresh spec clone with the previous output overlaid; a contract file the previous output had removed
+is removed again by the harness (`make_work`), so a deletion never silently comes back.
+
+**Change rounds (0.5.7, B2).** The build of an approved amendment is a *round*. Round 0 is the fresh plan:
+built and pushed on `cfg.branch` (`main`), nothing else. A step belongs to the round its id names
+(`C<n>-` → round n). When the next pending step belongs to round n and the runner's record is older, the
+runner opens round n before the app sync: fetch `origin/<branch>`, branch `change/C<n>` from it (or pick up
+the branch if a crashed run already pushed it), tag `hands/pre-C<n>` at the base (never moved; a tag at
+another commit escalates), push tag and branch, then write `state.json` `round` = `{id, branch, base_sha,
+pre_tag, spec_commit, opened_at, status: "open"}`. Every part is idempotent, so a crash in the middle just
+re-runs it. From then on the runner syncs, builds and pushes on the round branch; `main` is untouched until
+the merge tap (B3, step 24) squash-merges `change/C<n>` and sets `status: "merged"`. One round is open at
+a time: a higher round's step while one is open, or `plan --amend` while one is open, is refused. In a round
+every pending step builds on the branch, and `reset-step` refuses a passed step of an earlier round
+("passed steps are never rebuilt"; add a step instead). Recovery, STOP/start and the watchdog need no
+special case: the clone stays on the branch, `recover()` resets to the attempt's base there.
+
+**Immutability rule.** A passed step's `steps.json` entry and the acceptance files it owns are immutable:
+the runner records `spec_hash` over exactly those when the step passes and re-checks it on every spec load
+(a mismatch escalates before any session starts: "passed step(s) changed in the spec since they passed"),
+and the amend validator checks candidates against the same record. Everything else may change in later
+rounds through the validator: `docs/*.md`, PLAN.md, shared settings (ticked), tests of steps not built yet
+and shared tests (declared in `tests_changed`, ticked), pins (only additions).
+
+**Not supported yet: database migrations.** A change round rebuilds nothing and runs on a branch of the
+app repo only; it has no notion of a database schema, data migration, or rollback of either. A project
+with a database (Supabase, Postgres, SQLite files, …) whose change needs a schema change requires a
+separate design (migration steps, acceptance against a seeded database, a rollback story for the
+`hands/pre-C<n>` tag) before change rounds are used on it.
 
 ## Install and live copy
 

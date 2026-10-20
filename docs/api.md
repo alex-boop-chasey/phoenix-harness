@@ -191,9 +191,16 @@ not cover existing code in: lib/" for imported repos), `plan_md` is the candidat
 0.5.6 (amend mode): `mode` (`fresh` | `amend`), `round` (amendment number, new step ids start with
 `C<round>-`), `app_sha` (app repo commit the planner saw read-only at `/app`), `request` (the change
 request), `branch` (`hands/plan` or `hands/amend-C<round>`), `new_steps` (ids added), `tests_changed`
-(existing `acceptance/` files changed or removed, as listed in PLAN.md), `shared_changed`
-(`[{"key","old","new"}]` for setup/regression/e2e_command/allowed_paths/allow_text_paths/always_refs); each
-`step_list` entry carries `new: true|false`. The lists are `[]` when absent.
+(0.5.7: `[{"path": "acceptance/<file>", "change": "change"|"remove", "why"}]`, the steps.json
+`tests_changed` list the planner checked against the real diff; older string entries are normalised to
+`change`), `shared_changed` (`[{"key","old","new"}]` for
+setup/regression/e2e_command/allowed_paths/allow_text_paths/always_refs); each `step_list` entry carries
+`new: true|false`. The lists are `[]` when absent.
+
+0.5.7 (change rounds): the project object has `round` (the runner's round record from state.json,
+`{id, branch, base_sha, pre_tag, spec_commit, opened_at, status: "open"|"merged"}`, or `null` for a fresh
+project) and every `steps[]` entry has `round` (0 = fresh plan). Per passed step state.json also holds
+`spec_hash`, `spec_files` and `branch` (not served).
 
 ### GET /api/p/NAME/log?lines=N
 
@@ -300,7 +307,9 @@ detached, log `state/plan/plan.log`. `200 {"rc": 0, "output": "plan started"}` (
 `amend` (0.5.6) takes `{"feedback": "<change request>"}` (required, ≤8000 chars) and spawns
 `hands <name> plan --amend` with it on stdin; refused when the spec branch has no `steps.json` yet or a fresh
 plan is waiting for review. `approve` of an amendment whose `shared_changed` is non-empty additionally
-requires `{"shared_ack": true}` (the review tick; 400 `"this amendment changes shared settings; …"` otherwise), and
+requires `{"shared_ack": true}` (the review tick; 400 `"this amendment changes shared settings; …"` otherwise), one
+whose `tests_changed` is non-empty requires `{"tests_ack": true}` (0.5.7; 400 `"this amendment changes or removes
+existing tests; …"` otherwise, passed to the CLI as `--ack-tests`), and
 `approve` of a plan whose `domains` is non-empty requires `{"domains_ack": true}` (400 `"this plan adds network
 domains; …"`). The ticks are passed to the CLI as `--ack-shared` / `--ack-domains`, which enforces them too.
 

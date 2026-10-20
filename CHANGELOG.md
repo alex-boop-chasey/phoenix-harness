@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.5.7 (step 23: change rounds + regression rule (B2), 2026-10-21)
+
+From `main` ffaadfc (0.5.6). Session manager untouched.
+
+- Change rounds (`hands/rounds.py`): the build of an approved amendment runs on its own app branch. A step
+  belongs to the round its id names (`C<n>-` → round n; a fresh plan is round 0 and is unchanged: built and
+  pushed on `main`, no branch, no tag, no record). When the next pending step belongs to a round that is not
+  open yet, the runner opens it before the app sync: branch `change/C<n>` from `origin/main`, tag
+  `hands/pre-C<n>` at that base (never moved; a tag at another commit escalates), both pushed, then the record
+  `round {id, branch, base_sha, pre_tag, spec_commit, opened_at, status}` in state.json. Every part is
+  idempotent (a crash in the middle re-runs it). Sync, push, `check` and the planner's app snapshot use the
+  active branch; `main` is untouched until the merge tap (step 24). One round open at a time: a higher round's
+  step, or `plan --amend`, while one is open is refused with "round C<n> is built on change/C<n> but not
+  merged". `reset-step` refuses a passed step of an earlier round while a round is open (passed steps are
+  never rebuilt). Recovery, STOP/start and the watchdog work unchanged on the branch. `hands <p> status`
+  prints the round line; the project JSON carries `round` and per-step `round`.
+- Per-step integrity record: when a step passes (also `mark-done`) the runner records `spec_hash` (sha256 over
+  the step's canonical steps.json entry and the bytes of the acceptance files it owns, listed in
+  `spec_files`), `round` and `branch`. Passed step entries and their owned acceptance files are immutable:
+  the runner re-checks every record on every spec load and escalates before any session when one changed
+  (hand-merged spec PRs included); the amend validator checks candidates against the same record, so the
+  spec repo's history is no longer the only reference.
+- Regression rule (rounds only): in a change round every attempt runs, after `setup` and `regression`, the
+  acceptance commands and e2e of every passed step in spec order, then the step's own; the coder prompt lists
+  them under the "change round" note and a failure reads "regression: acceptance of passed step S01 failed".
+  Round 0 keeps the spec's `regression` list only, so fresh builds are unchanged.
+- Tests changed/removed are data: an amendment declares every existing acceptance file it changes or removes
+  in steps.json `tests_changed` (`[{"path", "change": "change"|"remove", "why"}]`); the validator compares
+  the list with the real diff of existing `acceptance/**` files exactly (unlisted change, listed-but-unchanged,
+  wrong kind, non-existing path, or a built step's file → rejected); a fresh plan may not have the list. Approval
+  needs its own tick: dashboard `tests_ack` (a table with path, change and reason) and CLI `--ack-tests` (prints
+  the list). PLAN.md's "Tests changed/removed" section is a human summary only.
+- Planner fix rounds: a contract file the previous output removed stays removed in the fresh clone of the next
+  round (`make_work` re-applies recorded deletions), closing the step 22 open issue.
+- Fresh planning rejects step ids that look like `C<n>-` (reserved for amendment rounds).
+- Docs: `docs/architecture.md` "Change requests" section (rounds, immutability rule, database migrations not
+  supported yet), `docs/api.md`, `docs/install-0.5.7.md`. Tests: `tests/test_v057.py` (rounds, pre-tag,
+  regression failure, frozen records, fresh project unchanged, recovery/STOP/watchdog on the branch, one open
+  round, reset-step rule, status line), planner tests for `tests_changed`, the tick and the deletion re-apply.
+
 ## 0.5.6 (step 22: planner amend mode, 2026-10-20)
 
 From `main` 1c3f3bb (0.5.3). 0.5.4 and 0.5.5 were abandoned (kept on tag `keep-0.5.5`); nothing from them is here.
