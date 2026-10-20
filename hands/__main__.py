@@ -9,7 +9,9 @@
   stop                   ask the loop to stop at the next safe point
   ack [--clear-model]    clear an escalation (resets the escalated step's attempt count)
   mark-done STEP         mark a human step done
-  reset-step STEP        set a step back to pending with 0 attempts
+  reset-step STEP        set a step back to pending with 0 attempts (not after its round was merged)
+  merge                  squash-merge the finished change round into main, sha-pinned (--branch-sha, --main-sha)
+  discard                drop the open round's build (work kept as a tag); its steps go back to pending
   watchdog               (cron) restart the loop in tmux if it died; never after escalation/done/STOP
   create                 new project from nothing: repos, protection, deploy keys, clones, config
                          (description on stdin; the dashboard's New project form runs this)
@@ -36,13 +38,13 @@ import sys
 import time
 from pathlib import Path
 
-from . import accview, claude, docker, gitops, prompts, rounds
+from . import accview, claude, docker, gitops, merge, prompts, rounds
 from . import spec as specmod
 from . import config as cfgmod
 from .config import RUNNER_HOME, load
 from .docker import Mount, Run
 from .loop import Runner
-from .state import Lock
+from .state import Lock, State
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,7 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="hands", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("project")
     ap.add_argument("command", choices=["run", "start", "status", "check", "validate", "prompt", "stop", "ack",
-                                        "mark-done", "reset-step", "watchdog", "create", "destroy", "plan", "approve", "usage"])
+                                        "mark-done", "reset-step", "watchdog", "create", "destroy", "plan", "approve", "usage",
+                                        "merge", "discard"])
     ap.add_argument("arg", nargs="?")
     ap.add_argument("--steps", type=int)
     ap.add_argument("--clear-model", action="store_true")
@@ -63,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--from-repo", default="", metavar="OWNER/REPO")
     ap.add_argument("--branch", default="")
     ap.add_argument("--ruleset", action="store_true")
+    ap.add_argument("--branch-sha", default="", help="merge/discard: the change/C<n> head the page showed")
+    ap.add_argument("--main-sha", default="", help="merge: the main head the page showed")
     a = ap.parse_args(argv)
     if a.project == "all":
         if a.command == "usage":
@@ -93,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
             fb = sys.stdin.read() if not sys.stdin.isatty() else ""
             return planner.plan(cfg, fb, amend=a.amend)
         return planner.approve(cfg, a.arg or "", ack_shared=a.ack_shared, ack_domains=a.ack_domains, ack_tests=a.ack_tests)
+    if a.command in ("merge", "discard"):
+        return round_cmd(cfg, a.command, a.branch_sha, a.main_sha)
     r = Runner(cfg)
     st = r.state
     cmd = a.command
@@ -146,9 +153,14 @@ def main(argv: list[str] | None = None) -> int:
         if d.get("current"):
             print(f"current: {d['current']}")
         rr = rounds.record(d)
-        if rr:
+        if rr and rr.get("status") == "merged":
+            print(f"round C{rr['id']}: merged into {cfg.branch} at {str(rr.get('merged_sha', ''))[:9]} "
+                  f"(tags {rr.get('pre_tag')} = before, {rr.get('merged_tag')} = unsquashed work)")
+        elif rr:
+            t = merge.tap_state(cfg, d, None)
             print(f"round C{rr['id']}: {rr.get('status')} on {rr.get('branch')} (base {str(rr.get('base_sha', ''))[:9]}, "
-                  f"tag {rr.get('pre_tag')})")
+                  f"tag {rr.get('pre_tag')}; {t['passed']}/{t['total']} passed, "
+                  f"{'merge ready' if t['ready'] else t['why'] or 'not ready'})")
         print(f"totals: {d.get('total_sessions', 0)} sessions, ~${d.get('total_cost_usd', 0)} (API-equivalent estimate)")
         try:
             sp = specmod.load(cfg.spec_dir, gitops.head(cfg.spec_dir))
@@ -230,11 +242,11 @@ def main(argv: list[str] | None = None) -> int:
             print("runner is running; stop it first")
             return 1
         x = st.step(a.arg)
-        if cmd == "reset-step" and x.get("status") == "passed" and rounds.is_open(st.data) \
-                and int(x.get("round") or 0) < r.round_id:
-            print(f"{a.arg} passed in round C{int(x.get('round') or 0)} and round C{r.round_id} is open: passed steps of "
-                  f"earlier rounds are never rebuilt; add a C{r.round_id}- step (plan --amend) instead")
-            return 1
+        if cmd == "reset-step" and x.get("status") == "passed":
+            why = merge.reset_refusal(cfg, st.data, a.arg, x)
+            if why:
+                print(why)
+                return 1
         if cmd == "mark-done":
             try:
                 spec_commit = gitops.head(cfg.spec_dir)      # so a later `plan --amend` can compare this step
@@ -259,6 +271,32 @@ def main(argv: list[str] | None = None) -> int:
         with Lock(cfg.state_dir / "runner.lock"):
             return check(r)
     return 2
+
+
+def round_cmd(cfg, cmd: str, branch_sha: str, main_sha: str) -> int:
+    """`merge` / `discard` (the dashboard taps, and the same thing by hand). Shas are required: this is the pinned
+    path, there is no "merge whatever is there". A self project is merged by Install update instead."""
+    from .notify import Notifier
+    st = State(cfg.state_dir)
+    notifier = Notifier(cfg.telegram_env, cfg.name, log=st.log)
+    if not branch_sha or (cmd == "merge" and not main_sha):
+        print(f"{cmd}: --branch-sha{' and --main-sha' if cmd == 'merge' else ''} required (the heads shown by "
+              f"`hands {cfg.name} status` or the dashboard)")
+        return 2
+    try:
+        if cmd == "merge":
+            merge.check_tap(cfg, st.data, None)
+            rec = merge.merge_round(cfg, st, st.log, notifier.send, branch_sha, main_sha)
+            print(f"merged round C{rec['id']} into {cfg.branch} at {rec['merged_sha'][:9]}; rollback by hand: "
+                  f"git reset --hard {rec['pre_tag']} (before) / unsquashed work at {rec['merged_tag']}")
+        else:
+            merge.discard_round(cfg, st, st.log, notifier.send, branch_sha)
+            print("round discarded: its steps are pending again (the change request stays in the spec); "
+                  f"`hands {cfg.name} start` rebuilds them in a fresh round")
+    except merge.MergeError as e:
+        print(f"{cmd} refused: {e}")
+        return 1
+    return 0
 
 
 def hands_exe() -> str:

@@ -311,3 +311,19 @@ def _discard(cfg: Config, st: State, log, send, branch_sha: str) -> None:
     st.save()
     log(f"discarded round C{rnd}: {branch} ({branch_sha[:9]}) kept as tag {keep}; steps back to pending: {', '.join(sorted(reset))}")
     send(f"discarded round C{rnd} (work kept as {keep}); its steps are pending again, Start rebuilds them")
+
+
+def reset_refusal(cfg: Config, data: dict, sid: str, x: dict) -> str:
+    """Why `reset-step sid` is refused ('' = allowed). Passed steps of a merged or earlier round, and round-0 steps once
+    a round exists, are never rebuilt: rebuilding them on main would bypass the round branch, the pre-tag and the
+    regression rule. Only steps of the open round (or any step of a project without rounds) can be reset."""
+    rec = rounds.record(data)
+    if not rec:
+        return ""
+    mine, cur = int(x.get("round") or 0), int(rec["id"])
+    if mine < cur or (mine == cur and rec.get("status") == "merged"):
+        where = (f"merged into {cfg.branch} as {str(rec.get('merged_sha', ''))[:9]}" if rec.get("status") == "merged"
+                 else f"round C{cur} is {rec.get('status')} on {rec.get('branch')}")
+        return (f"{sid} passed in round C{mine} and {where}: merged work is never rebuilt. Make a new change request "
+                f"(Amend plan) that describes what to change.")
+    return ""

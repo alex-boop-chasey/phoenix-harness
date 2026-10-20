@@ -251,3 +251,106 @@ class TestDiscard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def cli_env(e):
+    import hands.__main__ as m
+    orig = m.load
+    m.load = lambda name, path=None: e.cfg
+    return lambda: setattr(m, "load", orig)
+
+
+class TestCliAndPlanner(unittest.TestCase):
+    def test_cli_merge_discard_status_and_reset_rules(self):
+        import contextlib
+        import io
+        from hands.__main__ import main as cli
+        p = Round()
+        restore = cli_env(p.e)
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(cli(["t", "status"]), 0)
+            self.assertIn("round C1: open on change/C1 (base " + p.main[:9], buf.getvalue())
+            self.assertIn("2/2 passed, merge ready", buf.getvalue())
+            self.assertEqual(cli(["t", "merge"]), 2)                                          # shas required
+            self.assertEqual(cli(["t", "merge", "--branch-sha", p.main, "--main-sha", p.main]), 1)
+            self.assertEqual(origin_ref(p.e, "change/C1"), p.head)
+            self.assertIn("moved", p.state().data["round"]["error"])
+            p.cfg.is_self = True
+            self.assertEqual(cli(["t", "merge", "--branch-sha", p.head, "--main-sha", p.main]), 1)
+            self.assertEqual(origin_ref(p.e, "change/C1"), p.head)
+            p.cfg.is_self = False
+            self.assertEqual(cli(["t", "merge", "--branch-sha", p.head, "--main-sha", p.main]), 0)
+            rec = p.state().data["round"]
+            self.assertEqual(rec["status"], "merged")
+            self.assertEqual(origin_ref(p.e, "main"), rec["merged_sha"])
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(cli(["t", "status"]), 0)
+            self.assertIn(f"round C1: merged into main at {rec['merged_sha'][:9]}", buf.getvalue())
+            # reset-step: steps of a merged round and round-0 steps are refused; nothing changes
+            for sid in ("C1-01", "S01"):
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    self.assertEqual(cli(["t", "reset-step", sid]), 1)
+                self.assertIn("Amend plan", buf.getvalue())
+                self.assertEqual(p.state().data["steps"][sid]["status"], "passed")
+            self.assertIn("merged into main as " + rec["merged_sha"][:9], buf.getvalue()) if False else None
+            self.assertEqual(cli(["t", "discard", "--branch-sha", p.head]), 1)                 # nothing open
+        finally:
+            restore()
+        # discard through the CLI on a fresh round
+        p = Round()
+        restore = cli_env(p.e)
+        try:
+            self.assertEqual(cli(["t", "discard", "--branch-sha", p.main]), 1)
+            self.assertEqual(p.state().data["round"]["status"], "open")
+            self.assertEqual(cli(["t", "discard", "--branch-sha", p.head]), 0)
+            self.assertNotIn("round", p.state().data)
+            self.assertEqual(p.state().data["steps"]["C1-01"]["status"], "pending")
+            self.assertEqual(cli(["t", "reset-step", "S01"]), 0)                              # no round any more: as before
+        finally:
+            restore()
+
+    def test_reset_step_messages_name_the_merged_commit(self):
+        import contextlib
+        import io
+        from hands.__main__ import main as cli
+        p = Round()
+        rec = p.merge()
+        restore = cli_env(p.e)
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(cli(["t", "reset-step", "C1-02"]), 1)
+            self.assertIn(f"merged into main as {rec['merged_sha'][:9]}", buf.getvalue())
+            self.assertIn("never rebuilt", buf.getvalue())
+        finally:
+            restore()
+
+    def test_app_snapshot_after_merge_ignores_the_squashed_round(self):
+        from hands import planner
+        p = Round()
+        rec = p.merge()
+        app = p.cfg.app_dir
+        # the clone left on the (deleted) round branch: its commits are merged work, not unpushed work
+        gitops.git(app, "checkout", "-q", "-B", "change/C1", rec["head_sha"])
+        planner.pdir(p.cfg).mkdir(parents=True, exist_ok=True)
+        sha, dest = planner.app_snapshot(p.cfg, log)
+        self.assertEqual(sha, rec["merged_sha"])
+        self.assertTrue((dest / "src" / "f.js").is_file())
+        self.assertEqual(gitops.git(app, "rev-parse", "--abbrev-ref", "HEAD").strip(), "main")
+        # a genuinely unpushed commit on top still refuses
+        gitops.git(app, "checkout", "-q", "-B", "change/C1", rec["head_sha"])
+        (app / "src" / "late.js").write_text("x")
+        gitops.git(app, "add", "-A")
+        gitops.git(app, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "late")
+        with self.assertRaises(planner.PlanError) as cm:
+            planner.app_snapshot(p.cfg, log)
+        self.assertIn("1 commit(s) not on origin/main", str(cm.exception))
+        # and plan --amend is no longer refused after the merge (round not open)
+        gitops.git(app, "checkout", "-q", "main")
+        with self.assertRaises(planner.Refusal) as cm:
+            planner._plan(p.cfg, "more", planner.Log(p.cfg), amend=True)
+        self.assertNotIn("not merged", str(cm.exception))

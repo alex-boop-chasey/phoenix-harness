@@ -32,7 +32,7 @@ from . import accview, claude, codesummary, docker, gitops, rounds, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
-from .state import Lock
+from .state import Lock, State
 
 BRANCH = "hands/plan"
 AMEND_BRANCH = "hands/amend-C{round}"
@@ -591,7 +591,10 @@ def app_snapshot(cfg: Config, log: Log) -> tuple[str, Path]:
         cur = gitops.git(cfg.app_dir, "rev-parse", "--abbrev-ref", "HEAD", check=False).strip() or cfg.branch
         against = cur if cur != "HEAD" and gitops.remote_sha(cfg.app_dir, f"refs/heads/{cur}") else cfg.branch
         gitops.git(cfg.app_dir, "fetch", "-q", "origin", against)
-        ahead = gitops.git(cfg.app_dir, "rev-list", "--count", "FETCH_HEAD..HEAD").strip()
+        # commits of a merged round (squashed into main, branch deleted) are merged work, not unpushed work
+        rec = rounds.record(State(cfg.state_dir).data)
+        known = [f"^{rec['head_sha']}"] if rec and rec.get("status") == "merged" and rec.get("head_sha") else []
+        ahead = gitops.git(cfg.app_dir, "rev-list", "--count", "FETCH_HEAD..HEAD", *known).strip()
         if ahead not in ("", "0"):
             raise PlanError(f"the app clone has {ahead} commit(s) not on origin/{against} (an accepted step whose push "
                             f"failed?); start the runner once so it pushes, or push by hand, then amend")
