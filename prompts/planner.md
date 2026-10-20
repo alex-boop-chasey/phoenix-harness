@@ -97,6 +97,16 @@ package manager, scripts, test framework and style (the builders are told existi
 pnpm rule above applies only to new apps); `allowed_paths` must cover every existing path a step changes
 (the runner warns when existing code is left out); `pins` lists only the dependencies you add or upgrade.
 
+## Amending an approved plan
+When the user message has a section "Amending an approved plan", the spec in /workspace is approved and
+the runner has built some or all of its steps; the app as built is mounted read-only at `/app` (no `.git`).
+Skip brainstorming for the whole project: read `/app`, the existing docs and PLAN.md, design only the
+requested change (extend `docs/design.md`, add `### Task N` headings to `docs/plan.md`), and APPEND steps.
+The rules in that section are enforced by the runner: existing steps keep their id, place and order;
+steps already built may not change (entry or owned acceptance files); new ids use the given `C<round>-`
+prefix; every existing acceptance file you change or remove is listed in PLAN.md under
+`## Tests changed/removed`; existing pins stay. Shared settings may change only when the new steps need it.
+
 ## Output contract (exactly these files; anything else is discarded)
 1. `steps.json` — the machine spec (schema below).
 2. `PLAN.md` — for the human reviewer, plain and concise: Summary (3 lines); Understanding (what the

@@ -296,6 +296,23 @@ syntax for allowed-domains), retried up to 3 rounds, then PR `hands/plan` is ope
 `approve`: merges exactly the reviewed head sha (squash) after checking the PR and base haven't moved,
 re-validates the merged spec, then starts the build. The dashboard's Approve button re-sends the sha it
 displayed, and highlights risky acceptance commands and new network domains for human review.
+`plan --amend` (0.5.6, dashboard "Amend plan"): once a spec is approved the plan may only grow. The change
+request (stdin) goes to the same planner session with the spec clone at `/workspace`, the app repo at the
+built commit read-only at `/app` (a `git archive` of the pinned sha, extracted on the host with the export
+tar rules: regular files only, no `..`, no links, size caps; no `.git`, no credentials; refused when the clone
+is dirty or has commits not on origin, so an accepted-but-unpushed step is never reset away) and a build summary
+from `state.json`. On top of the fresh-plan checks the validator rejects: a missing or reordered existing
+step; a new id without the `C<round>-` prefix; any change to a step the runner already built (its
+`steps.json` entry and the acceptance files it owns are compared byte for byte with the spec commit recorded
+when it passed, `mark-done` records it too); a changed or removed existing acceptance file not listed in
+PLAN.md under `## Tests changed/removed` (removed files become deletions in the PR); a dropped or re-versioned
+pin (no pins at all is fine when the base had none; only new pins are age-checked); an amendment that adds no
+step. Changes to shared settings (setup, regression, e2e_command, allowed_paths,
+allow_text_paths, always_refs) are accepted but flagged (`shared_changed`, old vs new): the dashboard refuses
+Approve until the reviewer ticks them. Each round opens its own branch `hands/amend-C<round>` and PR; approve
+is the same sha-pinned squash merge; the runner then picks up the first non-passed step as usual. Early
+refusals (build running, a fresh plan awaiting review, no steps.json, empty change request) leave the plan
+state untouched and only set `error`.
 
 ## Install and live copy
 

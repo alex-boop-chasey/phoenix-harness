@@ -56,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--clear-model", action="store_true")
     ap.add_argument("--confirm", default="")
     ap.add_argument("--then-plan", action="store_true")
+    ap.add_argument("--amend", action="store_true", help="plan: amend the approved plan (change request on stdin)")
     ap.add_argument("--from-repo", default="", metavar="OWNER/REPO")
     ap.add_argument("--branch", default="")
     ap.add_argument("--ruleset", action="store_true")
@@ -87,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         from . import planner
         if a.command == "plan":
             fb = sys.stdin.read() if not sys.stdin.isatty() else ""
-            return planner.plan(cfg, fb)
+            return planner.plan(cfg, fb, amend=a.amend)
         return planner.approve(cfg, a.arg or "")
     r = Runner(cfg)
     st = r.state
@@ -222,7 +223,12 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         x = st.step(a.arg)
         if cmd == "mark-done":
-            x.update({"status": "passed", "commit": "human", "passed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+            try:
+                spec_commit = gitops.head(cfg.spec_dir)      # so a later `plan --amend` can compare this step
+            except gitops.GitError:
+                spec_commit = ""
+            x.update({"status": "passed", "commit": "human", "spec_commit": spec_commit,
+                      "passed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
             st.append_jsonl("progress.jsonl", {"step": a.arg, "title": "(human step)", "commit": "", "summary": "done by a human"})
         else:
             st.data["steps"][a.arg] = {"status": "pending", "attempts": 0, "reasons": []}

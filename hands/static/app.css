@@ -193,6 +193,11 @@ pre:empty { display: none; }
 .cmd.risky { color: var(--bad); font-weight: 600; }
 .warnbox { border: 1px solid var(--bad); border-left-width: 3px; border-radius: var(--r-2); padding: var(--sp-2) var(--sp-3); margin: 8px 0; background: var(--bad-soft); }
 .warnbox ul { margin: 6px 0; }
+.amend { margin-top: var(--sp-3); display: grid; gap: var(--sp-2); }
+tr.new td { background: var(--accent-soft); }
+.tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: var(--r-pill); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-0); font-weight: 600; }
+.diff { width: 100%; margin: 6px 0; font-size: var(--fs-1); } .diff th { text-align: left; }
+.cmd.old { color: var(--ink-3); text-decoration: line-through; }
 .files button { font: 12px var(--mono); background: none; border: none; color: var(--accent); cursor: pointer; padding: 0 6px 0 0; }
 .files button:hover { text-decoration: underline; }
 .attempt { border-bottom: 1px solid var(--line); padding: 8px 0; }

@@ -692,6 +692,8 @@ function stepBar(d) {
 const planViewer = el("pre", {}, "Pick a file to view it.");
 const planViewerTitle = el("h3", {}, "File");
 
+let sharedAck = false;
+let ackFor = "";                       // head_sha the ticks were given for: a new candidate starts unticked
 const RISKY = /\b(curl|wget|nc|ncat|socat|ssh|scp|base64|eval|exec|python3? -c|node -e|perl|env|printenv|sudo)\b|\|\s*(ba)?sh\b|\$\(|`|>\s*\/|https?:\/\//;
 let domainAck = false;
 const cmdView = (c) => {
@@ -704,10 +706,52 @@ async function planAction(name, act, label, headSha) {
   try {
     await api(`/api/p/${encodeURIComponent(name)}/action/${act}`, { method: "POST",
       headers: { "X-Hands": "1", "Content-Type": "application/json" },
-      body: JSON.stringify({ feedback: act === "plan" ? planFeedback : "", head_sha: headSha || "" }) });
-    if (act === "plan") planFeedback = "";
+      body: JSON.stringify({ feedback: act === "plan" || act === "amend" ? planFeedback : "", head_sha: headSha || "",
+        shared_ack: act === "approve" ? sharedAck : false }) });
+    if (act === "plan" || act === "amend") planFeedback = "";
+    if (act === "approve") { sharedAck = false; domainAck = false; }
   } catch (e) { toast(`${label} failed: ${e.message}`, true); }
   refresh(false);
+}
+
+// "Amend plan": a change request for an approved (or hand-written) spec. The planner may only append steps.
+function amendForm(d, p, btn) {
+  const fb = el("textarea", { rows: "3", maxlength: "8000", class: "feedback",
+    placeholder: "What should be added or changed? (e.g. 'add a pricing page with three tiers')" });
+  fb.value = planFeedback;
+  fb.addEventListener("input", () => { planFeedback = fb.value; });
+  return el("div", { class: "amend" },
+    el("h3", {}, "Amend plan"),
+    el("p", { class: "muted" }, "Describe the change. The planner reads the built app and the approved spec, then appends new steps " +
+      `(ids C${(p.round || 0) + (p.state === "approved" || !p.mode || p.mode === "fresh" ? 1 : 0)}-…). ` +
+      "Existing steps stay as they are; steps already built cannot change. You review the amendment before anything is built."),
+    el("label", { for: "amendtext" }, "Change request"), Object.assign(fb, { id: "amendtext" }),
+    el("div", { class: "row out" }, btn("Amend plan", () => planAction(d.name, "amend", "Start the planner on this change"), !d.alive)));
+}
+
+const valList = (v) => Array.isArray(v) ? (v.length ? v.join(", ") : "(none)") : (v || "(none)");
+
+function amendNotice(p) {
+  const items = [el("div", {}, el("strong", {}, "New steps: "), el("span", { class: "mono" }, (p.new_steps || []).join(", ") || "(none)")),
+    el("div", {}, el("strong", {}, "Built app at: "), el("span", { class: "mono" }, (p.app_sha || "").slice(0, 12)))];
+  if (p.request) items.push(el("div", {}, el("strong", {}, "Change request: "), el("span", { class: "goal" }, p.request)));
+  if ((p.tests_changed || []).length) {
+    items.push(el("div", {}, el("strong", {}, "Existing tests changed or removed (listed in PLAN.md):"),
+      el("ul", {}, p.tests_changed.map((x) => el("li", { class: "mono" }, x)))));
+  }
+  return el("div", { class: "notice" }, el("strong", {}, `Amendment C${p.round || "?"}`), ...items);
+}
+
+function sharedBox(p) {
+  const box = el("input", { type: "checkbox", id: "sharedack" });
+  box.checked = sharedAck;
+  box.addEventListener("change", () => { sharedAck = box.checked; refresh(false); });
+  return el("div", { class: "warnbox" },
+    el("strong", {}, "This amendment changes settings that apply to every step:"),
+    el("table", { class: "diff" }, el("thead", {}, el("tr", {}, ["Setting", "Was", "Now"].map((h) => el("th", {}, h)))),
+      el("tbody", {}, p.shared_changed.map((x) => el("tr", {},
+        el("td", { class: "mono" }, x.key), el("td", { class: "cmd old" }, valList(x.old)), el("td", { class: "cmd" }, valList(x.new)))))),
+    el("label", { for: "sharedack", class: "inline" }, box, " I checked these changes and want them"));
 }
 
 async function showPlanFile(name, path) {
@@ -729,7 +773,12 @@ function planSection(d) {
   const log = (p.log || []).length ? el("pre", { class: "log-small" }, p.log.join("\n")) : null;
   const head = el("div", { class: "row" }, el("h2", {}, "Plan"), badge(p.running ? "planning" : st),
     p.pr_url ? el("span", { class: "muted" }, `PR #${p.pr}: ${p.pr_url}`) : null);
+  const amendable = d.setup && d.setup.spec_ready;        // steps.json on the spec branch: only amendments from here on
   if (st === "none") {
+    if (amendable) {
+      return el("section", {}, head, p.error ? el("p", { class: "reason" }, p.error) : null, amendForm(d, p, btn),
+        log ? el("details", {}, el("summary", {}, "Planner log"), log) : null);
+    }
     return el("section", {}, head,
       el("p", { class: "muted" }, "The planner researches your idea and writes the spec: features, design, steps and acceptance tests. Takes roughly 10-40 minutes."),
       el("div", { class: "row" }, btn("Plan it", () => planAction(d.name, "plan", "Start the planner"), !d.alive)), log);
@@ -751,13 +800,24 @@ function planSection(d) {
       el("p", { class: "muted" }, "Typical run: 15–40 minutes. You'll get a Telegram message when the plan is ready."),
       log ? el("details", {}, el("summary", {}, "Planner log"), log) : null);
   }
+  const amend = p.mode === "amend";
   if (st === "approved") {
-    return el("section", {}, head, el("p", { class: "muted" }, `Plan approved and merged${p.pr ? ` (PR #${p.pr})` : ""}. ${p.summary || ""}`));
+    return el("section", {}, head,
+      el("p", { class: "muted" }, `${amend ? `Amendment C${p.round}` : "Plan"} approved and merged${p.pr ? ` (PR #${p.pr})` : ""}. ${p.summary || ""}`),
+      p.error ? el("p", { class: "reason" }, p.error) : null,
+      amendForm(d, p, btn), log ? el("details", {}, el("summary", {}, "Planner log"), log) : null);
+  }
+  if (st === "failed" && amend) {
+    return el("section", {}, head, el("p", { class: "reason" }, p.error || "the amendment failed"),
+      amendForm(d, p, btn), log ? el("details", {}, el("summary", {}, "Planner log"), log) : null);
   }
   const parts = [head];
   if (p.error) parts.push(el("p", { class: "reason" }, p.error));
   if (st === "ready") {
+    if ((p.head_sha || "") !== ackFor) { ackFor = p.head_sha || ""; sharedAck = false; domainAck = false; }
     parts.push(el("p", {}, p.summary || ""));
+    if (amend) parts.push(amendNotice(p));
+    if (amend && (p.shared_changed || []).length) parts.push(sharedBox(p));
     (p.warnings || []).forEach((w) => parts.push(el("div", { class: "notice warn" }, el("strong", {}, "Check before approving"), w)));
     if ((p.domains || []).length) {
       const box = el("input", { type: "checkbox", id: "domack" });
@@ -781,8 +841,8 @@ function planSection(d) {
   if (p.step_list && p.step_list.length) {
     parts.push(el("div", { class: "scroll" }, el("table", {},
       el("thead", {}, el("tr", {}, ["Step", "Title", "Type", "Checks"].map((h) => el("th", {}, h)))),
-      el("tbody", {}, p.step_list.map((x) => el("tr", {},
-        el("td", {}, x.id), el("td", {}, x.title, el("div", { class: "muted goal" }, x.goal || ""),
+      el("tbody", {}, p.step_list.map((x) => el("tr", { class: x.new ? "new" : "" },
+        el("td", {}, x.id, x.new ? el("span", { class: "tag" }, "new") : null), el("td", {}, x.title, el("div", { class: "muted goal" }, x.goal || ""),
           x.notes ? el("div", { class: "muted goal" }, `Notes: ${x.notes}`) : null,
           (x.refs || []).length ? el("div", { class: "muted goal" }, `Refs: ${x.refs.join(", ")}`) : null),
         el("td", {}, x.type || "code", x.max_attempts ? ` (max ${x.max_attempts})` : ""),
@@ -796,12 +856,13 @@ function planSection(d) {
   }
   if (p.plan_md) parts.push(el("h3", {}, "PLAN.md"), el("pre", {}, p.plan_md));
   parts.push(el("label", {}, st === "ready" ? "Feedback (optional, for a re-plan)" : "Feedback for the next attempt (optional)"), fb);
+  const canApprove = !d.alive && (!(p.domains || []).length || domainAck) && (!amend || !(p.shared_changed || []).length || sharedAck);
   parts.push(el("div", { class: "row out" },
-    st === "ready" ? btn(`Approve & build (${(p.head_sha || "").slice(0, 7)})`, () => planAction(d.name, "approve",
-      `Merge PR #${p.pr} at ${(p.head_sha || "").slice(0, 7)} exactly as reviewed and start building`, p.head_sha),
-      !d.alive && (!(p.domains || []).length || domainAck)) : null,
-    btn(st === "ready" ? "Re-plan with feedback" : "Plan again", () => planAction(d.name, "plan",
-      st === "ready" ? "Discard this plan and re-plan with your feedback" : "Run the planner again"), !d.alive)));
+    st === "ready" ? btn(`Approve & build${amend ? " amendment" : ""} (${(p.head_sha || "").slice(0, 7)})`, () => planAction(d.name, "approve",
+      `Merge PR #${p.pr} at ${(p.head_sha || "").slice(0, 7)} exactly as reviewed and start building`, p.head_sha), canApprove) : null,
+    btn(st === "ready" ? "Re-plan with feedback" : "Plan again", () => planAction(d.name, amend ? "amend" : "plan",
+      st === "ready" ? `Discard this ${amend ? "amendment" : "plan"} and re-plan with your feedback` : "Run the planner again"),
+      !d.alive && (!amend || !!planFeedback.trim()))));
   if (log) parts.push(el("details", {}, el("summary", {}, "Planner log"), log));
   return el("section", {}, ...parts);
 }
@@ -830,7 +891,7 @@ async function refresh(full) {
       ? el("section", {}, el("h2", {}, `Creation: ${d.create.state}`), d.create.error ? el("p", { class: "reason" }, d.create.error) : null,
         el("pre", {}, d.create.lines.join("\n"))) : null;
     const content = el("div", { class: "content" }, ...[top, createSec,
-      d.managed && !(d.plan && d.plan.state === "approved" && d.passed > 0) ? planSection(d) : null,
+      d.managed ? planSection(d) : null,
       showSetup ? setupSection(d) : null,
       envSection(name),
       el("div", { class: "grid2" }, stepsSection(d), metricsSection(d)), logSec,

@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.5.6 (step 22: planner amend mode, 2026-10-20)
+
+From `main` 1c3f3bb (0.5.3). 0.5.4 and 0.5.5 were abandoned (kept on tag `keep-0.5.5`); nothing from them is here.
+
+- Planner amend mode: `hands <p> plan --amend` (change request on stdin) and the dashboard's **Amend plan** form
+  on approved projects. An approved plan may only grow: the planner gets the spec clone at `/workspace`, the app
+  repo at the built commit **read-only at `/app`** (a `git archive` of the pinned sha extracted on the host with
+  the export tar rules: regular files only, no `..`, no symlinks or hard links, size caps; no `.git`, no
+  credentials; refused when the clone has local changes or commits not yet on origin) and a build summary from
+  `state.json`.
+- Append-only validation on top of the fresh-plan checks: existing steps keep id, place and order; new ids must
+  start with `C<round>-`; a step the runner already built may not change (its `steps.json` entry and the
+  acceptance files it owns are compared byte for byte with the spec commit recorded when it passed;
+  `mark-done` now records that commit too); a changed or removed existing acceptance file must be listed in
+  PLAN.md under `## Tests changed/removed` (removed files become deletions in the PR); existing pins stay as
+  they are (no pins at all is fine when the base had none; only new pins are age-checked); an amendment must
+  add at least one step. Shared settings (setup, regression, e2e_command, allowed_paths,
+  allow_text_paths, always_refs) may change but are flagged with old and new values; the dashboard refuses
+  Approve until the reviewer ticks them (`shared_ack`, like the network-domains tick).
+- Each amendment round opens its own branch and PR `hands/amend-C<round>`; approve is the same sha-pinned
+  squash merge and start. Early refusals (build running, a fresh plan awaiting review, no steps.json, empty
+  change request, plain `plan` on an approved project) leave the plan state as it was and only set `error`.
+- `plan.json`: `mode`, `round`, `request`, `branch`, `app_sha`, `new_steps`, `tests_changed`, `shared_changed`;
+  `plan_info` returns them and marks new steps in `step_list`; `POST /api/p/NAME/action/amend`.
+- Dashboard plan view: shown on approved projects again (compact Amend plan form); amendment review highlights
+  new steps, lists the change request, the built commit, changed tests and the shared-settings diff; the
+  button reads "Approve & build amendment". Fresh planning is unchanged.
+- Tests: `tests/fake_docker.py` enforces `readonly` binds (a scenario `write` under one fails with
+  "Read-only file system"); new `TestAmend` class in `tests/test_planner.py`; rig fixture `cafe` (amendment
+  ready) in `tools/fixtures.py`, captured by `tools/ui-shots.sh` by default.
+
 ## 0.5.3 (step 18: public access, 2026-10-18)
 
 - Public access through Cloudflare Access (`hands/publicaccess.py`, `docs/public-access.md`): with

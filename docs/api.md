@@ -1,6 +1,6 @@
-# Phoenix Harness 0.5.3 — dashboard HTTP API
+# Phoenix Harness 0.5.6 — dashboard HTTP API
 
-Baseline written 2026-10-17 (step 01), updated through step 18 (0.5.3). Server: `hands/dashboard.py` (`hands-dash`), stdlib
+Baseline written 2026-10-17 (step 01), updated through step 22 (0.5.6). Server: `hands/dashboard.py` (`hands-dash`), stdlib
 `ThreadingHTTPServer` bound to **127.0.0.1:8090** only. Reach it through an SSH tunnel:
 `ssh -N -L 8090:127.0.0.1:8090 builder`, or (0.5.3) through a Cloudflare Tunnel + Cloudflare Access on a
 configured public host: `docs/public-access.md`.
@@ -188,6 +188,12 @@ lines; a dead create process is shown as `failed` after 20 s). `plan.state`:
 not cover existing code in: lib/" for imported repos), `plan_md` is the candidate PLAN.md (≤200 kB),
 `step_list` the parsed candidate steps (≤100) and `shared` its spec-wide commands/paths; when
 `planning`, `activity`/`files_written` give live progress; `log` is the last 150 plan.log lines.
+0.5.6 (amend mode): `mode` (`fresh` | `amend`), `round` (amendment number, new step ids start with
+`C<round>-`), `app_sha` (app repo commit the planner saw read-only at `/app`), `request` (the change
+request), `branch` (`hands/plan` or `hands/amend-C<round>`), `new_steps` (ids added), `tests_changed`
+(existing `acceptance/` files changed or removed, as listed in PLAN.md), `shared_changed`
+(`[{"key","old","new"}]` for setup/regression/e2e_command/allowed_paths/allow_text_paths/always_refs); each
+`step_list` entry carries `new: true|false`. The lists are `[]` when absent.
 
 ### GET /api/p/NAME/log?lines=N
 
@@ -283,7 +289,7 @@ Runs the `hands` CLI as a subprocess (60 s timeout), so the CLI's own checks app
 Response: `200 {"rc": <int>, "output": "<combined stdout+stderr, last 4000 chars>"}` (`rc` 124 = timed out).
 Unknown action → 404. Body: none.
 
-### POST /api/p/NAME/action/plan and /api/p/NAME/action/approve
+### POST /api/p/NAME/action/plan, /api/p/NAME/action/amend and /api/p/NAME/action/approve
 
 Managed (hands-created) projects only. Body: `{"feedback": "...", "head_sha": "..."}` — `feedback`
 (≤8000 chars) only for `plan`, `head_sha` only for `approve`. Refused (`400`) while the planner or the
@@ -291,6 +297,10 @@ build is running; `approve` additionally requires plan state `ready` and `head_s
 40-hex head (stale page → `"the plan changed since this page showed it; review the new version, then
 approve"`); `plan` is refused once a plan was approved. Spawns `hands <name> plan|approve [sha]`
 detached, log `state/plan/plan.log`. `200 {"rc": 0, "output": "plan started"}` (or `"approve started"`).
+`amend` (0.5.6) takes `{"feedback": "<change request>"}` (required, ≤8000 chars) and spawns
+`hands <name> plan --amend` with it on stdin; refused when the spec branch has no `steps.json` yet or a fresh
+plan is waiting for review. `approve` of an amendment whose `shared_changed` is non-empty additionally
+requires `{"shared_ack": true}` (the review tick; 400 `"this amendment changes shared settings; …"` otherwise).
 
 ### POST /api/p/NAME/hide and /api/p/NAME/unhide  (since 0.5, step 05)
 

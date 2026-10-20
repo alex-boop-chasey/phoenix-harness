@@ -26,6 +26,7 @@ if argv[0] != "run":
     sys.exit(0)
 
 mounts, env, i = {}, {}, 1
+readonly = set()                      # container dsts mounted readonly: writes under them fail like EROFS
 flags_with_value = {"--name", "--label", "--user", "--memory", "--memory-swap", "--cpus", "--pids-limit",
                     "--security-opt", "-w", "--cap-add", "--network", "--env-file", "--entrypoint", "--shm-size"}
 while i < len(argv):
@@ -34,6 +35,8 @@ while i < len(argv):
         kv = dict(x.split("=", 1) for x in argv[i + 1].split(",") if "=" in x)
         if kv["type"] == "bind":
             mounts[kv["dst"]] = kv["src"]
+            if "readonly" in argv[i + 1].split(","):
+                readonly.add(kv["dst"])
         i += 2
     elif a == "-e":
         k, _, v = argv[i + 1].partition("=")
@@ -54,6 +57,13 @@ def host(p: str) -> str:
         if p == dst or p.startswith(dst + "/"):
             return mounts[dst] + p[len(dst):]
     return p
+
+
+def is_readonly(p: str) -> bool:
+    for dst in sorted(mounts, key=len, reverse=True):
+        if p == dst or p.startswith(dst + "/"):
+            return dst in readonly
+    return False
 
 
 def mapped(script: str) -> str:
@@ -124,6 +134,15 @@ if role in ("coder", "eval", "probe", "planner"):
         with open(rec, "a") as f:
             f.write(json.dumps({"role": role, "model": model, "prompt": prompt, "cmd": cmd}) + "\n")
     ws = Path(mounts["/workspace"])
+    refused = []
+    for cpath, content in (item.get("write") or {}).items():      # absolute container paths, ro mounts enforced
+        if is_readonly(cpath):
+            refused.append(cpath)
+            print(f"EROFS: Read-only file system: {cpath}", file=sys.stderr)
+            continue
+        hp = Path(host(cpath))
+        hp.parent.mkdir(parents=True, exist_ok=True)
+        hp.write_text(content)
     for rel, content in (item.get("files") or {}).items():
         p = ws / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -147,6 +166,8 @@ if role in ("coder", "eval", "probe", "planner"):
     for ev in item.get("stream") or []:
         print(json.dumps(ev), flush=True)
     text = item.get("text", "done\nSUMMARY: did the thing")
+    if refused:
+        text = "".join(f"write failed: EROFS: Read-only file system: {c}\n" for c in refused) + text
     if role == "eval" and "VERDICT:" in text and '"nonce"' not in text and not item.get("no_nonce"):
         import re
         m = re.search(r'"nonce": "([0-9a-f]+)"', prompt)

@@ -15,8 +15,10 @@ dashboard shows:
   landing   plan ready for review (managed, imported from an existing repo; candidate plan + PR metadata,
             an allowed_paths coverage warning)
   notes     planning right now (managed; planner lock held, live activity)
+  cafe      done, with an amendment ready for review (managed; 0.5.6 amend mode: new step C1-01 highlighted,
+            an existing test changed, a shared-settings change that needs the review tick)
 
-[count] (default 6) = how many projects: 0..6 takes the first N of the list above; above 6 adds
+[count] (default 6: cafe needs 7) = how many projects: 0..7 takes the first N of the list above; above 7 adds
 simple extra projects (done / idle / stopped / paused) named from EXTRA, up to 20. [hidden...] =
 project names written to <config_home>/ui.json as closed tabs.
 
@@ -324,7 +326,61 @@ def p_notes(cfg_home: Path, root: Path) -> None:
     write_toml(cfg_home, "notes", r, managed=True)
 
 
-STANDARD = [p_bookings, p_crm, p_blog, p_wiki, p_landing, p_notes]
+def p_cafe(cfg_home: Path, root: Path) -> None:
+    """managed, all steps built, amendment C1 ready for review (0.5.6)"""
+    steps = [("S01", "Project scaffold"), ("S02", "Menu page"), ("S03", "Opening hours")]
+    r = root / "cafe"
+    base = json.loads(steps_json("cafe", steps))
+    base.update({"setup": ["pnpm install --frozen-lockfile"], "regression": ["pnpm test"],
+                 "always_refs": ["docs/conventions.md"], "pins": {"astro": "7.3.0"}})
+    for st_ in base["steps"]:
+        st_["acceptance"] = [f"node --test acceptance/{st_['id'].lower()}.test.mjs"]
+    make_repo(r / "specs", {"steps.json": json.dumps(base, indent=1), "PLAN.md": "# Plan: cafe\n",
+                            "docs/conventions.md": "# Conventions\n",
+                            **{f"acceptance/{s.lower()}.test.mjs": "test('x', () => {});\n" for s, _ in steps}})
+    make_repo(r / "app", {"src/app.ts": "export {}\n"})
+    (r / "description.txt").write_text("Website for a neighbourhood cafe: menu, hours, directions.\n")
+    st = r / "state"
+    state_json(st, "done", "all steps passed", {s: passed(s) for s, _ in steps})
+    jsonl(st / "metrics.jsonl", metrics([s for s, _ in steps]))
+    jsonl(st / "progress.jsonl", progress(steps))
+    runner_log(st, ["PASSED S03 @ {} (pushed)".format(sha("S03")[:9]), "DONE: all steps passed"])
+    for s, _ in steps:
+        attempt_dir(st, f"{s}-1", passed=True)
+    plan = st / "plan"
+    cand = plan / "candidate"
+    cand.mkdir(parents=True)
+    amended = json.loads(json.dumps(base))
+    amended["regression"] = ["pnpm test", "pnpm run lint"]
+    amended["steps"].append({"id": "C1-01", "title": "Online ordering form", "depends_on": ["S02"],
+                             "goal": "Order form on the menu page posting to the existing API; confirmation email stub.",
+                             "acceptance": ["node --test acceptance/c1-01.test.mjs"]})
+    (cand / "steps.json").write_text(json.dumps(amended, indent=1))
+    (cand / "PLAN.md").write_text(
+        "# Plan: cafe\n\n## Amendment 1\n\nAdds an online ordering form to the menu page (C1-01). Lint joins the "
+        "regression commands because the form code adds a second entry point.\n\n## Tests changed/removed\n\n"
+        "- acceptance/s02.test.mjs: also asserts the menu page links to the order form\n")
+    (plan / "plan.json").write_text(json.dumps({
+        "state": "ready", "error": "", "mode": "amend", "round": 1, "request": "Add an online ordering form to the menu page.",
+        "summary": "4 steps; online ordering form appended", "files": ["steps.json", "PLAN.md", "acceptance/c1-01.test.mjs",
+                                                                           "acceptance/s02.test.mjs"],
+        "steps": 4, "domains": [], "warnings": [], "pr": 4, "pr_url": "https://github.com/acme/cafe-specs/pull/4",
+        "branch": "hands/amend-C1", "head_sha": sha("cafe-head"), "base_sha": sha("cafe-base"), "app_sha": sha("cafe-app"),
+        "new_steps": ["C1-01"], "tests_changed": ["acceptance/s02.test.mjs"],
+        "shared_changed": [{"key": "regression", "old": ["pnpm test"], "new": ["pnpm test", "pnpm run lint"]}],
+        "started": NOW - 900, "updated": NOW - 60}))
+    (plan / "plan.log").write_text("".join(f"{time.strftime('%H:%M:%S', time.gmtime(NOW - 900 + i * 100))} {l}\n" for i, l in enumerate([
+        "=== amending", "app repo at " + sha("cafe-app")[:9] + ": 14 files, mounted read-only at /app",
+        "amendment round 1: 3 passed step(s) frozen; new ids C1-*",
+        "planner session (claude-fable-5-1, web search on) started", "writing docs/design.md", "writing steps.json",
+        "planner session ended: kind=ok turns=41 cost~$0.92 540s",
+        "PR #4 https://github.com/acme/cafe-specs/pull/4 @ " + sha("cafe-head")[:9],
+        "READY: 4 steps; online ordering form appended. Review and approve in the dashboard."])))
+    write_toml(cfg_home, "cafe", r, managed=True)
+
+
+STANDARD = [p_bookings, p_crm, p_blog, p_wiki, p_landing, p_notes, p_cafe]
+DEFAULT_COUNT = 6          # the rig's "+"-during-refresh flow needs the tab strip not to overflow at 1440 px
 EXTRA = ["shop", "forum", "invoices", "chat", "gallery", "recipes", "budget", "habits", "fitness", "quiz",
          "inventory", "tickets", "portfolio", "newsletter"]
 
@@ -353,7 +409,7 @@ def p_extra(cfg_home: Path, root: Path, slug: str, i: int) -> None:
 
 def main() -> int:
     cfg_home, root = Path(sys.argv[1]), Path(sys.argv[2])
-    count = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] != "" else len(STANDARD)
+    count = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] != "" else DEFAULT_COUNT
     hidden = sys.argv[4:]
     if not 0 <= count <= len(STANDARD) + len(EXTRA):
         raise SystemExit(f"count must be 0..{len(STANDARD) + len(EXTRA)}")

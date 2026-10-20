@@ -1,4 +1,4 @@
-# Phoenix Harness 0.5.3 (hands runner)
+# Phoenix Harness 0.5.6 (hands runner)
 
 One app behind one login: Project builder and Session manager. What changed since 0.4.3:
 `CHANGELOG.md`; architecture `docs/architecture.md`; HTTP API `docs/api.md`; design system `docs/design.md`;
@@ -78,6 +78,10 @@ docs/*.md, acceptance/**, validated by the runner (up to 2 automatic fix rounds)
 `hands/plan` to <slug>-specs via the GitHub API. The dashboard shows PLAN.md (incl. "Decisions for you
 to check"), steps, checks, files, and any new network domains. **Approve & build** merges exactly the
 reviewed commit (sha-pinned; refused if the branch changed), refreshes the spec and starts the runner.
+**Amend plan** (0.5.6, `hands <p> plan --amend` with the change request on stdin): once a plan is approved it
+can only grow. The planner gets the built app read-only at `/app` and may only append steps (`C<round>-…`);
+built steps and their tests are frozen, changed existing tests must be listed in PLAN.md, shared-settings
+changes need an explicit tick. Each round is its own PR `hands/amend-C<round>`; approve works as above.
 **Re-plan with feedback** revises the plan and updates the same PR.
 
 ## Acceptance tests per step (0.4)

@@ -412,7 +412,10 @@ def plan_info(cfg) -> dict:
     if st.get("state") == "planning" and not running and time.time() - int(st.get("updated") or 0) > 20:
         st = {**st, "state": "failed", "error": st.get("error") or "the planner process ended unexpectedly; see the log"}
     out = {k: st.get(k) for k in ("state", "error", "pr", "pr_url", "head_sha", "summary", "files", "domains", "steps",
-                                  "activity", "files_written", "started", "warnings")}
+                                  "activity", "files_written", "started", "warnings",
+                                  "mode", "round", "app_sha", "request", "branch")}
+    for k in ("new_steps", "tests_changed", "shared_changed"):
+        out[k] = st.get(k) if isinstance(st.get(k), list) else []
     out["running"] = running
     act = read_json(d / "plan-activity.json", None)
     if isinstance(act, dict) and st.get("state") == "planning":
@@ -431,10 +434,12 @@ def plan_info(cfg) -> dict:
             pass
         sj = read_json(cand / "steps.json", None)
         if isinstance(sj, dict):
+            new = set(out["new_steps"]) if out.get("mode") == "amend" else set()
             for x in (sj.get("steps") or [])[:100]:
                 if isinstance(x, dict):
                     out["step_list"].append({k: x.get(k) for k in ("id", "title", "type", "goal", "acceptance", "e2e", "depends_on",
-                                                                   "refs", "notes", "acceptance_files", "max_attempts")})
+                                                                   "refs", "notes", "acceptance_files", "max_attempts")}
+                                            | {"new": x.get("id") in new})
             out["shared"] = {k: sj.get(k) for k in ("allowed_paths", "allow_text_paths", "setup", "regression", "e2e_command",
                                                     "always_refs")}
     return out
@@ -469,7 +474,9 @@ def spawn_cli(log: Path, argv_tail: list[str], stdin_text: str = "") -> None:
     threading.Thread(target=p.wait, daemon=True).start()
 
 
-def plan_action(name: str, action: str, feedback: str, head_sha: str = "") -> dict:
+def plan_action(name: str, action: str, feedback: str, head_sha: str = "", shared_ack: bool = False) -> dict:
+    """plan | amend | approve. `amend` = `hands NAME plan --amend` with the change request on stdin; approving an
+    amendment that changes shared settings (regression, allowed_paths, ...) needs shared_ack (the review tick)."""
     from . import planner
     cfg = load_cfg(name)
     if not cfg.managed:
@@ -485,14 +492,24 @@ def plan_action(name: str, action: str, feedback: str, head_sha: str = "") -> di
             raise ValueError("there is no plan ready to approve")
         if action == "approve" and (not re.fullmatch(r"[0-9a-f]{40}", head_sha or "") or head_sha != st.get("head_sha")):
             raise ValueError("the plan changed since this page showed it; review the new version, then approve")
+        if action == "approve" and st.get("shared_changed") and not shared_ack:
+            raise ValueError("this amendment changes shared settings; tick the box confirming you checked them, then approve")
         if action == "plan" and st.get("state") == "approved":
-            raise ValueError("the plan was already approved")
+            raise ValueError("the plan was already approved; use Amend plan to add to it")
+        if action == "amend":
+            if not (cfg.spec_dir / "steps.json").is_file():
+                raise ValueError("no steps.json on the spec branch yet: nothing to amend (plan first)")
+            if not feedback.strip():
+                raise ValueError("describe the change first (what to add or change)")
+            if st.get("state") == "ready" and st.get("mode") != "amend":
+                raise ValueError("a fresh plan is waiting for review; approve or re-plan it before amending")
         if len(feedback) > 8000:
             raise ValueError("feedback too long (8000 characters max)")
-        if action == "plan":
-            planner.write_state(cfg, state="planning", error="")     # visible at once; the child takes the lock
-        spawn_cli(d / "plan.log", [name, action] + ([head_sha] if action == "approve" else []),
-                  feedback if action == "plan" else "")
+        if action in ("plan", "amend"):            # visible at once; the child takes the lock and reads prev_state
+            planner.write_state(cfg, state="planning", error="", prev_state=st.get("state") or "none",
+                                **({"mode": "amend"} if action == "amend" else {}))
+        argv = {"plan": [name, "plan"], "amend": [name, "plan", "--amend"], "approve": [name, "approve", head_sha]}[action]
+        spawn_cli(d / "plan.log", argv, feedback if action in ("plan", "amend") else "")
     return {"rc": 0, "output": f"{action} started"}
 
 
@@ -973,14 +990,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, start_create(str(req.get("slug", "")), str(req.get("description", "")),
                                                 str(req.get("from_repo", "") or ""), str(req.get("branch", "") or ""),
                                                 req.get("ruleset") is True))
-        if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "action" and parts[4] in ("plan", "approve"):
+        if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "action" and parts[4] in ("plan", "amend", "approve"):
             try:
                 req = json.loads(body or b"{}")
             except ValueError:
                 raise ValueError("bad json")
             fb = str(req.get("feedback", "")) if isinstance(req, dict) else ""
             hs = str(req.get("head_sha", "")) if isinstance(req, dict) else ""
-            return self._json(200, plan_action(parts[2], parts[4], fb, hs))
+            ack = req.get("shared_ack") is True if isinstance(req, dict) else False
+            return self._json(200, plan_action(parts[2], parts[4], fb, hs, ack))
         if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "action":
             return self._json(200, run_action(parts[2], parts[4]))
         if len(parts) == 4 and parts[:2] == ["api", "p"] and parts[3] in ("hide", "unhide"):
