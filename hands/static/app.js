@@ -106,8 +106,10 @@ function roundState(r) {
 function roundTag(r) {
   const st = roundState(r);
   if (!st) return el("span", { class: "rtag none" });
-  const text = st === "all passed" ? (r.self ? "all passed" : "merge") : st;
-  return el("span", { class: `rtag r-${st.replace(/ /g, "_")}`, title: `Change round C${r.id}: ${st}` }, `C${r.id} · ${text}`);
+  const text = { "all passed": r.self ? "ready" : "merge?", open: "", merged: "merged", merging: "merging", discarding: "discarding" }[st];
+  const title = { "all passed": r.self ? "all steps passed; merged by Install update" : "all steps passed: ready to merge",
+    open: `building (${r.passed}/${r.total} steps passed)`, merged: "merged into main", merging: "merge in progress", discarding: "discard in progress" }[st];
+  return el("span", { class: `rtag r-${st.replace(/ /g, "_")}`, title: `Change round C${r.id}: ${title}` }, `C${r.id}${text ? " " + text : ""}`);
 }
 function renderTabs(open, hidden) {
   const strip = $("#tabs");

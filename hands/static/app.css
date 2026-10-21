@@ -378,7 +378,10 @@ dialog.dialog.wide { max-width: min(600px, calc(100vw - 32px)); width: 100%; }
 .rtag.r-merged { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
 .rtag.r-merging, .rtag.r-discarding { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 .rtag.r-discarded { text-decoration: line-through; }
-.tab .rtag { margin-left: 2px; }
+.tab .rtag { margin-left: 2px; flex: none; }
+.tab .badge { flex: none; }
+.tab .tname { flex: 0 1 auto; min-width: 4ch; }
+.tab:has(.rtag:not(.none)) { max-width: 300px; }
 .roundline { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 .rounds { display: grid; gap: var(--sp-3); }
 .round { border: 1px solid var(--line-2); border-left-width: 3px; border-radius: var(--r-2); padding: var(--sp-2) var(--sp-3); background: var(--surface-2); display: grid; gap: 6px; }
