@@ -93,15 +93,29 @@ function tabButton(p) {
   return el("button", {
     class: "tab", type: "button", role: "tab", "data-name": p.name, title: p.name,
     on: { click: (ev) => { if (ev.target.closest(".x")) closeTab(p); else select(p.name); }, keydown: (ev) => tabKey(ev, p) } },
-    el("span", { class: "tname" }, p.name), badge(""),
+    el("span", { class: "tname" }, p.name), badge(""), roundTag(p.round),
     el("span", { class: "x", "aria-label": `Close ${p.name}`, title: "Close tab (Delete)" }, "×"));
+}
+// change-round state per project (0.5.8): "C1" tag coloured by state; nothing for round 0
+function roundState(r) {
+  if (!r) return "";
+  if (r.status === "merged") return "merged";
+  if (r.status === "merging" || r.status === "discarding") return r.status;
+  return r.merge_ready || (r.total && r.passed === r.total) ? "all passed" : "open";
+}
+function roundTag(r) {
+  const st = roundState(r);
+  if (!st) return el("span", { class: "rtag none" });
+  const text = st === "all passed" ? (r.self ? "all passed" : "merge") : st;
+  return el("span", { class: `rtag r-${st.replace(/ /g, "_")}`, title: `Change round C${r.id}: ${st}` }, `C${r.id} · ${text}`);
 }
 function renderTabs(open, hidden) {
   const strip = $("#tabs");
   const selected = mode === "project" ? current : null;
   addBtn.setAttribute("aria-current", String(mode === "new" || mode === "creating"));
   if (!strip.contains(addBtn)) strip.append(addBtn);
-  const key = JSON.stringify([open.map((p) => [p.name, p.error ? "error" : p.status]), selected, open.length ? 0 : hidden.length]);
+  const key = JSON.stringify([open.map((p) => [p.name, p.error ? "error" : p.status, roundState(p.round), p.round && p.round.id]),
+    selected, open.length ? 0 : hidden.length]);
   if (key === lastTabsKey) { updateTabShadows(); return; }
   lastTabsKey = key;
   const have = new Map([...strip.querySelectorAll(".tab")].map((t) => [t.dataset.name, t]));
@@ -117,6 +131,8 @@ function renderTabs(open, hidden) {
     const status = p.error ? "error" : p.status;
     const b = t.querySelector(".badge");
     if (b.textContent !== (status || "?")) b.replaceWith(badge(status));
+    const rt = t.querySelector(".rtag"), nt = roundTag(p.round);
+    if (rt && (rt.className !== nt.className || rt.textContent !== nt.textContent)) rt.replaceWith(nt);
   });
   for (const h of strip.querySelectorAll(".tabs-hint")) h.remove();
   if (!open.length) addBtn.after(el("span", { class: "tabs-hint" }, hidden.length ? `${hidden.length} closed` : "No projects yet"));
@@ -305,6 +321,7 @@ function statusSection(d) {
     el("p", { class: "muted" },
       `${d.passed}/${d.steps.length} steps passed · ${d.total_sessions} sessions · ~$${d.total_cost_usd} API-equivalent · ` +
       `coder ${d.model_override || d.config.coder_model} · eval ${d.model_override || d.config.eval_model} · ${d.config.image}`),
+    roundLine(d),
     d.model_override ? el("p", { class: "reason" }, `Model override active: ${d.model_override}`) : null,
     d.spec_error ? (d.setup && !d.setup.spec_ready
       ? el("p", { class: "muted" }, "No plan yet: the spec repo has no steps.json.")
@@ -639,6 +656,100 @@ async function refreshCreating() {
   } catch (e) { $("#clock").textContent = `update failed: ${e.message}`; }
 }
 
+// ---- change rounds (0.5.8, B3): one card per round, the sha-pinned Merge tap and Discard
+function roundLine(d) {
+  const r = d.round && d.round.record, m = d.round && d.round.merge;
+  if (!r || !m) return null;
+  const st = roundState({ status: r.status, passed: m.passed, total: m.total, merge_ready: m.ready, self: m.self });
+  let text;
+  if (r.status === "merged") text = `merged into ${d.round.branch} at ${(r.merged_sha || "").slice(0, 9)}`;
+  else if (r.status === "merging") text = "merging…";
+  else if (r.status === "discarding") text = "discarding…";
+  else text = `${m.passed}/${m.total} steps passed · ${m.ready ? "ready to merge" : st === "all passed" ? m.why : "building"}`;
+  return el("p", { class: "muted roundline" }, el("span", { class: `rtag r-${st.replace(/ /g, "_")}` }, `C${r.id}`),
+    ` Change round C${r.id} on ${r.branch} (base ${(r.base_sha || "").slice(0, 9)}) · ${text}`);
+}
+
+async function roundAction(d, act, m) {
+  const name = d.name, r = d.round.record;
+  const steps = d.steps.filter((s) => s.round === r.id).map((s) => s.id);
+  const short = (x) => (x || "").slice(0, 9);
+  let ok;
+  if (act === "merge") {
+    ok = await confirmDialog({ title: `Merge change C${r.id} into ${d.round.branch}?`,
+      body: `${r.branch} at ${short(m.branch_sha)} (${steps.length} step${steps.length === 1 ? "" : "s"}: ${steps.join(", ")}) is squashed onto ` +
+        `${d.round.branch} at ${short(m.main_sha)} and pushed. Refused if either head moved since this page showed them. ` +
+        `Rollback by hand: tag ${r.pre_tag} = before the change, hands/merged/C${r.id} = the unsquashed work.`,
+      ok: `Merge change C${r.id}`, okClass: "btn primary" });
+  } else {
+    ok = await confirmDialog({ title: `Discard the build of round C${r.id}?`,
+      warn: `The work on ${r.branch} (${short(m.branch_sha)}) is thrown away (kept as tag hands/discarded/C${r.id}-…); ${d.round.branch} is not touched. ` +
+        `The amendment's steps (${steps.join(", ")}) stay in the spec and go back to pending: the next Start rebuilds them in a fresh round C${r.id}. ` +
+        "Discarding the work is not discarding the change request; that needs a spec PR.",
+      body: `Project ${name}.`, ok: `Discard round C${r.id}`, okClass: "btn danger" });
+  }
+  if (!ok) return;
+  try {
+    await api(`/api/p/${encodeURIComponent(name)}/action/${act}`, { method: "POST",
+      headers: { "X-Hands": "1", "Content-Type": "application/json" },
+      body: JSON.stringify(act === "merge" ? { branch_sha: m.branch_sha, main_sha: m.main_sha } : { branch_sha: m.branch_sha }) });
+    toast(act === "merge" ? `Merging change C${r.id}…` : `Discarding round C${r.id}…`);
+  } catch (e) { toast(`${act === "merge" ? "Merge" : "Discard"} refused: ${e.message}`, true); }
+  refresh(false);
+}
+
+function roundsSection(d) {
+  const R = d.round || {}, rec = R.record, m = R.merge || {}, hist = R.history || [];
+  if (!rec && !hist.length) return null;
+  const short = (x) => (x || "").slice(0, 9);
+  const when = (ts) => ts ? ts.replace("T", " ").replace("Z", " UTC") : "";
+  const btn = (label, onclick, enabled, cls = "act") =>
+    el("button", { class: cls, on: { click: onclick }, ...(enabled ? {} : { disabled: "" }) }, label);
+  const stepList = (id) => d.steps.filter((s) => s.round === id);
+  const icon = (s) => el("span", { class: s.status === "passed" ? "ic ok" : s.status === "failed" ? "ic bad" : "ic" },
+    s.status === "passed" ? "✓" : s.status === "failed" ? "✗" : "○");
+  // every round: the live record first, then earlier rounds from the history (latest first)
+  const byId = new Map();
+  for (const ev of hist) {
+    const x = byId.get(ev.id) || { id: ev.id, events: [] };
+    x.events.push(ev);
+    for (const k of ["request", "pr", "pr_url", "branch", "base_sha", "pre_tag"]) if (ev[k] !== undefined) x[k] = ev[k];
+    byId.set(ev.id, x);
+  }
+  if (rec) byId.set(rec.id, { ...(byId.get(rec.id) || { events: [] }), ...rec, live: true });
+  const cards = [...byId.values()].sort((a, b) => b.id - a.id).map((x) => {
+    const last = x.events.length ? x.events[x.events.length - 1] : null;
+    const live = x.live && rec;
+    let state, cls = "";
+    if (live && rec.status === "merged") { state = `merged into ${R.branch} ${short(rec.merged_sha)} at ${when(rec.merged_at)}`; cls = "r-merged"; }
+    else if (live && rec.status === "merging") { state = "merging…"; cls = "r-merging"; }
+    else if (live && rec.status === "discarding") { state = "discarding…"; cls = "r-discarding"; }
+    else if (live) { state = m.all_passed ? `all ${m.total} steps passed: ${m.ready ? "ready to merge" : m.why}` : `open on ${rec.branch} · ${m.passed}/${m.total} steps passed`; cls = m.all_passed ? "r-all_passed" : "r-open"; }
+    else if (last && last.event === "merged") { state = `merged into ${R.branch} ${short(last.merged_sha)} at ${when(last.ts)}`; cls = "r-merged"; }
+    else if (last && last.event === "discarded") { state = `discarded at ${when(last.ts)} (work kept at ${last.discarded_tag || "a hands/discarded tag"})`; cls = "r-discarded"; }
+    else state = last ? last.event : "";
+    const steps = stepList(x.id);
+    const taps = live && rec.status === "open" ? el("div", { class: "row" },
+      m.self ? el("span", { class: "muted" }, "Merged by Install update (Phoenix updates itself).")
+        : btn(`Merge change C${x.id} (${short(m.branch_sha)} → ${R.branch} ${short(m.main_sha)})`, () => roundAction(d, "merge", m), m.ready, "btn primary"),
+      btn(`Discard round C${x.id}`, () => roundAction(d, "discard", m), !d.alive && !!m.branch_sha, "btn danger"),
+      !m.ready && !m.self && m.why ? el("span", { class: "muted" }, m.why) : null) : null;
+    return el("div", { class: `round ${cls}` },
+      el("div", { class: "row" }, el("span", { class: `rtag ${cls}` }, `C${x.id}`), el("strong", {}, x.request ? x.request.split("\n")[0] : `Change round C${x.id}`),
+        x.pr_url ? el("a", { href: x.pr_url, target: "_blank", rel: "noopener" }, `PR #${x.pr}`) : x.pr ? el("span", { class: "muted" }, `PR #${x.pr}`) : null),
+      el("p", { class: "muted" }, state, x.base_sha ? ` · base ${short(x.base_sha)} (tag ${x.pre_tag || ""})` : ""),
+      steps.length ? el("ul", { class: "rsteps" }, steps.map((s) => el("li", {}, icon(s), " ", el("span", { class: "sid" }, s.id), " ", s.title || ""))) : null,
+      live && rec.error ? el("p", { class: "reason" }, rec.error) : null,
+      taps);
+  });
+  const amendHint = el("p", { class: "muted" }, "Change something else: ", el("a", { href: "#", on: { click: (ev) => {
+    ev.preventDefault(); const t = document.getElementById("amendtext"); if (t) { t.scrollIntoView({ block: "center" }); t.focus(); } } } }, "Amend plan"),
+    " (the planner appends a new round; passed steps are never rebuilt).");
+  return el("section", { class: "rounds" }, el("h2", {}, "Change rounds"), ...cards,
+    R.log ? el("details", {}, el("summary", {}, "Merge / discard log"), el("pre", { class: "log-small" }, R.log)) : null,
+    d.managed ? amendHint : null);
+}
+
 function setupSection(d) {
   const s = d.setup || {};
   const item = (ok, text, hint) => el("li", {}, el("span", { class: ok ? "s-passed" : "s-pending" }, ok ? "✓ " : "○ "), text,
@@ -907,6 +1018,7 @@ async function refresh(full) {
         el("pre", {}, d.create.lines.join("\n"))) : null;
     const content = el("div", { class: "content" }, ...[top, createSec,
       d.managed ? planSection(d) : null,
+      roundsSection(d),
       showSetup ? setupSection(d) : null,
       envSection(name),
       el("div", { class: "grid2" }, stepsSection(d), metricsSection(d)), logSec,

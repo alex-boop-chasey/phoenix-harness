@@ -369,3 +369,22 @@ dialog.dialog.wide { max-width: min(600px, calc(100vw - 32px)); width: 100%; }
   .page-head .label { display: none; }
   .toasts { left: var(--sp-4); right: var(--sp-4); max-width: none; }
 }
+
+/* change rounds (0.5.8): per-project round tag + the rounds section */
+.rtag { display: inline-flex; align-items: center; padding: 0 7px; border-radius: var(--r-pill); font-size: var(--fs-0); font-weight: 600;
+  line-height: 18px; background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--line-2); white-space: nowrap; }
+.rtag.none { display: none; }
+.rtag.r-all_passed { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.rtag.r-merged { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.rtag.r-merging, .rtag.r-discarding { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.rtag.r-discarded { text-decoration: line-through; }
+.tab .rtag { margin-left: 2px; }
+.roundline { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.rounds { display: grid; gap: var(--sp-3); }
+.round { border: 1px solid var(--line-2); border-left-width: 3px; border-radius: var(--r-2); padding: var(--sp-2) var(--sp-3); background: var(--surface-2); display: grid; gap: 6px; }
+.round.r-all_passed { border-left-color: var(--accent); }
+.round.r-merged { border-left-color: var(--ok); }
+.round.r-merging, .round.r-discarding { border-left-color: var(--warn); }
+.round p { margin: 0; }
+.rsteps { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: var(--fs-1); }
+.rsteps .sid { font-family: var(--mono); color: var(--ink-2); }

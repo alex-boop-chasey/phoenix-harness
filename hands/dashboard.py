@@ -252,7 +252,12 @@ def round_chip(cfg, st: dict) -> dict | None:
     rec = rounds.record(st)
     if not rec:
         return None
-    t = merge.tap_state(cfg, st, None)
+    try:                                    # step ids straight from steps.json: pending steps are not in state.json yet
+        raw = json.loads((cfg.spec_dir / "steps.json").read_text())
+        ids = [x["id"] for x in raw.get("steps") or [] if isinstance(x, dict) and isinstance(x.get("id"), str)]
+    except (OSError, ValueError, AttributeError):
+        ids = None
+    t = merge.tap_state(cfg, st, ids)
     return {"id": rec["id"], "status": t["state"], "passed": t["passed"], "total": t["total"],
             "merge_ready": t["ready"], "self": t["self"]}
 

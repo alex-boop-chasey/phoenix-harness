@@ -382,7 +382,82 @@ def p_cafe(cfg_home: Path, root: Path) -> None:
     write_toml(cfg_home, "cafe", r, managed=True)
 
 
-STANDARD = [p_bookings, p_crm, p_blog, p_wiki, p_landing, p_notes, p_cafe]
+def p_round(cfg_home: Path, root: Path, slug: str, kind: str, desc: str) -> None:
+    """0.5.8 change rounds: kind = open (C1 building, 1/2 passed) | ready (all passed: Merge tap) | merged |
+    self (all passed, Phoenix itself: no tap, merged by Install update)."""
+    steps = [("S01", "Project scaffold"), ("S02", "Core pages")]
+    c1 = [("C1-01", "Pricing page"), ("C1-02", "FAQ section")]
+    r = root / slug
+    base = json.loads(steps_json(slug, steps + c1))
+    make_repo(r / "specs", {"steps.json": json.dumps(base, indent=1), "PLAN.md": f"# Plan: {slug}\n\n## Amendment 1\n"})
+    make_repo(r / "app", {"src/app.ts": "export {}\n"})
+    app = r / "app"
+    main_sha = subprocess.run(["git", "-C", str(app), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    git(app, "checkout", "-q", "-b", "change/C1")
+    (app / "src" / "pricing.ts").write_text("export const tiers = 3\n")
+    git(app, "add", "-A")
+    git(app, "commit", "-qm", "C1-01: pricing page")
+    head_sha = subprocess.run(["git", "-C", str(app), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    git(app, "tag", "hands/pre-C1", main_sha)
+    (r / "description.txt").write_text(desc + "\n")
+    st = r / "state"
+    done = c1 if kind != "open" else c1[:1]
+    srec = {s: passed(s) for s, _ in steps}
+    srec.update({s: {**passed(s), "round": 1, "branch": "change/C1"} for s, _ in done})
+    rec = {"id": 1, "branch": "change/C1", "base_sha": main_sha, "pre_tag": "hands/pre-C1", "spec_commit": sha(slug + "-spec"),
+           "opened_at": iso(NOW - 5400), "status": "open", "request": desc, "pr": 4,
+           "pr_url": f"https://github.com/acme/{slug}-specs/pull/4"}
+    events = [{"ts": iso(NOW - 5400), "event": "opened", **rec}]
+    if kind == "merged":
+        git(app, "checkout", "-q", "-")
+        rec.update({"status": "merged", "head_sha": head_sha, "merged_sha": sha(slug + "-merged"), "merged_tag": "hands/merged/C1",
+                    "merged_at": iso(NOW - 600)})
+        events.append({"ts": iso(NOW - 600), "event": "merged", **rec})
+    status = "done" if kind != "open" else "running"
+    state_json(st, status, "all steps passed" if status == "done" else "", srec,
+               current={"step": "C1-02", "attempt": 1, "phase": "coder", "base": head_sha} if kind == "open" else None,
+               extra={"round": rec})
+    if kind == "merged":
+        (st / "round.log").write_text(f"{iso(NOW - 600)} merged round C1: change/C1 ({head_sha[:9]}) squashed into main as "
+                                      f"{sha(slug + '-merged')[:9]}; tag hands/merged/C1\n")
+    if kind == "open":
+        hold_lock(st / "runner.lock")
+        (st / "activity.json").write_text(json.dumps({"text": "writing src/faq.ts", "at": NOW - 5}))
+    jsonl(st / "rounds.jsonl", events)
+    jsonl(st / "metrics.jsonl", metrics([s for s, _ in steps + done]))
+    jsonl(st / "progress.jsonl", progress(steps + done))
+    runner_log(st, [f"opened round C1: branch change/C1 from {main_sha[:9]}, tag hands/pre-C1",
+                    f"PASSED C1-01 @ {head_sha[:9]} (pushed)"])
+    for s, _ in steps + done:
+        attempt_dir(st, f"{s}-1", passed=True)
+    plan = st / "plan"
+    plan.mkdir(parents=True, exist_ok=True)
+    (plan / "plan.json").write_text(json.dumps({"state": "approved", "error": "", "mode": "amend", "round": 1, "request": desc,
+                                                "summary": "4 steps; pricing and FAQ appended", "pr": 4,
+                                                "pr_url": f"https://github.com/acme/{slug}-specs/pull/4", "updated": NOW - 5400}))
+    write_toml(cfg_home, slug, r, managed=True)
+    if kind == "self":
+        toml = cfg_home / "projects" / f"{slug}.toml"
+        toml.write_text(toml.read_text() + "self = true\n")
+
+
+def p_bakery(cfg_home: Path, root: Path) -> None:
+    p_round(cfg_home, root, "bakery", "open", "Add a pricing page and an FAQ section.")
+
+
+def p_florist(cfg_home: Path, root: Path) -> None:
+    p_round(cfg_home, root, "florist", "ready", "Add a pricing page and an FAQ section.")
+
+
+def p_garage(cfg_home: Path, root: Path) -> None:
+    p_round(cfg_home, root, "garage", "merged", "Add a pricing page and an FAQ section.")
+
+
+def p_phoenix_next(cfg_home: Path, root: Path) -> None:
+    p_round(cfg_home, root, "phoenix-next", "self", "Show the round state per project and add the Merge tap.")
+
+
+STANDARD = [p_bookings, p_crm, p_blog, p_wiki, p_landing, p_notes, p_cafe, p_bakery, p_florist, p_garage, p_phoenix_next]
 DEFAULT_COUNT = 6          # the rig's "+"-during-refresh flow needs the tab strip not to overflow at 1440 px
 EXTRA = ["shop", "forum", "invoices", "chat", "gallery", "recipes", "budget", "habits", "fitness", "quiz",
          "inventory", "tickets", "portfolio", "newsletter"]

@@ -370,6 +370,14 @@ async function capture(context, name, width, theme) {
       await waitBuilder(page);
       await page.locator('#tabs .tab[aria-selected="true"] .x').click();
       await page.locator("dialog.dialog[open]").waitFor({ timeout: 5000 });
+    } else if (name === "merge" || name === "discard") {
+      // 0.5.8: the sha-pinned Merge / Discard confirmation on a round whose steps all passed (florist)
+      await selectProject(page, "florist");
+      await page.locator(".rounds button", { hasText: name === "merge" ? /^Merge change C1/ : /^Discard round C1/ }).click();
+      await page.locator("dialog.dialog[open]").waitFor({ timeout: 5000 });
+      const txt = await page.locator("dialog.dialog[open]").innerText();
+      if (!/[0-9a-f]{9}/.test(txt)) throw new Error(`${name}: the confirmation shows no sha`);
+      if (name === "discard" && !txt.includes("not discarding the change request")) throw new Error("discard: the confirmation must say the steps stay in the spec");
     } else {
       await selectProject(page, name);
     }

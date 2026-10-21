@@ -11,6 +11,9 @@
 #             landing (plan ready)  notes (planning)  new (New project form)
 #             cafe (amendment ready for review, 0.5.6): the 7th sample project, so run it as
 #             UI_SHOTS_PROJECTS=7 UI_SHOTS_HIDDEN=wiki bash tools/ui-shots.sh <label> cafe
+#             bakery (round C1 building)  florist (round C1 all passed: Merge tap)  garage (C1 merged)
+#             phoenix-next (self project: no tap) — projects 8-11, so UI_SHOTS_PROJECTS=11 (0.5.8);
+#             merge / discard: florist with the Merge / Discard confirmation open
 #             sessions (section), nav (phone drawer open)
 #             tabs (builder as it opens), menu ("+" menu open), close (close-tab confirmation)
 #             newrepo (New project form: start from an existing repo), newbad (New project form with
