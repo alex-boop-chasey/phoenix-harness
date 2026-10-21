@@ -847,8 +847,8 @@ class TestSessionsAPI(unittest.TestCase):
 # ---------------------------------------------------------------- the real PTY backend with a fake claude
 FAKE_CLAUDE = r"""#!/bin/sh
 # fake claude for tests: records argv + env, writes a transcript like Claude Code, echoes input
-printf '%s\n' "$0 $*" > "$FAKE_OUT/argv"
-env > "$FAKE_OUT/env"
+printf '%s\n' "$0 $*" > "$FAKE_OUT/argv.tmp" && mv "$FAKE_OUT/argv.tmp" "$FAKE_OUT/argv"
+env > "$FAKE_OUT/env.tmp" && mv "$FAKE_OUT/env.tmp" "$FAKE_OUT/env"
 sid=""
 while [ $# -gt 0 ]; do case "$1" in --session-id|--resume) sid="$2"; shift;; esac; shift; done
 enc=$(pwd | sed 's/[^A-Za-z0-9]/-/g')
