@@ -517,6 +517,69 @@ class TestReviewFixes(unittest.TestCase):
         self.assertEqual(rec["status"], "merged")
         self.assertEqual(p.tree("main"), p.tree("refs/tags/hands/merged/C1"))
 
+    def test_mark_done_records_the_branch_head_and_the_merge_pins_to_it(self):
+        from hands.__main__ import main as cli
+        p = Round(queue=(CODER_P, EVAL_PASS), max_steps=1)          # C1-01 built; C1-02 is done by a human
+        src = p.e.tmp / "appsrc"
+        git(src, "fetch", "-q", "origin")
+        git(src, "checkout", "-q", "-B", "change/C1", "origin/change/C1")
+        (src / "src" / "f.js").write_text("by hand")
+        git(src, "add", "-A")
+        git(src, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "C1-02: faq by hand")
+        git(src, "push", "-q", "origin", "change/C1")
+        human_head = origin_ref(p.e, "change/C1")
+        restore = cli_env(p.e)
+        try:
+            self.assertEqual(cli(["t", "mark-done", "C1-02"]), 0)
+        finally:
+            restore()
+        rec = p.state().data["steps"]["C1-02"]
+        self.assertEqual((rec["commit"], rec["by"], rec["round"]), (human_head, "human", 1))
+        with self.assertRaises(merge.MergeError) as cm:                # the old head is not what the human left
+            p.merge(branch_sha=p.head)
+        self.assertIn("moved", str(cm.exception))
+        gitops.git(p.cfg.app_dir, "fetch", "-q", "origin", "change/C1")
+        gitops.git(p.cfg.app_dir, "checkout", "-q", "-B", "change/C1", "FETCH_HEAD")   # as the runner's sync would
+        merged = p.merge(branch_sha=human_head)
+        self.assertEqual(merged["head_sha"], human_head)
+        self.assertEqual(p.tree("main"), p.tree(human_head))
+        # outside a round mark-done still records "human"
+        p2 = Round()
+        p2.merge()
+        restore = cli_env(p2.e)
+        try:
+            self.assertEqual(cli(["t", "mark-done", "H01"]), 0)
+        finally:
+            restore()
+        self.assertEqual(p2.state().data["steps"]["H01"]["commit"], "human")
+
+    def test_push_refusal_messages_rule_vs_race(self):
+        self.assertEqual(merge.push_refusal("remote: error: GH013: Repository rule violations found for refs/heads/main.\n"
+                                            "remote: - Cannot force-push to this branch"), "rule")
+        self.assertEqual(merge.push_refusal(" ! [rejected] HEAD -> main (fetch first)\nerror: failed to push some refs"), "race")
+        self.assertEqual(merge.push_refusal("fatal: unable to access: Could not resolve host"), "")
+        p = Round()
+        orig = merge.gitops.push_ref
+
+        def rule(repo, srcref, dst):
+            if dst.endswith("/main"):
+                raise gitops.GitError("git push in x: remote: error: GH013: Repository rule violations found for refs/heads/main.\n"
+                                      "remote: - Changes must be made through a pull request.\n ! [remote rejected] HEAD -> main")
+            return orig(repo, srcref, dst)
+
+        merge.gitops.push_ref = rule
+        try:
+            with self.assertRaises(merge.MergeError) as cm:
+                p.merge()
+        finally:
+            merge.gitops.push_ref = orig
+        self.assertIn("by repository rule", str(cm.exception))
+        self.assertIn("GH013", str(cm.exception))
+        self.assertNotIn("press Merge again", str(cm.exception))
+        self.assertEqual(origin_ref(p.e, "main"), p.main)
+        self.assertEqual(p.state().data["round"]["status"], "open")
+        self.assertEqual(gitops.git(p.cfg.app_dir, "rev-parse", "main").strip(), p.main)
+
     def test_discard_resets_failed_steps_too_and_the_ui_lists_every_round_step(self):
         p = Round(extra=(C1, C1B), queue=(CODER_P, EVAL_PASS, {"role": "coder", "files": {}, "text": "no"}), max_steps=1)
         st = p.state()

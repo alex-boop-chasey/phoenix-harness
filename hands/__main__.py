@@ -252,7 +252,13 @@ def main(argv: list[str] | None = None) -> int:
                 spec_commit = gitops.head(cfg.spec_dir)      # so a later `plan --amend` can compare this step
             except gitops.GitError:
                 spec_commit = ""
-            x.update({"status": "passed", "commit": "human", "spec_commit": spec_commit,
+            # in a change round the step's commit is the branch head the human left (fetched from origin), so the
+            # merge tap pins to it; outside a round there is nothing to pin: "human"
+            head = merge.branch_head(cfg, st.data) if rounds.is_open(st.data) else ""
+            if rounds.is_open(st.data) and not head:
+                print(f"cannot read the head of {rounds.record(st.data).get('branch')} on origin; try again when origin is reachable")
+                return 1
+            x.update({"status": "passed", "commit": head or "human", "by": "human", "spec_commit": spec_commit,
                       "passed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                       "round": r.round_id, "branch": r.branch, **rounds.make_record(cfg.spec_dir, a.arg)})
             st.append_jsonl("progress.jsonl", {"step": a.arg, "title": "(human step)", "commit": "", "summary": "done by a human"})

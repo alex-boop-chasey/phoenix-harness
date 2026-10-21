@@ -225,8 +225,10 @@ def _merge(cfg: Config, st: State, log, send, branch_sha: str, main_sha: str) ->
         gitops.git(app, "reset", "-q", "--hard", "HEAD")
         gitops.git(app, "clean", "-qfdx")
     passed, _ = round_steps(st.data, ids, rnd)
-    # the page pins what it showed; what it showed must be the tested head = the last passed code step's commit
-    # (human steps record "human"; a round of human steps only has no tested commit and skips this check)
+    # the page pins what it showed; what it showed must be the head the last passed step left: a code step's accepted
+    # commit, or the branch head a human step was marked done at (0.5.8 mark-done records it; 0.5.7 records say
+    # "human" and are skipped). A round whose records carry no sha at all (legacy human steps only) has no pin
+    # beyond the origin check.
     tested = [(sid, str((st.data.get("steps") or {}).get(sid, {}).get("commit") or "")) for sid in passed]
     tested = [(sid, c) for sid, c in tested if SHA.fullmatch(c)]
     if tested and tested[-1][1] != branch_sha:
@@ -248,7 +250,14 @@ def _merge(cfg: Config, st: State, log, send, branch_sha: str, main_sha: str) ->
         try:
             gitops.push_ref(app, "HEAD", f"refs/heads/{main}")
         except gitops.GitError as e:
-            raise MergeError(f"main moved between the check and the push (git: {str(e)[-200:]}); press Merge again")
+            kind = push_refusal(str(e))
+            line = next((l.strip() for l in str(e).splitlines() if l.strip() and "remote:" in l), str(e).strip().splitlines()[-1][-200:])
+            if kind == "rule":
+                raise MergeError(f"GitHub refused the push to {main} by repository rule ({line[:200]}); the deploy key "
+                                 f"cannot merge into this branch: check the ruleset, nothing was merged")
+            if kind == "race":
+                raise MergeError(f"main moved between the check and the push ({line[:200]}); press Merge again")
+            raise MergeError(f"push to {main} failed ({line[:200]}); nothing was merged")
     except Exception:
         gitops.git(app, "reset", "-q", "--hard", main_sha, check=False)   # local main back to the base (also mid-merge)
         gitops.git(app, "clean", "-qfdx", check=False)
@@ -349,6 +358,35 @@ def _discard(cfg: Config, st: State, log, send, branch_sha: str) -> None:
     st.save()
     log(f"discarded round C{rnd}: {branch} ({branch_sha[:9]}) kept as tag {keep}; steps back to pending: {', '.join(sorted(reset))}")
     send(f"discarded round C{rnd} (work kept as {keep}); its steps are pending again, Start rebuilds them")
+
+
+RULE_HINTS = ("GH013", "rule violation", "protected branch", "hook declined", "Cannot force-push", "GH006")
+RACE_HINTS = ("non-fast-forward", "fetch first", "[rejected]", "stale info")
+
+
+def push_refusal(err: str) -> str:
+    """'rule' when GitHub (or a hook) refused the push by policy, 'race' when the ref moved, '' otherwise."""
+    low = err.lower()
+    if any(h.lower() in low for h in RULE_HINTS):
+        return "rule"
+    if any(h.lower() in low for h in RACE_HINTS):
+        return "race"
+    return ""
+
+
+def branch_head(cfg: Config, data: dict) -> str:
+    """The open round branch's head on origin (local when push is off), '' outside a round or when unreachable.
+    `mark-done` records it as a human step's commit, so the merge pins to what the human left on the branch."""
+    rec = rounds.record(data)
+    if not rec or rec.get("status") != "open" or not rec.get("branch"):
+        return ""
+    branch = str(rec["branch"])
+    try:
+        if cfg.push:
+            return gitops.remote_sha(cfg.app_dir, f"refs/heads/{branch}")
+        return gitops.git(cfg.app_dir, "rev-parse", "-q", "--verify", f"refs/heads/{branch}", check=False).strip()
+    except gitops.GitError:
+        return ""
 
 
 def reset_refusal(cfg: Config, data: dict, sid: str, x: dict) -> str:

@@ -42,6 +42,9 @@ From `main` d70179d (0.5.7). Session manager untouched.
   steps.json; unexpected errors never leave the record in `merging`; a held lock is refused without saving;
   shas use `fullmatch`; discard with push off is pinned to the local head; a re-opened round keeps the
   discarded round's card; `merge_failed` events; the CLI refuses while the planner runs.
+- Human steps in a round: `mark-done` records the branch head on origin as the step's commit (`by: "human"`),
+  so the merge pins to the head the human left; outside a round the commit stays `"human"`. Push refusals are
+  classified: repository rule (`GH013`, protected branch, hook) vs lost race, with distinct messages.
 - Tests: `tests/test_v058.py` (merge happy path and 8 refusals incl. a main move between fetch and push,
   discard + rebuild, CLI, reset-step rules, app_snapshot, dashboard JSON and taps, request/PR in the record).
   Rig fixtures bakery / florist / garage / phoenix-next and the merge / discard dialog pages.

@@ -41,14 +41,22 @@ The self-test (fake docker, no Claude usage) runs before anything is copied; not
 2. **CLI:** `hands smoke status` prints no round line; `hands smoke merge` answers
    `merge: --branch-sha and --main-sha required …` (rc 2); `hands smoke merge --branch-sha <40 zeros>
    --main-sha <40 zeros>` answers `merge refused: no open round to merge (state: none)` (rc 1), nothing changes.
-3. **Deferred to the first planned project with an amendment (step 25 proof):** after the round's last step
+3. **First real merge on a low-stakes project, never on Phoenix itself:** do the first Merge tap on a small
+   test project created for it (the step 25 proof project), so the app repo's ruleset (protect-main: no
+   deletion, no non-fast-forward on main, which the fast-forward push and the `change/C1` delete must pass)
+   and the browser POST are exercised where a mistake costs nothing; `phoenix-next` (step 29, `self = true`)
+   has no tap and is merged by Install update only after that worked. Note: the app repo has no PR for a
+   round; a PR opened by hand from `change/C1` would end up closed, not merged. After the round's last step
    passes, the project tab shows `C1 merge?`, the head shows the round line `… 2/2 steps passed · ready to
    merge`, the "Change rounds" card lists the steps with ✓ and offers **Merge change C1 (<branch> → main
    <base>)** and **Discard round C1**. Merge: the confirm names both shas; after it the card says `merged
    into main <sha>`, GitHub shows one new commit on `main` (`Change C1: …`), tags `hands/pre-C1` and
    `hands/merged/C1`, and no `change/C1` branch; Telegram says `merged C1 into main (<sha>)`;
    `hands <p> reset-step C1-01` is refused with "merged work is never rebuilt"; **Amend plan** works again.
-   Pressing Merge after pushing anything to `change/C1` or `main` by hand is refused ("moved since …").
+   Pressing Merge after pushing anything to `change/C1` or `main` by hand is refused ("moved since …" or
+   "has commits after the last passed step"); a ruleset rejection reads "refused the push to main by repository
+   rule". A human step in a round: push the fix to `change/C1` first, then `hands <p> mark-done <id>` (it
+   records that head and the tap pins to it).
 
 ## 5. Rollback
 

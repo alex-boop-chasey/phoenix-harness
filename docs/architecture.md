@@ -363,9 +363,18 @@ main is put back, "press Merge again"; up to here a refusal changes nothing on o
 `hands/merged/C<n>` at the unsquashed head and push it (the per-step commits and their trailers stay
 reachable), then delete `change/C<n>` on origin only if its head is still the merged one (a push in the
 window leaves the branch alone with a WARN; a failed tag or delete is logged, not fatal). The shown branch
-head must also be the commit of the round's last passed step: a commit pushed to `change/C<n>` by hand after
-the last pass (even one the runner fast-forwarded into its clone) is refused, "only the tested head is
-merged". Tags stay: `hands/pre-C<n>` = the state before the change, `hands/merged/C<n>` = the unsquashed
+head must also be the head the round's last passed step left: a code step's accepted commit, or, for a human
+step, the branch head on origin when `mark-done` ran (0.5.8 records it as the step's `commit`, with
+`by: "human"`; a human may push their fix to `change/C<n>` before marking the step done, and that is then the
+pinned, human-verified head). A commit pushed after the last pass (even one the runner fast-forwarded into
+its clone) is refused, "only the tested head is merged". 0.5.7 records of human steps say `"human"` and are
+skipped by the pin; a round whose records carry no sha at all is pinned by the origin check only. A push of
+main refused by a repository rule (GitHub `GH013`, protected branch, hook) is reported as such ("refused the
+push to main by repository rule … check the ruleset"), distinct from a lost race ("main moved between the
+check and the push; press Merge again"); both leave origin untouched. The app repo has no pull request for a
+round (`change/C<n>` is pushed directly with the deploy key; the only PR of a round is the spec PR that
+`approve` merged): a PR someone opens by hand from `change/C<n>` ends up *closed*, not merged, after the
+squash and the branch delete. Tags stay: `hands/pre-C<n>` = the state before the change, `hands/merged/C<n>` = the unsquashed
 work; rollback is by hand (`git reset --hard hands/pre-C<n>` and a force push nobody automates).
 The dashboard POSTs `/api/p/<name>/action/merge` with both shas; the server re-checks the gate
 (`merge.tap_state`: open, complete, not running, not `self`, shas equal to the clone's), sets the record

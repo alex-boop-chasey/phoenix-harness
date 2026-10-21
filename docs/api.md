@@ -199,7 +199,8 @@ setup/regression/e2e_command/allowed_paths/allow_text_paths/always_refs); each `
 `new: true|false`. The lists are `[]` when absent.
 
 0.5.7 (change rounds): every `steps[]` entry has `round` (0 = fresh plan). Per passed step state.json also
-holds `spec_hash`, `spec_files` and `branch` (not served).
+holds `spec_hash`, `spec_files` and `branch` (not served). 0.5.8: a human step marked done inside a round
+records the round branch's head as `commit` (served, like a code step's) plus `by: "human"` (not served).
 
 0.5.8 (merge tap): the project object's `round` is an object
 `{"record": <state.json round or null>, "merge": {...}, "history": [...], "log": "<tail of state/round.log>",
