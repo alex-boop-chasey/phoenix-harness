@@ -508,6 +508,15 @@ class TestReviewFixes(unittest.TestCase):
         self.assertEqual(origin_ref(p.e, "main"), p.main)
         self.assertEqual(origin_ref(p.e, "change/C1"), extra)
 
+    def test_human_step_last_in_the_round_does_not_block_the_merge(self):
+        p = Round(queue=(CODER_P, EVAL_PASS), max_steps=1)          # C1-01 built; C1-02 done by a human (no commit)
+        st = p.state()
+        st.data["steps"]["C1-02"] = {"status": "passed", "attempts": 0, "reasons": [], "commit": "human", "round": 1}
+        st.save()
+        rec = p.merge()
+        self.assertEqual(rec["status"], "merged")
+        self.assertEqual(p.tree("main"), p.tree("refs/tags/hands/merged/C1"))
+
     def test_discard_resets_failed_steps_too_and_the_ui_lists_every_round_step(self):
         p = Round(extra=(C1, C1B), queue=(CODER_P, EVAL_PASS, {"role": "coder", "files": {}, "text": "no"}), max_steps=1)
         st = p.state()

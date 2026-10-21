@@ -225,10 +225,13 @@ def _merge(cfg: Config, st: State, log, send, branch_sha: str, main_sha: str) ->
         gitops.git(app, "reset", "-q", "--hard", "HEAD")
         gitops.git(app, "clean", "-qfdx")
     passed, _ = round_steps(st.data, ids, rnd)
-    last = str((st.data.get("steps") or {}).get(passed[-1], {}).get("commit") or "")
-    if last != branch_sha:                      # the tap pins what the page showed; the page must show the tested head
-        raise MergeError(f"{branch} ({branch_sha[:9]}) has commits after the last passed step {passed[-1]} "
-                         f"({last[:9] or 'unknown'}); only the tested head is merged. Remove them, or discard")
+    # the page pins what it showed; what it showed must be the tested head = the last passed code step's commit
+    # (human steps record "human"; a round of human steps only has no tested commit and skips this check)
+    tested = [(sid, str((st.data.get("steps") or {}).get(sid, {}).get("commit") or "")) for sid in passed]
+    tested = [(sid, c) for sid, c in tested if SHA.fullmatch(c)]
+    if tested and tested[-1][1] != branch_sha:
+        raise MergeError(f"{branch} ({branch_sha[:9]}) has commits after the last passed step {tested[-1][0]} "
+                         f"({tested[-1][1][:9]}); only the tested head is merged. Remove them, or discard")
     first = str(rec.get("request") or "").strip().splitlines()[:1]
     title = f"Change C{rnd}: {first[0][:72]}" if first else f"Change C{rnd}"
     message = (f"{title}\n\nSquash of {branch} ({branch_sha}): steps {', '.join(passed)}.\n"
