@@ -209,7 +209,7 @@ merged_at?, error?}`. `merge` (the tap gate, from files only): `{state: "none"|<
 branch_sha, main_sha, self, all_passed, passed, total, pending: [ids], error}`; `ready` means pressing the tap
 now would start a merge with exactly `branch_sha` (the clone's local `change/C<n>` head) and `main_sha` (the
 round's base). `history` = the last 20 events of `state/rounds.jsonl` (`{ts, event: "opened"|"merged"|
-"discarded", id, branch, base_sha, pre_tag, request?, pr?, pr_url?, head_sha?, merged_sha?, merged_tag?,
+"discarded"|"merge_failed", id, branch, base_sha, pre_tag, request?, pr?, pr_url?, head_sha?, merged_sha?, merged_tag?,
 discarded_tag?, steps?}`).
 
 ### GET /api/p/NAME/log?lines=N

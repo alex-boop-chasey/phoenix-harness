@@ -709,17 +709,20 @@ function roundsSection(d) {
     el("button", { class: cls, on: { click: onclick }, ...(enabled ? {} : { disabled: "" }) }, label);
   const stepList = (id) => d.steps.filter((s) => s.round === id);
   const icon = (s) => el("span", { class: s.status === "passed" ? "ic ok" : s.status === "failed" ? "ic bad" : "ic" },
-    s.status === "passed" ? "✓" : s.status === "failed" ? "✗" : "○");
+    s.status === "passed" ? "✓" : s.status === "failed" ? "✗" : s.status === "discarded" ? "–" : "○");
   // every round: the live record first, then earlier rounds from the history (latest first)
-  const byId = new Map();
+  // one card per opening (id + opened_at): a discarded C1 keeps its card next to the rebuilt C1
+  const byKey = new Map();
+  const keyOf = (id, opened) => `${id}@${opened || ""}`;
   for (const ev of hist) {
-    const x = byId.get(ev.id) || { id: ev.id, events: [] };
+    const k = keyOf(ev.id, ev.opened_at);
+    const x = byKey.get(k) || { id: ev.id, opened_at: ev.opened_at || "", events: [] };
     x.events.push(ev);
-    for (const k of ["request", "pr", "pr_url", "branch", "base_sha", "pre_tag"]) if (ev[k] !== undefined) x[k] = ev[k];
-    byId.set(ev.id, x);
+    for (const f of ["request", "pr", "pr_url", "branch", "base_sha", "pre_tag"]) if (ev[f] !== undefined) x[f] = ev[f];
+    byKey.set(k, x);
   }
-  if (rec) byId.set(rec.id, { ...(byId.get(rec.id) || { events: [] }), ...rec, live: true });
-  const cards = [...byId.values()].sort((a, b) => b.id - a.id).map((x) => {
+  if (rec) { const k = keyOf(rec.id, rec.opened_at); byKey.set(k, { ...(byKey.get(k) || { events: [] }), ...rec, live: true }); }
+  const cards = [...byKey.values()].sort((a, b) => b.id - a.id || (b.opened_at > a.opened_at ? 1 : -1)).map((x) => {
     const last = x.events.length ? x.events[x.events.length - 1] : null;
     const live = x.live && rec;
     let state, cls = "";
@@ -730,7 +733,7 @@ function roundsSection(d) {
     else if (last && last.event === "merged") { state = `merged into ${R.branch} ${short(last.merged_sha)} at ${when(last.ts)}`; cls = "r-merged"; }
     else if (last && last.event === "discarded") { state = `discarded at ${when(last.ts)} (work kept at ${last.discarded_tag || "a hands/discarded tag"})`; cls = "r-discarded"; }
     else state = last ? last.event : "";
-    const steps = stepList(x.id);
+    const steps = live || (last && last.event === "merged") ? stepList(x.id) : (last && last.steps ? last.steps.map((id) => ({ id, status: "discarded" })) : []);
     const taps = live && rec.status === "open" ? el("div", { class: "row" },
       m.self ? el("span", { class: "muted" }, "Merged by Install update (Phoenix updates itself).")
         : btn(`Merge change C${x.id} (${short(m.branch_sha)} → ${R.branch} ${short(m.main_sha)})`, () => roundAction(d, "merge", m), m.ready, "btn primary"),

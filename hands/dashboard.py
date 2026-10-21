@@ -49,6 +49,7 @@ from pathlib import Path
 from . import config as cfgmod
 from . import gitops
 from . import publicaccess
+from . import rounds
 from . import sessions
 from . import spec as specmod
 from . import ws
@@ -252,12 +253,7 @@ def round_chip(cfg, st: dict) -> dict | None:
     rec = rounds.record(st)
     if not rec:
         return None
-    try:                                    # step ids straight from steps.json: pending steps are not in state.json yet
-        raw = json.loads((cfg.spec_dir / "steps.json").read_text())
-        ids = [x["id"] for x in raw.get("steps") or [] if isinstance(x, dict) and isinstance(x.get("id"), str)]
-    except (OSError, ValueError, AttributeError):
-        ids = None
-    t = merge.tap_state(cfg, st, ids)
+    t = merge.tap_state(cfg, st, merge.step_ids(cfg))
     return {"id": rec["id"], "status": t["state"], "passed": t["passed"], "total": t["total"],
             "merge_ready": t["ready"], "self": t["self"]}
 
@@ -375,7 +371,7 @@ def detail(name: str) -> dict:
             x = sst.get(s.id, {})
             steps.append({"id": s.id, "title": s.title, "type": s.type, "status": x.get("status", "pending"),
                           "attempts": x.get("attempts", 0), "commit": x.get("commit", ""),
-                          "reasons": (x.get("reasons") or [])[:12], "round": x.get("round", 0)})
+                          "reasons": (x.get("reasons") or [])[:12], "round": rounds.round_of(s.id)})
     except Exception as e:      # spec mid-refresh or invalid: still show state
         spec_err = f"{type(e).__name__}: {e}"
         for sid, x in sst.items():
@@ -561,8 +557,7 @@ def round_action(name: str, action: str, branch_sha: str, main_sha: str = "") ->
     from . import merge, rounds
     from .state import State
     cfg = load_cfg(name)
-    sha = re.compile(r"^[0-9a-f]{40}$")
-    if not sha.match(branch_sha or "") or (action == "merge" and not sha.match(main_sha or "")):
+    if not merge.SHA.fullmatch(branch_sha or "") or (action == "merge" and not merge.SHA.fullmatch(main_sha or "")):
         raise ValueError("branch_sha and main_sha must be full 40-hex commit ids (reload the page and try again)")
     with _CREATE_MUTEX:
         st = State(cfg.state_dir)
@@ -573,11 +568,11 @@ def round_action(name: str, action: str, branch_sha: str, main_sha: str = "") ->
             raise ValueError("the planner is running")
         try:
             if action == "merge":
-                t = merge.check_tap(cfg, st.data, None)
+                t = merge.check_tap(cfg, st.data, merge.step_ids(cfg))
                 if t["branch_sha"] != branch_sha or t["main_sha"] != main_sha:
                     raise merge.MergeError("the branch head or main moved since this page showed it; reload and look again")
             else:
-                t = merge.tap_state(cfg, st.data, None)
+                t = merge.tap_state(cfg, st.data, merge.step_ids(cfg))
                 if not rec or t["state"] != "open":
                     raise merge.MergeError(f"no open round to discard (state: {t['state']})")
                 if t["branch_sha"] != branch_sha:

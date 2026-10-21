@@ -153,9 +153,14 @@ class TestMerge(unittest.TestCase):
             merge.gitops.push_ref = orig
         self.assertIn("main moved", str(cm.exception))
         self.assertEqual(origin_ref(p.e, "change/C1"), p.head)
+        self.assertEqual(origin_ref(p.e, "refs/tags/hands/merged/C1"), "")                  # nothing on origin changed
         self.assertEqual(p.state().data["round"]["status"], "open")
         self.assertEqual(gitops.git(p.cfg.app_dir, "rev-parse", "main").strip(), p.main)   # local main put back
         self.assertTrue(gitops.is_clean(p.cfg.app_dir))
+        self.assertEqual([x["event"] for x in merge.events(p.cfg.state_dir)], ["opened", "merge_failed"])
+        # the retry (origin main moved for real now) is refused cleanly too
+        with self.assertRaises(merge.MergeError):
+            p.merge()
 
     def test_refuses_incomplete_round_running_build_push_off_and_self(self):
         p = Round(extra=(C1, C1B), queue=(CODER_P, EVAL_PASS), max_steps=1)
@@ -249,10 +254,6 @@ class TestDiscard(unittest.TestCase):
         self.assertIn("no open round", str(cm.exception))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 def cli_env(e):
     import hands.__main__ as m
     orig = m.load
@@ -296,7 +297,6 @@ class TestCliAndPlanner(unittest.TestCase):
                     self.assertEqual(cli(["t", "reset-step", sid]), 1)
                 self.assertIn("Amend plan", buf.getvalue())
                 self.assertEqual(p.state().data["steps"][sid]["status"], "passed")
-            self.assertIn("merged into main as " + rec["merged_sha"][:9], buf.getvalue()) if False else None
             self.assertEqual(cli(["t", "discard", "--branch-sha", p.head]), 1)                 # nothing open
         finally:
             restore()
@@ -487,3 +487,89 @@ class TestOpenRoundRequest(unittest.TestCase):
         merge.merge_round(e.cfg, State(e.cfg.state_dir), log, sent.append, origin_ref(e, "change/C1"), b.main)
         self.assertEqual(git(e.tmp / "app.git", "log", "-1", "--format=%s", "main").strip(), "Change C1: add a pricing page")
         self.assertIn("add a pricing page", sent[-1])
+
+
+class TestReviewFixes(unittest.TestCase):
+    def test_merge_refuses_a_branch_head_after_the_last_passed_step(self):
+        """A hand-pushed commit fast-forwarded into the clone is not the tested head: refused even though it is
+        exactly what the page would show."""
+        p = Round()
+        app = p.cfg.app_dir
+        (app / "src" / "extra.js").write_text("x")
+        gitops.git(app, "add", "-A")
+        gitops.git(app, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "by hand")
+        extra = gitops.head(app)
+        gitops.git(app, "push", "-q", "origin", "change/C1")
+        t = merge.tap_state(p.cfg, p.state().data, ["S01", "S02", "C1-01", "C1-02"])
+        self.assertEqual((t["ready"], t["branch_sha"]), (True, extra))
+        with self.assertRaises(merge.MergeError) as cm:
+            p.merge(branch_sha=extra)
+        self.assertIn("commits after the last passed step C1-02", str(cm.exception))
+        self.assertEqual(origin_ref(p.e, "main"), p.main)
+        self.assertEqual(origin_ref(p.e, "change/C1"), extra)
+
+    def test_discard_resets_failed_steps_too_and_the_ui_lists_every_round_step(self):
+        p = Round(extra=(C1, C1B), queue=(CODER_P, EVAL_PASS, {"role": "coder", "files": {}, "text": "no"}), max_steps=1)
+        st = p.state()
+        st.data["steps"]["C1-02"] = {"status": "failed", "attempts": 2, "reasons": ["x"]}      # as Runner.fail writes it
+        st.save()
+        t = merge.tap_state(p.cfg, st.data, ["S01", "S02", "C1-01", "C1-02"])
+        self.assertEqual((t["passed"], t["total"], t["pending"]), (1, 2, ["C1-02"]))
+        p.discard()
+        d = p.state().data
+        self.assertEqual(d["steps"]["C1-02"], {"status": "pending", "attempts": 0, "reasons": []})
+        self.assertEqual(merge.events(p.cfg.state_dir)[-1]["steps"], ["C1-01", "C1-02"])
+
+    def test_discard_without_push_is_pinned_to_the_local_head(self):
+        p = Round()
+        p.cfg.push = False
+        with self.assertRaises(merge.MergeError) as cm:
+            p.discard(p.main)
+        self.assertIn("moved", str(cm.exception))
+        self.assertEqual(p.state().data["round"]["status"], "open")
+        p.discard()
+        self.assertNotIn("round", p.state().data)
+        self.assertEqual(origin_ref(p.e, "change/C1"), p.head)          # push off: origin untouched
+
+    def test_lock_held_refusal_does_not_touch_state(self):
+        p = Round()
+        before = (p.cfg.state_dir / "state.json").read_text()
+        with Lock(p.cfg.state_dir / "runner.lock"):
+            with self.assertRaises(merge.LockedError):
+                p.merge()
+        self.assertEqual((p.cfg.state_dir / "state.json").read_text(), before)
+
+    def test_branch_pushed_after_the_check_is_left_on_origin(self):
+        p = Round()
+        src = p.e.tmp / "appsrc"
+        git(src, "fetch", "-q", "origin")
+        orig = merge.gitops.push_ref
+
+        def racy(repo, srcref, dst):
+            if srcref == "" and dst.endswith("change/C1"):
+                raise AssertionError("must not delete a moved branch")
+            if dst.endswith("/main"):
+                merge.gitops.push_ref = orig
+                git(src, "checkout", "-q", "-B", "change/C1", "origin/change/C1")
+                (src / "late.txt").write_text("l\n")
+                git(src, "add", "-A")
+                git(src, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "late")
+                git(src, "push", "-q", "origin", "change/C1")
+                r = orig(repo, srcref, dst)
+                merge.gitops.push_ref = racy
+                return r
+            return orig(repo, srcref, dst)
+
+        merge.gitops.push_ref = racy
+        try:
+            rec = p.merge()
+        finally:
+            merge.gitops.push_ref = orig
+        self.assertEqual(rec["status"], "merged")
+        self.assertNotEqual(origin_ref(p.e, "change/C1"), "")              # kept, with the late commit
+        self.assertEqual(origin_ref(p.e, "refs/tags/hands/merged/C1"), p.head)
+        self.assertTrue(any("left on origin" in m for m in LOG))
+
+
+if __name__ == "__main__":
+    unittest.main()

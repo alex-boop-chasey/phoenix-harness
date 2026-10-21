@@ -157,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"round C{rr['id']}: merged into {cfg.branch} at {str(rr.get('merged_sha', ''))[:9]} "
                   f"(tags {rr.get('pre_tag')} = before, {rr.get('merged_tag')} = unsquashed work)")
         elif rr:
-            t = merge.tap_state(cfg, d, None)
+            t = merge.tap_state(cfg, d, merge.step_ids(cfg))
             print(f"round C{rr['id']}: {rr.get('status')} on {rr.get('branch')} (base {str(rr.get('base_sha', ''))[:9]}, "
                   f"tag {rr.get('pre_tag')}; {t['passed']}/{t['total']} passed, "
                   f"{'merge ready' if t['ready'] else t['why'] or 'not ready'})")
@@ -279,6 +279,9 @@ def round_cmd(cfg, cmd: str, branch_sha: str, main_sha: str) -> int:
     from .notify import Notifier
     st = State(cfg.state_dir)
     notifier = Notifier(cfg.telegram_env, cfg.name, log=st.log)
+    if Lock.held(cfg.state_dir / "plan" / "plan.lock"):
+        print(f"{cmd} refused: the planner is running")
+        return 1
     if not branch_sha or (cmd == "merge" and not main_sha):
         print(f"{cmd}: --branch-sha{' and --main-sha' if cmd == 'merge' else ''} required (the heads shown by "
               f"`hands {cfg.name} status` or the dashboard)")
@@ -288,7 +291,7 @@ def round_cmd(cfg, cmd: str, branch_sha: str, main_sha: str) -> int:
             if cfg.is_self:
                 raise merge.MergeError(merge.SELF_WHY)
             if rounds.record(st.data) and rounds.record(st.data).get("status") != "merging":   # the tap checked already
-                merge.check_tap(cfg, st.data, None)
+                merge.check_tap(cfg, st.data, merge.step_ids(cfg))
             rec = merge.merge_round(cfg, st, st.log, notifier.send, branch_sha, main_sha)
             print(f"merged round C{rec['id']} into {cfg.branch} at {rec['merged_sha'][:9]}; rollback by hand: "
                   f"git reset --hard {rec['pre_tag']} (before) / unsquashed work at {rec['merged_tag']}")

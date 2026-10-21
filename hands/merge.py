@@ -36,7 +36,11 @@ SELF_WHY = "Phoenix updates itself: this round is merged by Install update"
 
 
 class MergeError(Exception):
-    """Refused; nothing on origin or in the record changed (except `error`)."""
+    """Refused; main on origin is untouched, the record keeps its state (plus `error`)."""
+
+
+class LockedError(MergeError):
+    """The runner lock is held: refused before the record was even read (nothing saved)."""
 
 
 def _now() -> str:
@@ -69,7 +73,7 @@ def append_event(st: State, event: str, rec: dict, **extra) -> None:
 def round_steps(data: dict, step_ids: list[str] | None, rnd: int) -> tuple[list[str], list[str]]:
     """(passed, pending) ids of round `rnd` in spec order (unknown spec: from the state records)."""
     ids = list(step_ids) if step_ids is not None else sorted(data.get("steps") or {})
-    mine = [s for s in ids if rounds.round_of(s) == rnd]
+    mine = [s for s in ids if rounds.round_of(s) == rnd]           # by id: a failed step has no `round` record yet
     passed = [s for s in mine if (data.get("steps") or {}).get(s, {}).get("status") == "passed"]
     return passed, [s for s in mine if s not in passed]
 
@@ -103,7 +107,7 @@ def tap_state(cfg: Config, data: dict, step_ids: list[str] | None) -> dict:
         out["why"] = "push is disabled for this project: nothing on origin to merge"
     elif Lock.held(cfg.state_dir / "runner.lock"):
         out["why"] = "the build is running"
-    elif not SHA.match(local):
+    elif not SHA.fullmatch(local):
         out["why"] = f"the clone has no {rec.get('branch')} branch; start the runner once, then merge"
     else:
         out["ready"] = True
@@ -138,11 +142,23 @@ def _spec_ids(cfg: Config) -> list[str]:
         raise MergeError(f"the spec clone is not loadable: {e}")
 
 
+def step_ids(cfg: Config) -> list[str] | None:
+    """Step ids straight from the spec clone's steps.json (pending steps are not in state.json yet); None when
+    unreadable (callers then count from the state records only and the CLI's full check decides)."""
+    try:
+        raw = json.loads((cfg.spec_dir / "steps.json").read_text())
+        return [x["id"] for x in raw.get("steps") or [] if isinstance(x, dict) and isinstance(x.get("id"), str)]
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def _lock(cfg: Config) -> Lock:
+    """The runner lock for the whole merge/discard (the runner and `plan --amend` are excluded meanwhile). Not
+    getting it is reported without touching state.json: a runner owns it now."""
     try:
         return Lock(cfg.state_dir / "runner.lock").__enter__()
     except SystemExit:
-        raise MergeError("the build is running; stop it first")
+        raise LockedError("the build is running; stop it first")
 
 
 def _fail(st: State, msg: str) -> None:
@@ -162,7 +178,7 @@ def _squash(app: Path, branch_sha: str, message: str) -> None:
 def merge_round(cfg: Config, st: State, log, send, branch_sha: str, main_sha: str) -> dict:
     """Sha-pinned squash merge of the open round into cfg.branch. Raises MergeError with nothing changed on origin
     (local main is put back). Returns the merged record."""
-    if not (SHA.match(branch_sha or "") and SHA.match(main_sha or "")):
+    if not (SHA.fullmatch(branch_sha or "") and SHA.fullmatch(main_sha or "")):
         raise MergeError("branch_sha and main_sha must be full 40-hex commit ids (the ones the page showed)")
     lk = _lock(cfg)
     try:
@@ -170,8 +186,13 @@ def merge_round(cfg: Config, st: State, log, send, branch_sha: str, main_sha: st
             return _merge(cfg, st, log, send, branch_sha, main_sha)
         except gitops.GitError as e:
             raise MergeError(f"git failed: {e}")
+        except MergeError:
+            raise
+        except Exception as e:                          # never leave the record stuck in `merging`
+            raise MergeError(f"merge failed: {type(e).__name__}: {e}")
     except MergeError as e:
         _fail(st, str(e))
+        append_event(st, "merge_failed", rounds.record(st.data) or {}, error=str(e)[:500])
         log(f"merge refused: {e}")
         raise
     finally:
@@ -204,6 +225,10 @@ def _merge(cfg: Config, st: State, log, send, branch_sha: str, main_sha: str) ->
         gitops.git(app, "reset", "-q", "--hard", "HEAD")
         gitops.git(app, "clean", "-qfdx")
     passed, _ = round_steps(st.data, ids, rnd)
+    last = str((st.data.get("steps") or {}).get(passed[-1], {}).get("commit") or "")
+    if last != branch_sha:                      # the tap pins what the page showed; the page must show the tested head
+        raise MergeError(f"{branch} ({branch_sha[:9]}) has commits after the last passed step {passed[-1]} "
+                         f"({last[:9] or 'unknown'}); only the tested head is merged. Remove them, or discard")
     first = str(rec.get("request") or "").strip().splitlines()[:1]
     title = f"Change C{rnd}: {first[0][:72]}" if first else f"Change C{rnd}"
     message = (f"{title}\n\nSquash of {branch} ({branch_sha}): steps {', '.join(passed)}.\n"
@@ -217,20 +242,17 @@ def _merge(cfg: Config, st: State, log, send, branch_sha: str, main_sha: str) ->
         local_tag = gitops.git(app, "rev-parse", "-q", "--verify", f"refs/tags/{tag}^{{commit}}", check=False).strip()
         if local_tag and local_tag != branch_sha:
             raise MergeError(f"tag {tag} exists locally at {local_tag[:9]}; remove it by hand first")
-        if not local_tag:
-            gitops.git(app, "tag", tag, branch_sha)
-        if not remote_tag:
-            gitops.push_ref(app, f"refs/tags/{tag}", f"refs/tags/{tag}")
         try:
             gitops.push_ref(app, "HEAD", f"refs/heads/{main}")
         except gitops.GitError as e:
             raise MergeError(f"main moved between the check and the push (git: {str(e)[-200:]}); press Merge again")
     except Exception:
-        gitops.git(app, "checkout", "-q", "-B", main, main_sha)      # local main back to the base
-        gitops.git(app, "clean", "-qfdx")
+        gitops.git(app, "reset", "-q", "--hard", main_sha, check=False)   # local main back to the base (also mid-merge)
+        gitops.git(app, "clean", "-qfdx", check=False)
         if prev and prev not in ("HEAD", main):
             gitops.git(app, "checkout", "-q", prev, check=False)      # and the clone back where it was
         raise
+    # main is merged: from here on nothing is refused; the record says so first, then the tag and the branch delete
     merged = gitops.head(app)
     rec.update({"status": "merged", "head_sha": branch_sha, "merged_sha": merged, "merged_tag": tag,
                 "merged_at": _now()})
@@ -239,18 +261,26 @@ def _merge(cfg: Config, st: State, log, send, branch_sha: str, main_sha: str) ->
     append_event(st, "merged", rec)
     log(f"merged round C{rnd}: {branch} ({branch_sha[:9]}) squashed into {main} as {merged[:9]}; tag {tag}")
     try:
-        gitops.push_ref(app, "", f"refs/heads/{branch}")
-        gitops.git(app, "branch", "-q", "-D", branch, check=False)
-        gitops.git(app, "update-ref", "-d", f"refs/remotes/origin/{branch}", check=False)
+        if not local_tag:
+            gitops.git(app, "tag", tag, branch_sha)
+        if not remote_tag:
+            gitops.push_ref(app, f"refs/tags/{tag}", f"refs/tags/{tag}")       # the unsquashed work stays reachable
+        now_head = gitops.remote_sha(app, f"refs/heads/{branch}")
+        if now_head != branch_sha:                                          # someone pushed in the window: keep it
+            log(f"WARN: {branch} moved to {now_head[:9] or 'gone'} after the merge check; left on origin, not deleted")
+        else:
+            gitops.push_ref(app, "", f"refs/heads/{branch}")
+            gitops.git(app, "branch", "-q", "-D", branch, check=False)
+            gitops.git(app, "update-ref", "-d", f"refs/remotes/origin/{branch}", check=False)
     except gitops.GitError as e:
-        log(f"WARN: {branch} was merged but not deleted on origin: {e}")
+        log(f"WARN: {branch} was merged but its tag/delete did not finish: {e}; the branch is left on origin")
     send(f"merged C{rnd} into {main} ({merged[:9]})" + (f": {first[0][:120]}" if first else ""))
     return rec
 
 
 def discard_round(cfg: Config, st: State, log, send, branch_sha: str) -> None:
     """Throw the round's build away (work kept under a tag) and put its steps back to pending."""
-    if not SHA.match(branch_sha or ""):
+    if not SHA.fullmatch(branch_sha or ""):
         raise MergeError("branch_sha must be the full 40-hex commit id the page showed")
     lk = _lock(cfg)
     try:
@@ -258,6 +288,10 @@ def discard_round(cfg: Config, st: State, log, send, branch_sha: str) -> None:
             _discard(cfg, st, log, send, branch_sha)
         except gitops.GitError as e:
             raise MergeError(f"git failed: {e}")
+        except MergeError:
+            raise
+        except Exception as e:
+            raise MergeError(f"discard failed: {type(e).__name__}: {e}")
     except MergeError as e:
         _fail(st, str(e))
         log(f"discard refused: {e}")
@@ -273,11 +307,12 @@ def _discard(cfg: Config, st: State, log, send, branch_sha: str) -> None:
         raise MergeError(f"no open round (state: {rec.get('status') if rec else 'none'})")
     rnd, branch, pre = int(rec["id"]), str(rec["branch"]), str(rec.get("pre_tag") or "")
     keep = DISCARD_TAG.format(round=rnd, ts=time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
+    head = (gitops.remote_sha(app, f"refs/heads/{branch}") if cfg.push
+            else gitops.git(app, "rev-parse", "-q", "--verify", f"refs/heads/{branch}", check=False).strip())
+    if head != branch_sha:
+        raise MergeError(f"head of {branch} moved since the page showed it ({head[:9] or 'gone'} vs "
+                         f"{branch_sha[:9]}); reload and look again")
     if cfg.push:
-        origin_head = gitops.remote_sha(app, f"refs/heads/{branch}")
-        if origin_head != branch_sha:
-            raise MergeError(f"head of {branch} moved since the page showed it ({origin_head[:9] or 'gone'} vs "
-                             f"{branch_sha[:9]}); reload and look again")
         gitops.git(app, "fetch", "-q", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
     gitops.git(app, "tag", keep, branch_sha)
     if cfg.push:
@@ -300,7 +335,7 @@ def _discard(cfg: Config, st: State, log, send, branch_sha: str) -> None:
         gitops.git(app, "tag", "-d", pre, check=False)
     reset = []
     for sid, x in list((st.data.get("steps") or {}).items()):
-        if int(x.get("round") or 0) == rnd:
+        if rounds.round_of(sid) == rnd or int(x.get("round") or 0) == rnd:
             st.data["steps"][sid] = {"status": "pending", "attempts": 0, "reasons": []}
             reset.append(sid)
     append_event(st, "discarded", rec, discarded_tag=keep, head_sha=branch_sha, steps=sorted(reset))
@@ -322,8 +357,9 @@ def reset_refusal(cfg: Config, data: dict, sid: str, x: dict) -> str:
         return ""
     mine, cur = int(x.get("round") or 0), int(rec["id"])
     if mine < cur or (mine == cur and rec.get("status") == "merged"):
-        where = (f"merged into {cfg.branch} as {str(rec.get('merged_sha', ''))[:9]}" if rec.get("status") == "merged"
-                 else f"round C{cur} is {rec.get('status')} on {rec.get('branch')}")
-        return (f"{sid} passed in round C{mine} and {where}: merged work is never rebuilt. Make a new change request "
-                f"(Amend plan) that describes what to change.")
+        if rec.get("status") == "merged" and mine == cur:
+            where = f"merged into {cfg.branch} as {str(rec.get('merged_sha', ''))[:9]}: merged work is never rebuilt"
+        else:
+            where = f"round C{cur} is {rec.get('status')} on {rec.get('branch')}: earlier-round work is never rebuilt"
+        return f"{sid} passed in round C{mine} and {where}. Make a new change request (Amend plan) that describes what to change."
     return ""

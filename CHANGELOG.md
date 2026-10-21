@@ -34,6 +34,14 @@ From `main` d70179d (0.5.7). Session manager untouched.
   so `plan --amend` works after the squash merge deleted `change/C<n>` (step 23 note 7).
 - `hands <p> status` prints `round C1: open on change/C1 (… 2/2 passed, merge ready)` or
   `round C1: merged into main at <sha> (tags …)`.
+- Independent review (fresh-context subagent): 0 critical, 2 important, 11 minor, all fixed with tests: the
+  shown branch head must be the last passed step's commit (a hand-pushed, fast-forwarded commit is refused);
+  discard resets failed/never-attempted round steps too and the UI lists every round step by id; the merged
+  tag is pushed after main (a refusal changes nothing on origin) and the branch is deleted only if its head is
+  still the merged one; squash cleanup uses `reset --hard`; dashboard/CLI gates count pending steps from
+  steps.json; unexpected errors never leave the record in `merging`; a held lock is refused without saving;
+  shas use `fullmatch`; discard with push off is pinned to the local head; a re-opened round keeps the
+  discarded round's card; `merge_failed` events; the CLI refuses while the planner runs.
 - Tests: `tests/test_v058.py` (merge happy path and 8 refusals incl. a main move between fetch and push,
   discard + rebuild, CLI, reset-step rules, app_snapshot, dashboard JSON and taps, request/PR in the record).
   Rig fixtures bakery / florist / garage / phoenix-next and the merge / discard dialog pages.

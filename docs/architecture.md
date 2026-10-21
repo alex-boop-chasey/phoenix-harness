@@ -356,12 +356,16 @@ heads the page showed (`change/C<n>` from the clone's local branch, main = the r
 still equals the shown sha and the round's base, and `origin/change/C<n>` equals the shown head. Then,
 locally: `main` at the base, `merge --squash`, one commit (`Change C<n>: <request line>`, author
 `hands <hands@localhost>`), the merged tree must equal the round head's tree (a squash onto the unchanged
-base is exactly the tested tree; otherwise local main is put back and the merge refused), tag
-`hands/merged/C<n>` at the unsquashed head (pushed first, so the per-step commits and their trailers stay
-reachable), push `HEAD:refs/heads/main` without force (origin moving in between makes git reject the
-non-fast-forward: local main is put back, "press Merge again"), record `{status: merged, head_sha,
-merged_sha, merged_tag, merged_at}`, then delete `change/C<n>` on origin (a failed delete is logged, not
-fatal). Tags stay: `hands/pre-C<n>` = the state before the change, `hands/merged/C<n>` = the unsquashed
+base is exactly the tested tree; otherwise local main is put back and the merge refused), push
+`HEAD:refs/heads/main` without force (origin moving in between makes git reject the non-fast-forward: local
+main is put back, "press Merge again"; up to here a refusal changes nothing on origin and appends a
+`merge_failed` event), record `{status: merged, head_sha, merged_sha, merged_tag, merged_at}`, tag
+`hands/merged/C<n>` at the unsquashed head and push it (the per-step commits and their trailers stay
+reachable), then delete `change/C<n>` on origin only if its head is still the merged one (a push in the
+window leaves the branch alone with a WARN; a failed tag or delete is logged, not fatal). The shown branch
+head must also be the commit of the round's last passed step: a commit pushed to `change/C<n>` by hand after
+the last pass (even one the runner fast-forwarded into its clone) is refused, "only the tested head is
+merged". Tags stay: `hands/pre-C<n>` = the state before the change, `hands/merged/C<n>` = the unsquashed
 work; rollback is by hand (`git reset --hard hands/pre-C<n>` and a force push nobody automates).
 The dashboard POSTs `/api/p/<name>/action/merge` with both shas; the server re-checks the gate
 (`merge.tap_state`: open, complete, not running, not `self`, shas equal to the clone's), sets the record
