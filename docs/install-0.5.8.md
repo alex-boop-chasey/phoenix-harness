@@ -73,7 +73,15 @@ by hand (the merge itself changed nothing on origin until its record says `merge
 
 ## 6. Rolling back a merged change (by hand, any version)
 
-`hands/pre-C<n>` = `main` before the change, `hands/merged/C<n>` = the unsquashed round commits. To undo a
-merged round on GitHub: `git push origin hands/pre-C<n>:refs/heads/main --force-with-lease=main:<merged sha>`
-from a clone, then in the project's state.json set the C<n> steps back to pending and remove the round
-record (or re-plan). Nothing in Phoenix automates this: the runner never force-pushes.
+`hands/pre-C<n>` = `main` before the change, `hands/merged/C<n>` = the unsquashed round commits. Undoing a
+merged round on GitHub means moving `main` back to `hands/pre-C<n>`, which is a non-fast-forward push:
+
+```
+git push origin hands/pre-C<n>:refs/heads/main --force-with-lease=main:<merged sha>
+```
+
+The app repo's ruleset `protect-main` blocks non-fast-forward pushes to `main`, and the runner's deploy key
+cannot bypass it, so this works only when run by an org admin with ruleset bypass from their own clone (or
+after temporarily disabling the non-fast-forward rule on the app repo, re-enabled afterwards); never with
+the runner's deploy key, and the runner itself never force-pushes. Then in the project's state.json set the
+C<n> steps back to pending and remove the round record (or re-plan). Nothing in Phoenix automates this.

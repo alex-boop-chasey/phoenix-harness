@@ -375,7 +375,10 @@ check and the push; press Merge again"); both leave origin untouched. The app re
 round (`change/C<n>` is pushed directly with the deploy key; the only PR of a round is the spec PR that
 `approve` merged): a PR someone opens by hand from `change/C<n>` ends up *closed*, not merged, after the
 squash and the branch delete. Tags stay: `hands/pre-C<n>` = the state before the change, `hands/merged/C<n>` = the unsquashed
-work; rollback is by hand (`git reset --hard hands/pre-C<n>` and a force push nobody automates).
+work; rollback is by hand (`git reset --hard hands/pre-C<n>` and a non-fast-forward push of `main`, which
+the app repo's `protect-main` ruleset blocks: only an org admin with ruleset bypass, or after temporarily
+disabling the non-fast-forward rule, can do it, never the runner's deploy key; the runner never
+force-pushes).
 The dashboard POSTs `/api/p/<name>/action/merge` with both shas; the server re-checks the gate
 (`merge.tap_state`: open, complete, not running, not `self`, shas equal to the clone's), sets the record
 `merging`, and spawns the CLI detached (log `state/round.log`); the CLI finishes or puts the record back to
