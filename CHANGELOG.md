@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.5.8 (step 24: merge tap + dashboard rounds (B3), 2026-10-21)
+
+From `main` d70179d (0.5.7). Session manager untouched.
+
+- Merge tap (`hands/merge.py`, dashboard "Merge change C<n>", `hands <p> merge --branch-sha --main-sha`): the
+  one merge path for a change round, on the runner's app clone with its deploy key (plain git, no GitHub
+  API, never a force push). Sha-pinned: refused unless `origin/main` still equals the shown sha and the
+  round's base and `origin/change/C<n>` equals the shown head; also unless every spec step passed, the runner
+  is stopped and push is enabled. Squash locally, verify the merged tree equals the tested round head's tree,
+  tag `hands/merged/C<n>` at the unsquashed head (pushed first), push main without force (a move in between is
+  rejected by git and rolled back locally), record `merged` + `merged_sha` + `head_sha` + `merged_tag`,
+  delete `change/C<n>` on origin, Telegram notice. `hands/pre-C<n>` (before) and `hands/merged/C<n>` (the
+  per-step commits) stay as the hand rollback points.
+- Discard (`hands <p> discard --branch-sha`, dashboard "Discard round C<n>"): the work is tagged
+  `hands/discarded/C<n>-<utc>`, branch and pre-tag deleted, the round's steps go back to pending, the record
+  is dropped; the next Start rebuilds the same steps in a fresh round. The steps stay in the spec: discarding
+  the work is not discarding the change request (that needs a spec PR); the confirm says so.
+- `self` projects (TOML `self = true`, Phoenix building itself, step 29): no Merge tap, the CLI refuses, the
+  installer (step 28) calls `merge_round` directly: two callers, one merge path. Discard is allowed.
+- Round history: `state/rounds.jsonl` gets `opened` (with the amendment's request and PR from plan.json),
+  `merged` and `discarded` events; the record carries `request`, `pr`, `pr_url`.
+- Dashboard: a `C<n>` tag per project tab (open / merge? / merged / ready), the round line in the project
+  head, and a "Change rounds" section (one card per round: request, PR, steps, state, the sha-pinned Merge
+  and Discard taps with confirmations, refusal reasons, merge/discard log) next to the Amend plan form.
+  `GET /api/projects` rows carry `round` (chip), `GET /api/p/<name>` `round` becomes `{record, merge, history,
+  log, branch}`, `POST /api/p/<name>/action/merge|discard` spawn the CLI detached (record `merging` /
+  `discarding` meanwhile).
+- `reset-step` after a merge: passed steps of a merged or earlier round, and round-0 steps once any round
+  exists, are refused ("merged work is never rebuilt; make a new change request"). Only steps of the open
+  round, or any step of a project without rounds, can be reset.
+- Planner: `app_snapshot`'s unpushed-work check ignores commits reachable from a merged round's `head_sha`,
+  so `plan --amend` works after the squash merge deleted `change/C<n>` (step 23 note 7).
+- `hands <p> status` prints `round C1: open on change/C1 (… 2/2 passed, merge ready)` or
+  `round C1: merged into main at <sha> (tags …)`.
+- Tests: `tests/test_v058.py` (merge happy path and 8 refusals incl. a main move between fetch and push,
+  discard + rebuild, CLI, reset-step rules, app_snapshot, dashboard JSON and taps, request/PR in the record).
+  Rig fixtures bakery / florist / garage / phoenix-next and the merge / discard dialog pages.
+
 ## 0.5.7 (step 23: change rounds + regression rule (B2), 2026-10-21)
 
 From `main` ffaadfc (0.5.6). Session manager untouched.

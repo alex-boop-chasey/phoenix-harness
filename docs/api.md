@@ -109,6 +109,7 @@ Summary of every project, for the sidebar.
   "name": "smoke",
   "status": "done",
   "reason": "all steps passed",
+  "round": {"id": 1, "status": "open", "passed": 2, "total": 2, "merge_ready": true, "self": false},
   "alive": false,
   "stop": false,
   "passed": 2,
@@ -197,10 +198,19 @@ request), `branch` (`hands/plan` or `hands/amend-C<round>`), `new_steps` (ids ad
 setup/regression/e2e_command/allowed_paths/allow_text_paths/always_refs); each `step_list` entry carries
 `new: true|false`. The lists are `[]` when absent.
 
-0.5.7 (change rounds): the project object has `round` (the runner's round record from state.json,
-`{id, branch, base_sha, pre_tag, spec_commit, opened_at, status: "open"|"merged"}`, or `null` for a fresh
-project) and every `steps[]` entry has `round` (0 = fresh plan). Per passed step state.json also holds
-`spec_hash`, `spec_files` and `branch` (not served).
+0.5.7 (change rounds): every `steps[]` entry has `round` (0 = fresh plan). Per passed step state.json also
+holds `spec_hash`, `spec_files` and `branch` (not served).
+
+0.5.8 (merge tap): the project object's `round` is an object
+`{"record": <state.json round or null>, "merge": {...}, "history": [...], "log": "<tail of state/round.log>",
+"branch": "main"}`. `record` = `{id, branch, base_sha, pre_tag, spec_commit, opened_at, status:
+"open"|"merging"|"merged"|"discarding", request?, pr?, pr_url?, head_sha?, merged_sha?, merged_tag?,
+merged_at?, error?}`. `merge` (the tap gate, from files only): `{state: "none"|<status>, ready, why,
+branch_sha, main_sha, self, all_passed, passed, total, pending: [ids], error}`; `ready` means pressing the tap
+now would start a merge with exactly `branch_sha` (the clone's local `change/C<n>` head) and `main_sha` (the
+round's base). `history` = the last 20 events of `state/rounds.jsonl` (`{ts, event: "opened"|"merged"|
+"discarded", id, branch, base_sha, pre_tag, request?, pr?, pr_url?, head_sha?, merged_sha?, merged_tag?,
+discarded_tag?, steps?}`).
 
 ### GET /api/p/NAME/log?lines=N
 
@@ -295,6 +305,18 @@ Runs the `hands` CLI as a subprocess (60 s timeout), so the CLI's own checks app
 `{"rc":1,"output":"runner is already running"}`; clears the STOP file first.
 Response: `200 {"rc": <int>, "output": "<combined stdout+stderr, last 4000 chars>"}` (`rc` 124 = timed out).
 Unknown action → 404. Body: none.
+
+### POST /api/p/NAME/action/merge and /api/p/NAME/action/discard (0.5.8)
+
+The sha-pinned taps. `merge` takes `{"branch_sha": "<40 hex>", "main_sha": "<40 hex>"}`, `discard` takes
+`{"branch_sha": "<40 hex>"}`: the heads the page showed (`round.merge.branch_sha` / `main_sha`). Refused with
+400 when a sha is malformed, the build or the planner is running, there is no open round, the round is not
+complete, the project is `self` ("Phoenix updates itself: this round is merged by Install update"), or the
+clone's head differs from the sha sent ("moved since this page showed it; reload and look again"). Otherwise
+the round record goes `merging` / `discarding` and `hands NAME merge|discard --branch-sha … [--main-sha …]`
+runs detached with its log in `state/round.log` (served as `round.log`); the CLI re-checks everything against
+origin and either finishes (`merged`, or the record removed after a discard) or puts the record back to `open`
+with `error`. Response: `200 {"rc": 0, "output": "merge started"}`.
 
 ### POST /api/p/NAME/action/plan, /api/p/NAME/action/amend and /api/p/NAME/action/approve
 
@@ -461,6 +483,6 @@ GET `/api/projects` `/api/usage` `/api/creating/<slug>` `/api/p/<name>` `/api/p/
 `/api/p/<name>/attempts` `/api/p/<name>/attempts/<attempt>/<file>` `/api/p/<name>/planfile`
 `/api/p/<name>/env` `/api/sessions` `/api/sessions/defaults` ·
 POST `/api/usage/refresh` `/api/new` `/api/p/<name>/action/<action>` (stop, start, ack,
-ack-clear-model, plan, approve) `/api/p/<name>/hide` `/api/p/<name>/unhide` `/api/p/<name>/env`
+ack-clear-model, plan, amend, approve, merge, discard) `/api/p/<name>/hide` `/api/p/<name>/unhide` `/api/p/<name>/env`
 `/api/sessions/new` `/api/sessions/<uuid>/resume|stop|delete|ticket` ·
 WebSocket `/ws/sessions/<uuid>?t=<ticket>`

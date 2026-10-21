@@ -342,11 +342,53 @@ the branch if a crashed run already pushed it), tag `hands/pre-C<n>` at the base
 another commit escalates), push tag and branch, then write `state.json` `round` = `{id, branch, base_sha,
 pre_tag, spec_commit, opened_at, status: "open"}`. Every part is idempotent, so a crash in the middle just
 re-runs it. From then on the runner syncs, builds and pushes on the round branch; `main` is untouched until
-the merge tap (B3, step 24) squash-merges `change/C<n>` and sets `status: "merged"`. One round is open at
+the merge tap (below) squash-merges `change/C<n>` and sets `status: "merged"`. One round is open at
 a time: a higher round's step while one is open, or `plan --amend` while one is open, is refused. In a round
-every pending step builds on the branch, and `reset-step` refuses a passed step of an earlier round
-("passed steps are never rebuilt"; add a step instead). Recovery, STOP/start and the watchdog need no
+every pending step builds on the branch. Recovery, STOP/start and the watchdog need no
 special case: the clone stays on the branch, `recover()` resets to the attempt's base there.
+
+**Merge tap and discard (0.5.8, B3, `hands/merge.py`).** One merge path for every kind of project, on the
+runner's app clone with its deploy key: plain git, no GitHub API, never a force push. The dashboard tap
+("Merge change C<n>") and `hands <p> merge --branch-sha X --main-sha Y` are sha-pinned: the shas are the
+heads the page showed (`change/C<n>` from the clone's local branch, main = the round's `base_sha`).
+`merge_round` refuses, with nothing changed on origin, unless the round is open, every spec step passed
+(so the regression rule ran on the last one), the runner is not running, push is enabled, `origin/main`
+still equals the shown sha and the round's base, and `origin/change/C<n>` equals the shown head. Then,
+locally: `main` at the base, `merge --squash`, one commit (`Change C<n>: <request line>`, author
+`hands <hands@localhost>`), the merged tree must equal the round head's tree (a squash onto the unchanged
+base is exactly the tested tree; otherwise local main is put back and the merge refused), tag
+`hands/merged/C<n>` at the unsquashed head (pushed first, so the per-step commits and their trailers stay
+reachable), push `HEAD:refs/heads/main` without force (origin moving in between makes git reject the
+non-fast-forward: local main is put back, "press Merge again"), record `{status: merged, head_sha,
+merged_sha, merged_tag, merged_at}`, then delete `change/C<n>` on origin (a failed delete is logged, not
+fatal). Tags stay: `hands/pre-C<n>` = the state before the change, `hands/merged/C<n>` = the unsquashed
+work; rollback is by hand (`git reset --hard hands/pre-C<n>` and a force push nobody automates).
+The dashboard POSTs `/api/p/<name>/action/merge` with both shas; the server re-checks the gate
+(`merge.tap_state`: open, complete, not running, not `self`, shas equal to the clone's), sets the record
+`merging`, and spawns the CLI detached (log `state/round.log`); the CLI finishes or puts the record back to
+`open` with `error`. A project with `self = true` in its TOML (Phoenix building itself, U4) has no tap: the
+gate answers "merged by Install update", the CLI refuses, and the installer (U3) calls `merge_round`
+directly. Two callers, one merge. Telegram gets "merged C<n> into main (<sha>)".
+
+*Discard* (`hands <p> discard --branch-sha X`, dashboard "Discard round C<n>"): pinned on the branch head;
+tags the work `hands/discarded/C<n>-<utc>` (pushed), deletes `change/C<n>` and `hands/pre-C<n>` on origin
+and locally (the reset point is consumed; a reopened round gets a fresh tag at the current main), puts the
+clone on `main` at `origin/main`, sets every step of that round back to pending, drops the record and
+appends the event. The amendment's steps stay in the spec (the validator never removes a step) and the
+next Start rebuilds them in a fresh round C<n> from the same base: discarding the work is not discarding
+the change request; that needs a spec PR.
+
+*History*: `state/rounds.jsonl` (append-only) gets `opened` (with the amendment's `request`, `pr`,
+`pr_url` copied from plan.json when it matches the round), `merged` and `discarded` events; the dashboard's
+"Change rounds" section lists every round from it with its steps (per-step `round`), PR and outcome, and
+the projects' tabs carry a `C<n>` tag (open / merge? / merged / ready for a `self` project).
+
+*After a merge*: `reset-step` refuses every passed step of a merged or earlier round, and round-0 steps once
+any round exists (rebuilding them on main would bypass the round branch, the pre-tag and the regression
+rule): "merged work is never rebuilt; make a new change request (Amend plan)". Only steps of the open round,
+or any step of a project that never had a round, can be reset. The planner's `app_snapshot` ahead check
+excludes commits reachable from the merged round's `head_sha`, so a clone left on the deleted branch is not
+mistaken for unpushed work (`plan --amend` works again as soon as the round is merged).
 
 **Immutability rule.** A passed step's `steps.json` entry and the acceptance files it owns are immutable:
 the runner records `spec_hash` over exactly those when the step passes and re-checks it on every spec load

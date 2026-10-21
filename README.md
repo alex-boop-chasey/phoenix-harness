@@ -1,4 +1,4 @@
-# Phoenix Harness 0.5.7 (hands runner)
+# Phoenix Harness 0.5.8 (hands runner)
 
 One app behind one login: Project builder and Session manager. What changed since 0.4.3:
 `CHANGELOG.md`; architecture `docs/architecture.md`; HTTP API `docs/api.md`; design system `docs/design.md`;
@@ -16,6 +16,9 @@ hands <project> stop             # stop at next safe point (STOP file)
 hands <project> ack              # after an escalation (resets failed steps' attempts)
 hands <project> prompt [STEP]    # show the prompt a step would get (no session)
 hands <project> mark-done STEP   # human steps
+hands <project> reset-step STEP  # rebuild a step (not one of a merged round: amend instead)
+hands <project> merge --branch-sha X --main-sha Y   # squash-merge the finished change round (sha-pinned)
+hands <project> discard --branch-sha X              # drop the round's build (kept as a tag); steps rebuild
 hands <project> watchdog         # restarts the loop if it crashed (not after escalation/done/STOP/Ctrl-C)
 hands all watchdog               # cron (installed every 10 min): every project's watchdog + keeps dashboard up
 hands <slug> create [--from-repo O/R [--branch B] [--ruleset]]   # new project (description on stdin)
@@ -83,6 +86,15 @@ can only grow. The planner gets the built app read-only at `/app` and may only a
 built steps and their tests are frozen, changed existing tests must be listed in PLAN.md, shared-settings
 changes need an explicit tick. Each round is its own PR `hands/amend-C<round>`; approve works as above.
 **Re-plan with feedback** revises the plan and updates the same PR.
+
+**Change rounds** (0.5.7): an approved amendment builds on its own app branch `change/C<n>` from `main`,
+with tag `hands/pre-C<n>` at the base and every passed step's acceptance re-run per attempt (regression rule).
+**Merge change** (0.5.8, the dashboard tap or `hands <p> merge`): when every step passed, a sha-pinned squash
+merge into `main` on the runner's clone (refused if the branch head or `main` moved since shown; the merged
+tree must equal the tested one; never a force push), tag `hands/merged/C<n>` keeps the unsquashed commits,
+`change/C<n>` is deleted. **Discard round** throws the build away (tag `hands/discarded/C<n>-<utc>`) and
+puts the steps back to pending; the change request stays in the spec. A `self = true` project (Phoenix
+itself) has no Merge tap: Install update merges it. Rollback by hand: `git reset --hard hands/pre-C<n>`.
 
 ## Acceptance tests per step (0.4)
 Each step sees only: shared files, files of steps already passed, and its own files. A step owns

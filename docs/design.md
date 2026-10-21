@@ -124,6 +124,8 @@ text label and a dot, step icons use ✓ ✗ ○ plus colour.
 | View switch | `.seg button[aria-pressed]` | List / Grid |
 | Quiet text button | `.btn.quiet.sm.text` | quiet button with text at `--fs-1` (`.btn.quiet.sm` alone is the larger icon button) |
 | Select | `select.select` | native select in control style, accent focus ring |
+| Round tag | `.rtag(.r-open .r-all_passed .r-merged .r-merging .r-discarding .r-discarded)`, `.tab .rtag`, `p.roundline` | pill "C1" / "C1 merge?" / "C1 merged" / "C1 ready" after the status badge in a project tab (title = the state in words; nothing for round 0); the same pill opens the round line in the project head (since step 24) |
+| Change rounds | `section.rounds .round(.r-*) .rtag strong a`, `ul.rsteps .ic .sid`, `.btn.primary` Merge / `.btn.danger` Discard | one card per round (latest first): request line, PR link, state line, the round's steps with ✓/✗/○, `.reason` for a refused tap; the open round's taps are sha-pinned and confirmed through the shared dialog (Merge: primary; Discard: danger + `.notice.warn` saying the steps stay in the spec); a `self` project shows "Merged by Install update" instead of the Merge tap (since step 24) |
 | Toasts | `#toasts.toasts .toast(.bad)` | in app.css; `toast(text, bad)` in app.js shows done/failed actions without blocking the page (since step 17) |
 
 ## States
