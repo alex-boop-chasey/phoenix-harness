@@ -120,6 +120,50 @@ def claude_home() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
 
 
+def claude_config_file() -> Path:
+    """Claude Code's own state file (~/.claude.json, or inside CLAUDE_CONFIG_DIR): per-folder trust lives there."""
+    return claude_home() / ".claude.json" if os.environ.get("CLAUDE_CONFIG_DIR") else Path.home() / ".claude.json"
+
+
+def trust_folder(cwd: str, path: Path | None = None) -> bool:
+    """Mark the session's working folder as trusted so Claude does not ask "Do you trust the files in this
+    folder?" in the terminal (every folder a session may use is under the user's home and was chosen by a
+    logged-in user). Sets exactly one key, `projects[cwd].hasTrustDialogAccepted = true`, keeps everything
+    else byte-for-byte as JSON, writes atomically with the file's mode (0600 for a new file). Never raises:
+    a missing or unreadable config is left alone (the dialog then just appears) and False is returned."""
+    path = path or claude_config_file()
+    try:
+        if path.exists():
+            data = json.loads(path.read_text())
+            mode = stat.S_IMODE(path.stat().st_mode)
+        else:
+            data, mode = {}, 0o600
+        if not isinstance(data, dict):
+            return False
+        projects = data.setdefault("projects", {})
+        if not isinstance(projects, dict):
+            return False
+        entry = projects.setdefault(cwd, {})
+        if not isinstance(entry, dict):
+            return False
+        if entry.get("hasTrustDialogAccepted") is True:
+            return True
+        entry["hasTrustDialogAccepted"] = True
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2)
+            os.chmod(tmp, mode)
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def sessions_dir() -> Path:
     return cfgmod.CONFIG_HOME / "sessions"
 
@@ -411,6 +455,7 @@ class PtyBackend:
         if is_plan_chat(rec):                   # never the host claude with the dashboard user's login
             raise PlanChatSession(str(rec.get("project") or ""))
         argv = claude_argv(rec["id"], resume, is_telegram(rec))
+        trust_folder(rec["cwd"])        # module attribute on purpose: tests swap it
         self.launch(rec["id"], argv, session_env(), rec["cwd"])
 
     def launch(self, sid: str, argv: list[str], env: dict[str, str], cwd: str, on_exit=None) -> Proc:
