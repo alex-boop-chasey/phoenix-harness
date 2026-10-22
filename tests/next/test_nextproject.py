@@ -449,6 +449,44 @@ class SessionManagerRefusesPlanChat(unittest.TestCase):
             dashboard.plan_chat_resume(rec, telegram=True)
 
 
+class DashboardCreate(unittest.TestCase):
+    """start_create: "Create project" runs the planner after create; "Plan with Claude" (plan_with_claude) does not."""
+
+    def setUp(self):
+        from hands import dashboard
+        self.dashboard = dashboard
+        self.tmp = Path(tempfile.mkdtemp(prefix="hands-dash-create-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        orig = cfgmod.CONFIG_HOME
+        cfgmod.CONFIG_HOME = self.tmp / "cfg"
+        self.addCleanup(setattr, cfgmod, "CONFIG_HOME", orig)
+        self.argvs = []
+        test = self
+
+        class FakePopen:
+            def __init__(self, argv, **kw):
+                test.argvs.append(argv)
+                self.stdin = io.StringIO()
+
+            def wait(self):
+                return 0
+
+        orig_popen = dashboard.subprocess.Popen
+        dashboard.subprocess.Popen = FakePopen
+        self.addCleanup(setattr, dashboard.subprocess, "Popen", orig_popen)
+
+    def test_plan_with_claude_skips_the_planner(self):
+        req = {"style_refs": ["https://a.example"], "framework": 2, "libs": ["gsap"]}
+        self.dashboard.start_create("one", "an idea", req=req)
+        self.dashboard.start_create("two", "an idea", req={**req, "plan_with_claude": True})
+        self.dashboard.start_create("three", "an idea", req={**req, "plan_with_claude": "yes"})
+        tail = ["--style-ref", "https://a.example/", "--framework", "2", "--libs", "gsap"]
+        self.assertEqual(self.argvs[0][-9:], ["one", "create", "--then-plan", *tail])
+        self.assertEqual(self.argvs[1][-8:], ["two", "create", *tail])
+        self.assertNotIn("--then-plan", self.argvs[1])
+        self.assertIn("--then-plan", self.argvs[2])
+
+
 class DashboardHelpers(unittest.TestCase):
     def test_next_flags(self):
         from hands import dashboard

@@ -416,3 +416,22 @@ dialog.dialog.wide { max-width: min(600px, calc(100vw - 32px)); width: 100%; }
 .round p { margin: 0; }
 .rsteps { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: var(--fs-1); }
 .rsteps .sid { font-family: var(--mono); color: var(--ink-2); }
+
+/* ---------------------------------------------------------------- style refs and setup (nextform.js) */
+.flabel { font-weight: 600; margin-top: 6px; font-size: var(--fs-1); }
+select.input { width: auto; max-width: 100%; }
+.urllist, .urlrows, .setupfields { display: grid; gap: 6px; }
+.urlfield { display: flex; gap: 6px; align-items: center; }
+.urlrow .urlerr { margin: 2px 0 0; }
+.refrows { list-style: none; margin: 0 0 var(--sp-2); padding: 0; display: grid; gap: 6px; }
+.refrow { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.refrow .refurl { overflow-wrap: anywhere; min-width: 0; flex: 0 1 auto; }
+.refrow .refreason { flex-basis: 100%; margin: 0; }
+.stylerefs { display: grid; gap: var(--sp-2); }
+.stylerefs p { margin: 0; }
+.addrefs { display: grid; gap: 6px; max-width: 640px; border-left: 3px solid var(--line-2); padding-left: var(--sp-3); }
+.addrefs.hidden { display: none; }
+.setupline { align-items: center; }
+.s-queued { color: var(--ink-2); }
+.s-capturing, .s-analysing { color: var(--accent); } .badge.s-capturing, .badge.s-analysing { background: var(--accent-soft); }
+.s-frozen { color: var(--ok); } .badge.s-frozen { background: var(--ok-soft); }

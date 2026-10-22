@@ -1,0 +1,10 @@
+{
+  "name": "phoenix-dashboard-static",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dashboard scripts served as-is (no bundler). Only here so `node --test hands/static/` finds the unit tests.",
+  "main": "index.mjs",
+  "scripts": {
+    "test": "node --test ."
+  }
+}

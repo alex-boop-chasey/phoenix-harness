@@ -351,6 +351,11 @@ function dispatch(ev) {
   else if (a.act === "focus-amend") { const x = document.getElementById("amendtext"); if (x) { x.scrollIntoView({ block: "center" }); x.focus(); } }
   else if (a.act === "select") select(a.arg);
   else if (a.act === "usage-refresh") refreshUsage(t);
+  else if (a.act === "style-ref-add" && d) toggleAddRefs(d.name);
+  else if (a.act === "style-ref-retry" && d) refAction(d.name, `/style-refs/${a.arg}/retry`, "POST", `Retrying style ref ${a.arg}…`);
+  else if (a.act === "style-ref-remove" && d) removeRef(d.name, a.arg);
+  else if (a.act === "setup-retry" && d) refAction(d.name, "/setup/retry", "POST", "Retrying setup…");
+  else if (a.act === "plan-chat") planChat(a.arg, t);
 }
 function openPanel(key) {
   const p = document.querySelector(`details.panel[data-panel="${key}"]`);
@@ -358,6 +363,66 @@ function openPanel(key) {
 }
 // a node that owns its state is rendered once; later trees carry a keyed stand-in the patch leaves alone
 const keep = (node, key) => (node.isConnected ? el(node.tagName.toLowerCase(), { "data-key": key, "data-self-managed": "" }) : node);
+
+// ---- style refs and setup (Phase 2): the panel is nextform.js's; the add-URL form owns its fields, so it is
+// built once per project and kept across patches
+let addRefs = { name: null, node: null };
+function addRefsNode(name) {
+  if (addRefs.name !== name) {
+    const list = hands.nextform.styleUrlList(document);
+    const out = el("p", { class: "muted small" }, "");
+    const save = el("button", { class: "btn sm primary", type: "submit" }, "Capture these URLs");
+    const form = el("form", { class: "addrefs hidden", "data-key": `style-ref-add-form:${name}`, "data-self-managed": "", on: { submit: async (ev) => {
+      ev.preventDefault();
+      const urls = list.values();
+      if (!list.validate() || !urls.length) { out.textContent = urls.length ? "Fix the URLs marked above." : "Enter at least one URL."; return; }
+      save.disabled = true;
+      out.textContent = "Saving…";
+      try {
+        await api(`/api/projects/${encodeURIComponent(name)}/style-refs`, { method: "POST",
+          headers: { "X-Hands": "1", "Content-Type": "application/json" }, body: JSON.stringify({ urls }) });
+        list.reset(); out.textContent = ""; form.classList.add("hidden");
+        toast(`Capturing ${urls.length} style URL${urls.length === 1 ? "" : "s"}…`);
+      } catch (e) { out.textContent = `failed: ${e.message}`; }
+      save.disabled = false;
+      refresh(false);
+    } } }, el("p", { class: "muted" }, "Added as a change request: each URL is captured, analysed and frozen before the next planning round."),
+      list.root, el("div", { class: "row" }, save), out);
+    addRefs = { name, node: form };
+  }
+  return keep(addRefs.node, `style-ref-add-form:${name}`);
+}
+function toggleAddRefs(name) {
+  if (addRefs.name !== name || !addRefs.node) return;
+  const hidden = addRefs.node.classList.toggle("hidden");
+  if (!hidden) { const i = addRefs.node.querySelector("input"); if (i) i.focus(); }
+}
+function styleRefsHint(n) {
+  const refs = n.style_refs || [];
+  const failed = refs.filter((r) => r.status === "failed").length;
+  const s = n.setup && n.setup.status && n.setup.status !== "none" ? ` · setup ${n.setup.status}` : "";
+  return `${refs.length} ref${refs.length === 1 ? "" : "s"}${failed ? ` · ${failed} failed` : ""}${s}`;
+}
+async function refAction(name, path, method, label) {
+  try {
+    await api(`/api/projects/${encodeURIComponent(name)}${path}`, { method, headers: { "X-Hands": "1" } });
+    toast(label);
+  } catch (e) { toast(`refused: ${e.message}`, true); }
+  refresh(false);
+}
+async function removeRef(name, index) {
+  if (!(await confirmDialog({ title: `Remove style ref ${index} from ${name}?`, body: "The URL and its frozen files are removed from the project.",
+    ok: "Remove", okClass: "btn danger" }))) return;
+  refAction(name, `/style-refs/${index}`, "DELETE", `Removing style ref ${index}…`);
+}
+async function planChat(name, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api(`/api/projects/${encodeURIComponent(name)}/plan-chat`, { method: "POST", headers: { "X-Hands": "1" } });
+    location.hash = `#/sessions/${encodeURIComponent(r.session_id)}`;
+  } catch (e) { toast(`Planning chat refused: ${e.message}`, true); }
+  if (btn) btn.disabled = false;
+}
 
 const PHASES = { coder: "coding", check: "checking changes", acceptance: "running checks", evaluator: "independent review" };
 // The overview strip (0.6): what is happening now, how far the build is, and the runner actions; sticky
@@ -652,6 +717,9 @@ function showNew() {
     placeholder: "One or two sentences: what the app is, who it is for. The planner asks the rest." });
   const out = el("pre", {}, "");
   const submit = el("button", { class: "act", type: "submit" }, "Create project");
+  const withClaude = el("button", { class: "btn primary", type: "submit", value: "chat", "data-testid": "plan-with-claude" }, "Plan with Claude");
+  const styleUrls = hands.nextform.styleUrlList(document);
+  const setupFields = hands.nextform.setupFields(document);
   const envLocal = envEditor({ local: true });
   // Start from an existing repo (step 15): the app repo already exists; hands only adds a deploy key to it.
   const fromRepo = el("input", { type: "checkbox", id: "fromrepo" });
@@ -677,19 +745,22 @@ function showNew() {
     ev.preventDefault();
     let vars;
     try { vars = envLocal.collect(); } catch (e) { out.textContent = e.message; return; }
+    if (!styleUrls.validate()) { out.textContent = "Fix the style URLs marked above (or clear them)."; return; }
+    const chat = !!(ev.submitter && ev.submitter.value === "chat");
     const importing = fromRepo.checked;
     const q = importing
       ? `Create the GitHub repo ${slug.value}-specs, add a deploy key to ${repo.value} and set everything up? ${repo.value} itself is not changed.`
       : `Create GitHub repos ${slug.value}-specs and ${slug.value}-app and set everything up?`;
     if (!(await confirmDialog({ title: importing ? `Set up ${slug.value} from ${repo.value}?` : `Create ${slug.value}?`, body: q, ok: "Create", okClass: "btn primary" }))) return;
-    submit.disabled = true;
+    submit.disabled = true; withClaude.disabled = true;
     out.textContent = "Starting…";
-    const body = { slug: slug.value, description: desc.value };
+    const body = { slug: slug.value, description: desc.value, style_refs: styleUrls.values(),
+      framework: setupFields.framework(), libs: setupFields.libs(), plan_with_claude: chat };
     if (importing) { body.from_repo = repo.value.trim(); body.branch = branch.value.trim(); body.ruleset = ruleset.checked; }
     try {
       await api("/api/new", { method: "POST", headers: { "X-Hands": "1", "Content-Type": "application/json" },
         body: JSON.stringify(body) });
-    } catch (e) { out.textContent = `failed: ${e.message}`; submit.disabled = false; return; }
+    } catch (e) { out.textContent = `failed: ${e.message}`; submit.disabled = false; withClaude.disabled = false; return; }
     creatingEnvError = "";
     if (vars.length) {
       try {
@@ -697,7 +768,7 @@ function showNew() {
           headers: { "X-Hands": "1", "Content-Type": "application/json" }, body: JSON.stringify({ set: vars }) });
       } catch (e) { creatingEnvError = `The project is being created, but its variables were not saved (${e.message}). Add them below.`; }
     }
-    mode = "creating"; creatingSlug = slug.value; refresh(false);
+    mode = "creating"; creatingSlug = slug.value; creatingChat = chat; refresh(false);
   } } },
     el("label", { for: "slug" }, "Project slug"), slug,
     el("p", { class: "muted" }, "Lowercase letters, digits and hyphens. Becomes the repo names <slug>-specs and <slug>-app (or just <slug>-specs when starting from an existing repo)."),
@@ -705,10 +776,16 @@ function showNew() {
       el("span", { class: "hint" }, "Build on a codebase that already exists on GitHub instead of a new, empty app repo."))),
     repoFields,
     el("label", { for: "desc" }, "Idea"), desc,
+    el("div", { class: "flabel" }, "Style references (optional)"),
+    el("p", { class: "muted" }, `Sites whose look and motion the app should follow, up to ${hands.nextform.MAX_STYLE_URLS} http(s) URLs. Each is captured and analysed before planning; text, images and logos are never copied.`),
+    styleUrls.root,
+    setupFields.root,
     el("label", {}, "Environment variables (optional)"),
     el("p", { class: "muted" }, "Test API keys and service URLs the build containers need. You can also add them later on the project page."),
     envLocal,
-    el("div", { class: "row" }, submit), out);
+    el("div", { class: "row" }, submit, withClaude),
+    el("p", { class: "muted" }, "Create project runs the planner right away. Plan with Claude creates the project and opens a planning chat with Claude instead; you approve the brief it writes."),
+    out);
   $("#main").replaceChildren(el("section", {}, el("h2", {}, "New project"),
     el("p", { class: "muted" }, "Creates two private repos with branch protection, read-only/write deploy keys, " +
       "clones under ~/projects/<slug>/ and the runner config. Takes about a minute. Nothing is built until a plan is merged. " +
@@ -717,6 +794,7 @@ function showNew() {
 }
 
 let creatingEnvError = "";
+let creatingChat = false;     // created with "Plan with Claude": offer the planning chat once the project exists
 async function refreshCreating() {
   const slug = creatingSlug;
   try {
@@ -727,7 +805,8 @@ async function refreshCreating() {
       el("div", { class: "row" }, el("h2", {}, `Creating ${slug}`), badge(c.state === "failed" ? "escalation" : c.state)),
       c.error ? el("p", { class: "reason" }, c.error) : null,
       el("pre", {}, c.lines.join("\n")),
-      done ? el("div", { class: "row out" }, el("button", { class: "act", "data-act": "select", "data-arg": slug }, `Open ${slug}`)) : null,
+      done ? el("div", { class: "row out" }, el("button", { class: "act", "data-act": "select", "data-arg": slug }, `Open ${slug}`),
+        creatingChat ? el("button", { class: "btn primary", "data-act": "plan-chat", "data-arg": slug }, "Plan with Claude") : null) : null,
       c.state === "failed" ? el("p", { class: "muted" }, c.project_exists
         ? `Fix the cause, then on the VPS: hands ${slug} destroy --confirm ${slug}   and create it again.`
         : "Nothing was created. Fix the cause and create it again.") : null),
@@ -1092,6 +1171,7 @@ const PANEL_DEFAULTS = {
   setup: (d) => !(d.setup && d.setup.spec_ready),
   env: () => false, steps: () => true, metrics: () => false, log: (d) => !!d.alive, attempts: () => false,
   progress: () => false, viewer: () => false, create: () => true,
+  stylerefs: (d) => !!(d.next && ((d.next.style_refs || []).some((r) => r.status !== "frozen") || (d.next.setup && d.next.setup.status === "failed"))),
 };
 function panelsSaved(name) {
   try { const v = JSON.parse(localStorage.getItem(`hands.panels.${name}`) || "{}"); return v && typeof v === "object" ? v : {}; }
@@ -1132,6 +1212,8 @@ function render(name, d, log) {
     panel(name, "create", "Creation", d, createSec),
     d.managed ? panel(name, "plan", "Plan", d, planSection(d), p.running ? "planning…" : p.state && p.state !== "none" ? p.state : "") : null,
     panel(name, "rounds", "Change rounds", d, roundsSection(d)),
+    d.next && !d.next.error ? panel(name, "stylerefs", "Style refs & setup", d, hands.nextform.styleRefsPanel(document, d.next, addRefsNode(name)),
+      styleRefsHint(d.next)) : null,
     showSetup ? panel(name, "setup", "Setup", d, setupSection(d)) : null,
     panel(name, "env", "Environment", d, envSection(name)),
     panel(name, "steps", "Steps", d, stepsSection(d), `${d.passed}/${d.steps.length} passed${failed ? ` · ${failed} failed` : ""}`),

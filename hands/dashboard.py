@@ -93,6 +93,7 @@ STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8"),
                 "/store.js": ("store.js", "text/javascript; charset=utf-8"),
                 "/logpanel.js": ("logpanel.js", "text/javascript; charset=utf-8"),
                 "/render.js": ("render.js", "text/javascript; charset=utf-8"),
+                "/nextform.js": ("nextform.js", "text/javascript; charset=utf-8"),
                 # morphdom 2.7.4 (MIT), vendored: in-place DOM patching for the builder page (0.6)
                 "/vendor/morphdom-2.7.4.min.js": ("vendor/morphdom-2.7.4.min.js", "text/javascript; charset=utf-8"),
                 "/sessions.js": ("sessions.js", "text/javascript; charset=utf-8"),
@@ -656,9 +657,11 @@ def create_info(slug: str) -> dict | None:
 def start_create(slug: str, description: str, from_repo: str = "", branch: str = "", ruleset: bool = False,
                  req: dict | None = None) -> dict:
     """`hands SLUG create --then-plan` detached; `req` may carry style_refs[], framework and libs[] (validated here,
-    passed on as --style-ref/--framework/--libs)."""
+    passed on as --style-ref/--framework/--libs) and plan_with_claude (true: no planner run; the user starts the
+    planning chat once the project exists)."""
     from . import newproject
     next_extra = next_flags(req or {})
+    then_plan = [] if (req or {}).get("plan_with_claude") is True else ["--then-plan"]
     try:
         newproject.validate_slug(slug)
         from_repo = (from_repo or "").strip()
@@ -703,7 +706,7 @@ def start_create(slug: str, description: str, from_repo: str = "", branch: str =
             out.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} create {slug}\n")
             out.flush()
             try:
-                p = subprocess.Popen(hands_argv(slug, "create", "--then-plan", *extra), stdin=subprocess.PIPE, stdout=out,
+                p = subprocess.Popen(hands_argv(slug, "create", *then_plan, *extra), stdin=subprocess.PIPE, stdout=out,
                                      stderr=subprocess.STDOUT, env=env, start_new_session=True, text=True)
                 p.stdin.write(description)
                 p.stdin.close()
