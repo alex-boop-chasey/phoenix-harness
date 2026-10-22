@@ -1,4 +1,5 @@
 __pycache__/
 *.pyc
 capture/node_modules/
+.pnpm-store/
 .venv/

@@ -1,0 +1,18 @@
+{
+  "name": "phoenix-capture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright capture of look and motion of a reference site; records numbers, names and frames, never content.",
+  "type": "module",
+  "packageManager": "pnpm@12.11.2",
+  "main": "index.mjs",
+  "scripts": {
+    "test": "node --test ."
+  },
+  "dependencies": {
+    "playwright": "1.64.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1"
+  }
+}

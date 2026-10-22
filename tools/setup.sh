@@ -6,9 +6,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# The first pnpm run in a fresh container downloads pnpm itself (corepack) and its native binary from
+# registry.npmjs.org; a stalled connection there must not fail the whole setup, so retry a few times.
+install_capture() {
+  local attempt
+  for attempt in 1 2 3; do
+    if (cd capture && pnpm install --frozen-lockfile); then
+      return 0
+    fi
+    echo "capture: pnpm install failed (attempt $attempt of 3)" >&2
+    [ "$attempt" -lt 3 ] && sleep 15
+  done
+  return 1
+}
+
 if [ -f capture/package.json ]; then
   echo "== capture: pnpm install --frozen-lockfile"
-  (cd capture && pnpm install --frozen-lockfile)
+  install_capture
 else
   echo "SKIP capture dependencies (no capture/package.json)"
 fi

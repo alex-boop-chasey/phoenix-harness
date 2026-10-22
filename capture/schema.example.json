@@ -1,0 +1,1080 @@
+{
+  "schema": 1,
+  "url": "https://example.com/",
+  "capturedAt": "2026-01-01T00:00:00.000Z",
+  "viewports": {
+    "desktop": {
+      "size": {
+        "w": 1440,
+        "h": 900
+      },
+      "pageHeight": 4746,
+      "steps": [
+        {
+          "index": 0,
+          "scrollY": 0,
+          "frame": "frames/desktop/step-00.png",
+          "animations": [
+            {
+              "type": "CSSAnimation",
+              "id": null,
+              "name": "fade-up",
+              "target": "html > body:nth-child(2) > main:nth-child(2) > section.hero:nth-child(1) > h1.display:nth-child(1)",
+              "timeline": "document",
+              "playState": "finished",
+              "currentTime": 900
+            },
+            {
+              "type": "CSSAnimation",
+              "id": null,
+              "name": "fade-up",
+              "target": "html > body:nth-child(2) > main:nth-child(2) > section.hero:nth-child(1) > p.lead:nth-child(2)",
+              "timeline": "document",
+              "playState": "finished",
+              "currentTime": 1100
+            }
+          ],
+          "changed": []
+        },
+        {
+          "index": 1,
+          "scrollY": 900,
+          "frame": "frames/desktop/step-01.png",
+          "animations": [
+            {
+              "type": "CSSTransition",
+              "id": null,
+              "name": "transform",
+              "target": "html > body:nth-child(2) > main:nth-child(2) > section.features:nth-child(2) > div.grid:nth-child(2) > article.card.reveal:nth-child(1)",
+              "timeline": "document",
+              "playState": "running",
+              "currentTime": 433.39
+            },
+            {
+              "type": "CSSTransition",
+              "id": null,
+              "name": "opacity",
+              "target": "html > body:nth-child(2) > main:nth-child(2) > section.features:nth-child(2) > div.grid:nth-child(2) > article.card.reveal:nth-child(2)",
+              "timeline": "document",
+              "playState": "running",
+              "currentTime": 433.39
+            }
+          ],
+          "changed": [
+            {
+              "path": "html > body:nth-child(2) > main:nth-child(2) > section.hero:nth-child(1) > div.orb:nth-child(4)",
+              "changed": {
+                "transform": {
+                  "from": "matrix(1, 0, 0, 1, 0, -17.8681)",
+                  "to": "matrix(1, 0, 0, 1, 0, -22.3612)"
+                }
+              }
+            },
+            {
+              "path": "html > body:nth-child(2) > main:nth-child(2) > section.features:nth-child(2) > div.grid:nth-child(2) > article.card.reveal:nth-child(1)",
+              "changed": {
+                "opacity": {
+                  "from": "0.6",
+                  "to": "0.795641"
+                },
+                "transform": {
+                  "from": "matrix(1, 0, 0, 1, 0, 40)",
+                  "to": "matrix(1, 0, 0, 1, 0, 4.51503)"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "structure": [
+        {
+          "tag": "header",
+          "role": null,
+          "depth": 1,
+          "box": {
+            "x": 0,
+            "y": 0,
+            "w": 1440,
+            "h": 74
+          },
+          "children": 1,
+          "path": "html > body:nth-child(2) > header.site-header:nth-child(1)"
+        },
+        {
+          "tag": "nav",
+          "role": null,
+          "depth": 2,
+          "box": {
+            "x": 0,
+            "y": 0,
+            "w": 1440,
+            "h": 74
+          },
+          "children": 3,
+          "path": "html > body:nth-child(2) > header.site-header:nth-child(1) > nav.nav:nth-child(1)"
+        }
+      ],
+      "colors": [
+        {
+          "value": "rgb(17, 24, 39)",
+          "uses": 15,
+          "properties": [
+            "color",
+            "background-color"
+          ]
+        },
+        {
+          "value": "rgb(255, 255, 255)",
+          "uses": 5,
+          "properties": [
+            "background-color",
+            "color"
+          ]
+        }
+      ],
+      "fonts": {
+        "families": [
+          {
+            "family": "Georgia",
+            "stack": "Georgia, \"Times New Roman\", serif",
+            "uses": 13,
+            "weights": [
+              {
+                "weight": "700",
+                "uses": 8
+              },
+              {
+                "weight": "400",
+                "uses": 5
+              }
+            ]
+          },
+          {
+            "family": "Arial",
+            "stack": "Arial, Helvetica, sans-serif",
+            "uses": 3,
+            "weights": [
+              {
+                "weight": "600",
+                "uses": 2
+              },
+              {
+                "weight": "700",
+                "uses": 1
+              }
+            ]
+          }
+        ],
+        "sizes": [
+          {
+            "px": 24,
+            "uses": 7
+          },
+          {
+            "px": 16,
+            "uses": 4
+          }
+        ],
+        "lineHeights": [
+          {
+            "value": "normal",
+            "ratio": null,
+            "uses": 11
+          },
+          {
+            "value": "28.8px",
+            "ratio": 1.2,
+            "uses": 3
+          }
+        ]
+      },
+      "spacing": {
+        "paddings": [
+          {
+            "value": "32px",
+            "uses": 6
+          },
+          {
+            "value": "24px",
+            "uses": 4
+          }
+        ],
+        "margins": [
+          {
+            "value": "19.92px",
+            "uses": 4
+          },
+          {
+            "value": "8px",
+            "uses": 3
+          }
+        ],
+        "gaps": [
+          {
+            "value": "24px",
+            "uses": 2
+          },
+          {
+            "value": "32px",
+            "uses": 1
+          }
+        ]
+      },
+      "radii": [
+        {
+          "value": "16px",
+          "uses": 3
+        },
+        {
+          "value": "12px",
+          "uses": 1
+        }
+      ],
+      "shadows": [
+        {
+          "value": "rgba(0, 0, 0, 0.06) 0px 1px 2px 0px",
+          "uses": 3
+        },
+        {
+          "value": "rgba(0, 0, 0, 0.12) 0px 2px 8px 0px",
+          "uses": 1
+        }
+      ],
+      "graphics": {
+        "svg": 0,
+        "img": 1,
+        "video": 0,
+        "canvas": 0,
+        "backgroundImages": 0,
+        "sizes": [
+          {
+            "kind": "img",
+            "w": 120,
+            "h": 40
+          }
+        ]
+      },
+      "keyframes": [
+        {
+          "name": "fade-up",
+          "frames": [
+            {
+              "offset": "0%",
+              "properties": {
+                "opacity": "0",
+                "transform": "translateY(24px)"
+              }
+            },
+            {
+              "offset": "100%",
+              "properties": {
+                "opacity": "1",
+                "transform": "none"
+              }
+            }
+          ]
+        },
+        {
+          "name": "float",
+          "frames": [
+            {
+              "offset": "0%",
+              "properties": {
+                "transform": "translateY(0px)"
+              }
+            },
+            {
+              "offset": "100%",
+              "properties": {
+                "transform": "translateY(-24px)"
+              }
+            }
+          ]
+        }
+      ],
+      "crossOriginSheetsSkipped": 0,
+      "transitions": [
+        {
+          "property": "opacity",
+          "duration": "0.6s",
+          "timingFunction": "ease-out",
+          "delay": "0s",
+          "uses": 3
+        },
+        {
+          "property": "transform",
+          "duration": "0.6s",
+          "timingFunction": "ease-out",
+          "delay": "0s",
+          "uses": 3
+        }
+      ],
+      "animationTimelines": [
+        {
+          "path": "html > body:nth-child(2) > main:nth-child(2) > section.progress-demo:nth-child(4) > div.bar:nth-child(1)",
+          "value": "scroll()",
+          "animationName": "grow"
+        }
+      ],
+      "webAnimations": [
+        {
+          "type": "CSSAnimation",
+          "id": null,
+          "name": "fade-up",
+          "target": "html > body:nth-child(2) > main:nth-child(2) > section.hero:nth-child(1) > h1.display:nth-child(1)",
+          "pseudo": null,
+          "timeline": "document",
+          "playState": "finished",
+          "currentTime": 900,
+          "keyframes": [
+            {
+              "offset": 0,
+              "easing": "ease-out",
+              "composite": "auto",
+              "transform": "translateY(24px)",
+              "opacity": "0",
+              "computedOffset": 0
+            },
+            {
+              "offset": 1,
+              "easing": "ease-out",
+              "composite": "auto",
+              "transform": "none",
+              "opacity": "1",
+              "computedOffset": 1
+            }
+          ],
+          "timing": {
+            "delay": 0,
+            "endDelay": 0,
+            "iterationStart": 0,
+            "duration": 900,
+            "progress": 1,
+            "currentIteration": 0,
+            "activeDuration": 900,
+            "endTime": 900,
+            "localTime": 900,
+            "fill": "both",
+            "direction": "normal",
+            "easing": "linear",
+            "iterations": 1
+          },
+          "firstStep": 0,
+          "steps": 6,
+          "lastPlayState": "finished"
+        },
+        {
+          "type": "CSSAnimation",
+          "id": null,
+          "name": "grow",
+          "target": "html > body:nth-child(2) > main:nth-child(2) > section.progress-demo:nth-child(4) > div.bar:nth-child(1)",
+          "pseudo": null,
+          "timeline": "scroll",
+          "playState": "running",
+          "currentTime": "0%",
+          "keyframes": [
+            {
+              "offset": 0,
+              "easing": "linear",
+              "composite": "auto",
+              "transform": "scaleX(0)",
+              "computedOffset": 0
+            },
+            {
+              "offset": 1,
+              "easing": "linear",
+              "composite": "auto",
+              "transform": "scaleX(1)",
+              "computedOffset": 1
+            }
+          ],
+          "timing": {
+            "delay": 0,
+            "endDelay": 0,
+            "iterationStart": 0,
+            "duration": null,
+            "progress": 0,
+            "currentIteration": 0,
+            "activeDuration": null,
+            "endTime": null,
+            "localTime": null,
+            "fill": "both",
+            "direction": "normal",
+            "easing": "linear",
+            "iterations": 1
+          },
+          "firstStep": 0,
+          "steps": 6,
+          "lastPlayState": "finished"
+        },
+        {
+          "type": "Animation",
+          "id": null,
+          "name": null,
+          "target": "html > body:nth-child(2) > main:nth-child(2) > section.features:nth-child(2) > div.grid:nth-child(2) > article.card.reveal:nth-child(1)",
+          "pseudo": null,
+          "timeline": "view",
+          "playState": "running",
+          "currentTime": "-38.57%",
+          "keyframes": [
+            {
+              "offset": null,
+              "easing": "linear",
+              "composite": "auto",
+              "opacity": "0.6",
+              "computedOffset": 0
+            },
+            {
+              "offset": null,
+              "easing": "linear",
+              "composite": "auto",
+              "opacity": "1",
+              "computedOffset": 1
+            }
+          ],
+          "timing": {
+            "delay": 0,
+            "endDelay": 0,
+            "iterationStart": 0,
+            "duration": null,
+            "progress": 0,
+            "currentIteration": 0,
+            "activeDuration": null,
+            "endTime": null,
+            "localTime": null,
+            "fill": "both",
+            "direction": "normal",
+            "easing": "linear",
+            "iterations": 1
+          },
+          "firstStep": 0,
+          "steps": 6,
+          "lastPlayState": "finished"
+        }
+      ],
+      "gsap": {
+        "present": true,
+        "version": "3.13.0",
+        "scrollTriggers": [
+          {
+            "trigger": "html > body:nth-child(2) > main:nth-child(2) > section.features:nth-child(2)",
+            "start": 1200,
+            "end": 2100,
+            "startVar": "top 80%",
+            "endVar": "bottom top",
+            "scrub": true,
+            "pin": false,
+            "toggleActions": "play none none reverse",
+            "markers": false,
+            "animationDuration": 1.2,
+            "animationTargets": 1
+          },
+          {
+            "trigger": "html > body:nth-child(2) > main:nth-child(2) > section.parallax:nth-child(3)",
+            "start": 2100,
+            "end": 3900,
+            "startVar": "top bottom",
+            "endVar": "bottom top",
+            "scrub": 0.5,
+            "pin": true,
+            "toggleActions": null,
+            "markers": false,
+            "animationDuration": 2,
+            "animationTargets": 1
+          }
+        ],
+        "timelines": [
+          {
+            "kind": "tween",
+            "duration": 1.2,
+            "targets": 3,
+            "children": 0,
+            "varsKeys": [
+              "opacity",
+              "y"
+            ]
+          },
+          {
+            "kind": "tween",
+            "duration": 2,
+            "targets": 1,
+            "children": 0,
+            "varsKeys": [
+              "yPercent",
+              "ease"
+            ]
+          }
+        ]
+      },
+      "smoothScroll": {
+        "lenis": {
+          "lerp": 0.08,
+          "duration": 1.2,
+          "smoothWheel": true,
+          "wheelMultiplier": 1
+        },
+        "locomotive": null,
+        "scrollBehavior": {
+          "html": "smooth",
+          "body": "auto"
+        },
+        "cssScrollBehavior": "smooth",
+        "transformScroller": false
+      },
+      "interactions": [
+        {
+          "kind": "hover",
+          "tag": "a",
+          "target": "html > body:nth-child(2) > header.site-header:nth-child(1) > nav.nav:nth-child(1) > a.nav-link.brand:nth-child(1)",
+          "diff": {
+            "color": {
+              "from": "rgb(17, 24, 39)",
+              "to": "rgb(255, 87, 34)"
+            }
+          },
+          "started": [],
+          "frame": "frames/desktop/hover-00.png"
+        },
+        {
+          "kind": "focus",
+          "tag": "a",
+          "target": "html > body:nth-child(2) > header.site-header:nth-child(1) > nav.nav:nth-child(1) > a.nav-link.brand:nth-child(1)",
+          "diff": {},
+          "started": []
+        },
+        {
+          "kind": "pressed",
+          "tag": "button",
+          "target": "html > body:nth-child(2) > header.site-header:nth-child(1) > nav.nav:nth-child(1) > button.cta:nth-child(3)",
+          "diff": {
+            "transform": {
+              "from": "matrix(1, 0, 0, 1, 0, -2)",
+              "to": "matrix(0.96, 0, 0, 0.96, 0, 0)"
+            }
+          },
+          "started": []
+        }
+      ]
+    },
+    "mobile": {
+      "size": {
+        "w": 390,
+        "h": 844
+      },
+      "pageHeight": 5156,
+      "steps": [
+        {
+          "index": 0,
+          "scrollY": 0,
+          "frame": "frames/mobile/step-00.png",
+          "animations": [
+            {
+              "type": "CSSAnimation",
+              "id": null,
+              "name": "fade-up",
+              "target": "html > body:nth-child(2) > main:nth-child(2) > section.hero:nth-child(1) > h1.display:nth-child(1)",
+              "timeline": "document",
+              "playState": "finished",
+              "currentTime": 900
+            },
+            {
+              "type": "CSSAnimation",
+              "id": null,
+              "name": "fade-up",
+              "target": "html > body:nth-child(2) > main:nth-child(2) > section.hero:nth-child(1) > p.lead:nth-child(2)",
+              "timeline": "document",
+              "playState": "finished",
+              "currentTime": 1100
+            }
+          ],
+          "changed": []
+        },
+        {
+          "index": 1,
+          "scrollY": 844,
+          "frame": "frames/mobile/step-01.png",
+          "animations": [
+            {
+              "type": "CSSTransition",
+              "id": null,
+              "name": "transform",
+              "target": "html > body:nth-child(2) > main:nth-child(2) > section.features:nth-child(2) > div.grid:nth-child(2) > article.card.reveal:nth-child(1)",
+              "timeline": "document",
+              "playState": "running",
+              "currentTime": 433.3
+            },
+            {
+              "type": "CSSTransition",
+              "id": null,
+              "name": "opacity",
+              "target": "html > body:nth-child(2) > main:nth-child(2) > section.features:nth-child(2) > div.grid:nth-child(2) > article.card.reveal:nth-child(2)",
+              "timeline": "document",
+              "playState": "running",
+              "currentTime": 433.3
+            }
+          ],
+          "changed": [
+            {
+              "path": "html > body:nth-child(2) > main:nth-child(2) > section.hero:nth-child(1) > div.orb:nth-child(4)",
+              "changed": {
+                "transform": {
+                  "from": "matrix(1, 0, 0, 1, 0, -18.2493)",
+                  "to": "matrix(1, 0, 0, 1, 0, -22.4611)"
+                }
+              }
+            },
+            {
+              "path": "html > body:nth-child(2) > main:nth-child(2) > section.features:nth-child(2) > div.grid:nth-child(2) > article.card.reveal:nth-child(1)",
+              "changed": {
+                "opacity": {
+                  "from": "0.6",
+                  "to": "0.798684"
+                },
+                "transform": {
+                  "from": "matrix(1, 0, 0, 1, 0, 40)",
+                  "to": "matrix(1, 0, 0, 1, 0, 4.51983)"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "structure": [
+        {
+          "tag": "header",
+          "role": null,
+          "depth": 1,
+          "box": {
+            "x": 0,
+            "y": 0,
+            "w": 390,
+            "h": 92
+          },
+          "children": 1,
+          "path": "html > body:nth-child(2) > header.site-header:nth-child(1)"
+        },
+        {
+          "tag": "nav",
+          "role": null,
+          "depth": 2,
+          "box": {
+            "x": 0,
+            "y": 0,
+            "w": 390,
+            "h": 92
+          },
+          "children": 3,
+          "path": "html > body:nth-child(2) > header.site-header:nth-child(1) > nav.nav:nth-child(1)"
+        }
+      ],
+      "colors": [
+        {
+          "value": "rgb(17, 24, 39)",
+          "uses": 15,
+          "properties": [
+            "color",
+            "background-color"
+          ]
+        },
+        {
+          "value": "rgb(255, 255, 255)",
+          "uses": 5,
+          "properties": [
+            "background-color",
+            "color"
+          ]
+        }
+      ],
+      "fonts": {
+        "families": [
+          {
+            "family": "Georgia",
+            "stack": "Georgia, \"Times New Roman\", serif",
+            "uses": 13,
+            "weights": [
+              {
+                "weight": "700",
+                "uses": 8
+              },
+              {
+                "weight": "400",
+                "uses": 5
+              }
+            ]
+          },
+          {
+            "family": "Arial",
+            "stack": "Arial, Helvetica, sans-serif",
+            "uses": 3,
+            "weights": [
+              {
+                "weight": "600",
+                "uses": 2
+              },
+              {
+                "weight": "700",
+                "uses": 1
+              }
+            ]
+          }
+        ],
+        "sizes": [
+          {
+            "px": 24,
+            "uses": 7
+          },
+          {
+            "px": 16,
+            "uses": 4
+          }
+        ],
+        "lineHeights": [
+          {
+            "value": "normal",
+            "ratio": null,
+            "uses": 11
+          },
+          {
+            "value": "28.8px",
+            "ratio": 1.2,
+            "uses": 3
+          }
+        ]
+      },
+      "spacing": {
+        "paddings": [
+          {
+            "value": "32px",
+            "uses": 6
+          },
+          {
+            "value": "24px",
+            "uses": 4
+          }
+        ],
+        "margins": [
+          {
+            "value": "19.92px",
+            "uses": 4
+          },
+          {
+            "value": "8px",
+            "uses": 3
+          }
+        ],
+        "gaps": [
+          {
+            "value": "24px",
+            "uses": 2
+          },
+          {
+            "value": "32px",
+            "uses": 1
+          }
+        ]
+      },
+      "radii": [
+        {
+          "value": "16px",
+          "uses": 3
+        },
+        {
+          "value": "12px",
+          "uses": 1
+        }
+      ],
+      "shadows": [
+        {
+          "value": "rgba(0, 0, 0, 0.06) 0px 1px 2px 0px",
+          "uses": 3
+        },
+        {
+          "value": "rgba(0, 0, 0, 0.12) 0px 2px 8px 0px",
+          "uses": 1
+        }
+      ],
+      "graphics": {
+        "svg": 0,
+        "img": 1,
+        "video": 0,
+        "canvas": 0,
+        "backgroundImages": 0,
+        "sizes": [
+          {
+            "kind": "img",
+            "w": 120,
+            "h": 40
+          }
+        ]
+      },
+      "keyframes": [
+        {
+          "name": "fade-up",
+          "frames": [
+            {
+              "offset": "0%",
+              "properties": {
+                "opacity": "0",
+                "transform": "translateY(24px)"
+              }
+            },
+            {
+              "offset": "100%",
+              "properties": {
+                "opacity": "1",
+                "transform": "none"
+              }
+            }
+          ]
+        },
+        {
+          "name": "float",
+          "frames": [
+            {
+              "offset": "0%",
+              "properties": {
+                "transform": "translateY(0px)"
+              }
+            },
+            {
+              "offset": "100%",
+              "properties": {
+                "transform": "translateY(-24px)"
+              }
+            }
+          ]
+        }
+      ],
+      "crossOriginSheetsSkipped": 0,
+      "transitions": [
+        {
+          "property": "opacity",
+          "duration": "0.6s",
+          "timingFunction": "ease-out",
+          "delay": "0s",
+          "uses": 3
+        },
+        {
+          "property": "transform",
+          "duration": "0.6s",
+          "timingFunction": "ease-out",
+          "delay": "0s",
+          "uses": 3
+        }
+      ],
+      "animationTimelines": [
+        {
+          "path": "html > body:nth-child(2) > main:nth-child(2) > section.progress-demo:nth-child(4) > div.bar:nth-child(1)",
+          "value": "scroll()",
+          "animationName": "grow"
+        }
+      ],
+      "webAnimations": [
+        {
+          "type": "CSSAnimation",
+          "id": null,
+          "name": "fade-up",
+          "target": "html > body:nth-child(2) > main:nth-child(2) > section.hero:nth-child(1) > h1.display:nth-child(1)",
+          "pseudo": null,
+          "timeline": "document",
+          "playState": "finished",
+          "currentTime": 900,
+          "keyframes": [
+            {
+              "offset": 0,
+              "easing": "ease-out",
+              "composite": "auto",
+              "transform": "translateY(24px)",
+              "opacity": "0",
+              "computedOffset": 0
+            },
+            {
+              "offset": 1,
+              "easing": "ease-out",
+              "composite": "auto",
+              "transform": "none",
+              "opacity": "1",
+              "computedOffset": 1
+            }
+          ],
+          "timing": {
+            "delay": 0,
+            "endDelay": 0,
+            "iterationStart": 0,
+            "duration": 900,
+            "progress": 1,
+            "currentIteration": 0,
+            "activeDuration": 900,
+            "endTime": 900,
+            "localTime": 900,
+            "fill": "both",
+            "direction": "normal",
+            "easing": "linear",
+            "iterations": 1
+          },
+          "firstStep": 0,
+          "steps": 6,
+          "lastPlayState": "finished"
+        },
+        {
+          "type": "CSSAnimation",
+          "id": null,
+          "name": "grow",
+          "target": "html > body:nth-child(2) > main:nth-child(2) > section.progress-demo:nth-child(4) > div.bar:nth-child(1)",
+          "pseudo": null,
+          "timeline": "scroll",
+          "playState": "running",
+          "currentTime": "0%",
+          "keyframes": [
+            {
+              "offset": 0,
+              "easing": "linear",
+              "composite": "auto",
+              "transform": "scaleX(0)",
+              "computedOffset": 0
+            },
+            {
+              "offset": 1,
+              "easing": "linear",
+              "composite": "auto",
+              "transform": "scaleX(1)",
+              "computedOffset": 1
+            }
+          ],
+          "timing": {
+            "delay": 0,
+            "endDelay": 0,
+            "iterationStart": 0,
+            "duration": null,
+            "progress": 0,
+            "currentIteration": 0,
+            "activeDuration": null,
+            "endTime": null,
+            "localTime": null,
+            "fill": "both",
+            "direction": "normal",
+            "easing": "linear",
+            "iterations": 1
+          },
+          "firstStep": 0,
+          "steps": 6,
+          "lastPlayState": "finished"
+        },
+        {
+          "type": "Animation",
+          "id": null,
+          "name": null,
+          "target": "html > body:nth-child(2) > main:nth-child(2) > section.features:nth-child(2) > div.grid:nth-child(2) > article.card.reveal:nth-child(1)",
+          "pseudo": null,
+          "timeline": "view",
+          "playState": "running",
+          "currentTime": "-17.93%",
+          "keyframes": [
+            {
+              "offset": null,
+              "easing": "linear",
+              "composite": "auto",
+              "opacity": "0.6",
+              "computedOffset": 0
+            },
+            {
+              "offset": null,
+              "easing": "linear",
+              "composite": "auto",
+              "opacity": "1",
+              "computedOffset": 1
+            }
+          ],
+          "timing": {
+            "delay": 0,
+            "endDelay": 0,
+            "iterationStart": 0,
+            "duration": null,
+            "progress": 0,
+            "currentIteration": 0,
+            "activeDuration": null,
+            "endTime": null,
+            "localTime": null,
+            "fill": "both",
+            "direction": "normal",
+            "easing": "linear",
+            "iterations": 1
+          },
+          "firstStep": 0,
+          "steps": 6,
+          "lastPlayState": "finished"
+        }
+      ],
+      "gsap": {
+        "present": true,
+        "version": "3.13.0",
+        "scrollTriggers": [
+          {
+            "trigger": "html > body:nth-child(2) > main:nth-child(2) > section.features:nth-child(2)",
+            "start": 1200,
+            "end": 2100,
+            "startVar": "top 80%",
+            "endVar": "bottom top",
+            "scrub": true,
+            "pin": false,
+            "toggleActions": "play none none reverse",
+            "markers": false,
+            "animationDuration": 1.2,
+            "animationTargets": 1
+          },
+          {
+            "trigger": "html > body:nth-child(2) > main:nth-child(2) > section.parallax:nth-child(3)",
+            "start": 2100,
+            "end": 3900,
+            "startVar": "top bottom",
+            "endVar": "bottom top",
+            "scrub": 0.5,
+            "pin": true,
+            "toggleActions": null,
+            "markers": false,
+            "animationDuration": 2,
+            "animationTargets": 1
+          }
+        ],
+        "timelines": [
+          {
+            "kind": "tween",
+            "duration": 1.2,
+            "targets": 3,
+            "children": 0,
+            "varsKeys": [
+              "opacity",
+              "y"
+            ]
+          },
+          {
+            "kind": "tween",
+            "duration": 2,
+            "targets": 1,
+            "children": 0,
+            "varsKeys": [
+              "yPercent",
+              "ease"
+            ]
+          }
+        ]
+      },
+      "smoothScroll": {
+        "lenis": {
+          "lerp": 0.08,
+          "duration": 1.2,
+          "smoothWheel": true,
+          "wheelMultiplier": 1
+        },
+        "locomotive": null,
+        "scrollBehavior": {
+          "html": "smooth",
+          "body": "auto"
+        },
+        "cssScrollBehavior": "smooth",
+        "transformScroller": false
+      },
+      "interactions": []
+    }
+  }
+}
