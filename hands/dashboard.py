@@ -347,6 +347,30 @@ def env_update(name: str, req) -> dict:
         return {"vars": st.listing(), "problems": st.problems, **info}
 
 
+VERSION_FILES = ("state.json", "activity.json", "runner.log", "metrics.jsonl", "progress.jsonl", "round.log",
+                 "plan/plan.json", "plan/plan-activity.json", "plan/plan.log")
+
+
+def version(cfg: cfgmod.Config) -> str:
+    """Cheap change stamp for a project: newest mtime (ns) over the runner's state files and the spec clone's
+    HEAD, plus runner.log's size (an append within the same tick still changes it). Missing files count as 0."""
+    newest, size = 0, 0
+    for rel in VERSION_FILES:
+        try:
+            st = os.stat(cfg.state_dir / rel)
+        except OSError:
+            continue
+        newest = max(newest, st.st_mtime_ns)
+        if rel == "runner.log":
+            size = st.st_size
+    for rel in ("HEAD", "FETCH_HEAD"):
+        try:
+            newest = max(newest, os.stat(cfg.spec_dir / ".git" / rel).st_mtime_ns)
+        except OSError:
+            pass
+    return f"{newest:x}-{size:x}"
+
+
 def detail(name: str) -> dict:
     cfg = load_cfg(name)
     sd = cfg.state_dir
@@ -361,6 +385,7 @@ def detail(name: str) -> dict:
         "metrics": read_jsonl(sd / "metrics.jsonl", 30),
         "progress": read_jsonl(sd / "progress.jsonl", 30),
         "round": st.get("round") if isinstance(st.get("round"), dict) else None,
+        "version": version(cfg),
     })
     sst = st.get("steps") or {}
     steps, spec_err, spec_commit = [], None, ""
@@ -692,11 +717,12 @@ def redactor_for(cfg):
 def log_tail(name: str, lines: int) -> dict:
     cfg = load_cfg(name)
     lines = max(1, min(lines, 2000))
+    v = version(cfg)
     try:
         text, cut = read_file(cfg.state_dir / "runner.log", MAX_LOG_BYTES, tail=True)
     except OSError:
-        return {"lines": []}
-    return {"lines": redactor_for(cfg).text(text).splitlines()[-lines:]}
+        return {"lines": [], "version": v}
+    return {"lines": redactor_for(cfg).text(text).splitlines()[-lines:], "version": v}
 
 
 def attempts(name: str) -> list[dict]:
@@ -890,6 +916,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _versioned(self, name: str, build) -> None:
+        """Project payloads carry a change stamp: ETag "<version>" and a `version` field; a matching
+        If-None-Match answers 304 without building the body (the client polls cheaply, see store.js)."""
+        tag = f'"{version(load_cfg(name))}"'
+        if self.headers.get("If-None-Match", "").strip() == tag:
+            return self._send(304, b"", "application/json; charset=utf-8", {"ETag": tag})
+        obj = build()
+        tag = f'"{obj.get("version", "")}"'          # the stamp the body was built from, not an earlier one
+        self._send(200, json.dumps(obj).encode(), "application/json; charset=utf-8", {"ETag": tag})
+
     def _json(self, code: int, obj) -> None:
         self._send(code, json.dumps(obj).encode(), "application/json; charset=utf-8")
 
@@ -1044,10 +1080,9 @@ class Handler(BaseHTTPRequestHandler):
             name, rest = parts[2], parts[3:]
             if rest == ["env"]:
                 return self._json(200, env_listing(name))
-            if rest == []:
-                return self._json(200, detail(name))
-            if rest == ["log"]:
-                return self._json(200, log_tail(name, int((q.get("lines") or ["300"])[0] or 300)))
+            if rest == [] or rest == ["log"]:
+                return self._versioned(name, lambda: detail(name) if rest == []
+                                       else log_tail(name, int((q.get("lines") or ["300"])[0] or 300)))
             if rest == ["attempts"]:
                 return self._json(200, attempts(name))
             if len(rest) == 3 and rest[0] == "attempts":

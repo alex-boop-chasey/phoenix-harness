@@ -126,9 +126,10 @@ class Dash:
         cfgmod.CONFIG_HOME = self.old
         os.environ.pop("HANDS_CONFIG_HOME", None)
 
-    def req(self, method, path, *, host=None, cookie=True, origin=None, xh=True):
+    def req(self, method, path, *, host=None, cookie=True, origin=None, xh=True, headers=None):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
         h = {"Host": host or f"127.0.0.1:{self.port}"}
+        h.update(headers or {})
         if cookie:
             h["Cookie"] = f"other=1; {dashboard.COOKIE}={self.sid}"
         if origin is not None:
