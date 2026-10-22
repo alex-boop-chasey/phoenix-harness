@@ -249,6 +249,25 @@ ul.checklist { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px;
 .envedit [role="status"] { font-size: var(--fs-1); }
 section.envsec > p.muted { margin-bottom: var(--sp-2); }
 
+/* ---------------------------------------------------------------- overview strip + panels (0.6) */
+.overview { position: sticky; top: 49px; z-index: 2; display: grid; gap: var(--sp-2); }
+.overview h2 { font-size: var(--fs-4); }
+.overview .bar { height: 8px; }
+.overview .now-line { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; font-size: var(--fs-1); }
+.overview .now-line .act { margin: 0; }
+.overview .sid { font-family: var(--mono); color: var(--ink-2); }
+details.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-3); box-shadow: var(--shadow-1); min-width: 0; }
+details.panel > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4); font-weight: 600; font-size: var(--fs-3); }
+details.panel > summary::-webkit-details-marker { display: none; }
+details.panel > summary::before { content: "›"; display: inline-block; width: 14px; color: var(--ink-3); transition: transform .15s; }
+details.panel[open] > summary::before { transform: rotate(90deg); }
+details.panel > summary .ptitle { margin-right: auto; }
+details.panel > summary:focus-visible { box-shadow: var(--focus); border-radius: var(--r-3); }
+details.panel > section, details.panel > div > section, details.panel > #attempts-wrap > section { border: 0; box-shadow: none; border-radius: 0; padding-top: 0; }
+details.panel > div { padding: 0; }
+details.panel > section > h2, details.panel #attempts-wrap > section > h2 { display: none; }
+details.panel > section.rounds > h2, details.panel > section[data-key="log"] .loghead h2 { display: none; }
+
 /* ---------------------------------------------------------------- step rail, live activity */
 .stepbar { position: sticky; top: var(--sp-4); max-height: calc(100vh - 32px); overflow: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-3); padding: var(--sp-3) var(--sp-3); box-shadow: var(--shadow-1); }
 .stepbar h2 { margin-bottom: var(--sp-2); }
@@ -342,6 +361,8 @@ dialog.dialog.wide { max-width: min(600px, calc(100vw - 32px)); width: 100%; }
   .stepbar { position: static; max-height: none; order: -1; }
 }
 @media (max-width: 900px) {
+  .stepbar { display: none; }                 /* the overview strip carries progress and the current step */
+  .overview { top: calc(var(--topbar-h) + 45px); }
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .topbar { display: flex; align-items: center; gap: var(--sp-3); height: var(--topbar-h); padding: 0 var(--sp-4);
             background: var(--surface); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 6; }

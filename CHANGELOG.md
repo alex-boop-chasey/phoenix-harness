@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.0 (dashboard render rethink, 2026-10-22)
+
+From `main` 0301dd6 (0.5.8). Session manager untouched.
+
+- Project payloads carry a change stamp: `GET /api/p/<name>` and `/log` answer with `ETag` + `version`
+  (newest mtime over the runner's state files and the spec clone's HEAD, plus runner.log's size);
+  `If-None-Match` → `304`. New `GET /api/p/<name>/events`: Server-Sent Events change feed (`event: change`
+  with the new version, `: ping` after 15 s of silence, 10 min life, 8 streams max → 503 and the page polls).
+- `hands/static/store.js`: one snapshot per project, fed by the feed and conditional fetches; subscribers get
+  only the keys that changed; 15 s poll while the feed is down. `logAppend` finds the new tail of a log.
+- `hands/static/render.js` + vendored morphdom 2.7.4: the builder page is patched in place instead of rebuilt
+  every 4 s. Scroll positions, open `<details>`, focus and typed text survive updates; every section/row has a
+  `data-key`; controls carry `data-act` and go through one delegated click listener (no closures on nodes);
+  the env editor, file viewers and action output are self-managed nodes.
+- `hands/static/logpanel.js`: the runner log appends only new lines, keeps 2000 at most, scrolls to the bottom
+  only when it already was there; Follow and Copy buttons.
+- Overview strip (sticky: status, runner dot, steps-passed bar, "Now: step · phase" + live activity, actions)
+  over collapsible panels with remembered open state (`localStorage` `hands.panels.<name>`); on a phone the
+  step rail folds into the strip.
+- The housekeeping tick (5 s) only refreshes the tab strip (10 s), usage (60 s) and the creating page.
+- Rig: `scroll-keep`, `log-keep` and `quiet` pages; `tools/js-test.sh` runs the JS unit tests
+  (`hands/static/*.test.mjs`) and `node --check` on every served script with the node in the agent image.
+
 ## 0.5.8 (step 24: merge tap + dashboard rounds (B3), 2026-10-21)
 
 From `main` d70179d (0.5.7). Session manager untouched.

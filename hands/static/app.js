@@ -346,26 +346,45 @@ function dispatch(ev) {
   if (a.act === "run" && d) action(d.name, a.arg, a.label);
   else if (a.act === "plan" && d) planAction(d.name, a.arg, a.label, a.head || "");
   else if (a.act === "round" && d && d.round && d.round.merge) roundAction(d, a.arg, d.round.merge);
-  else if (a.act === "attempt-file" && d) { viewerTitle.textContent = `${a.att} / ${a.file}`; showFile(d.name, a.att, a.file, viewer); }
+  else if (a.act === "attempt-file" && d) { viewerTitle.textContent = `${a.att} / ${a.file}`; showFile(d.name, a.att, a.file, viewer); openPanel("viewer"); }
   else if (a.act === "plan-file" && d) showPlanFile(d.name, a.arg);
   else if (a.act === "focus-amend") { const x = document.getElementById("amendtext"); if (x) { x.scrollIntoView({ block: "center" }); x.focus(); } }
   else if (a.act === "select") select(a.arg);
   else if (a.act === "usage-refresh") refreshUsage(t);
 }
+function openPanel(key) {
+  const p = document.querySelector(`details.panel[data-panel="${key}"]`);
+  if (p && !p.open) { p.open = true; p.scrollIntoView({ block: "nearest" }); }
+}
 // a node that owns its state is rendered once; later trees carry a keyed stand-in the patch leaves alone
 const keep = (node, key) => (node.isConnected ? el(node.tagName.toLowerCase(), { "data-key": key, "data-self-managed": "" }) : node);
 
+const PHASES = { coder: "coding", check: "checking changes", acceptance: "running checks", evaluator: "independent review" };
+// The overview strip (0.6): what is happening now, how far the build is, and the runner actions; sticky
+// under the tab strip so it stays in view while the panels below scroll.
 function statusSection(d) {
   const btn = (act, label, enabled) =>
     el("button", { class: "act", "data-act": "run", "data-arg": act, "data-label": label, ...(enabled ? {} : { disabled: "" }) }, label);
-  const cur = d.current ? `${d.current.step} attempt ${d.current.attempt} · ${d.current.phase}` : "—";
-  return el("section", { "data-key": "status" },
+  const total = d.steps.length, pct = total ? Math.round(100 * d.passed / total) : 0;
+  const fill = el("span", { class: `fill ${d.status === "escalation" ? "bad" : d.status === "done" ? "ok" : ""}` });
+  fill.style.width = `${pct}%`;                                  // CSSOM, allowed by the CSP (style attributes are not)
+  const cur = d.current
+    ? el("span", {}, el("span", { class: "sid" }, d.current.step), ` attempt ${d.current.attempt} · ${PHASES[d.current.phase] || d.current.phase}`,
+        d.alive ? "" : " (stopped)")
+    : el("span", { class: "muted" }, d.status === "done" ? "all steps passed" : "nothing running");
+  return el("section", { class: "overview", "data-key": "status" },
     el("div", { class: "row" }, el("h2", {}, d.name), badge(d.status),
+      el("span", { class: `dot ${d.alive ? "live" : ""}`, "aria-hidden": "true" }),
       el("span", { class: "muted" }, d.alive ? "runner alive" : "runner not running"),
-      d.stop ? el("span", { class: "badge s-stopped" }, "STOP requested") : null),
+      d.stop ? el("span", { class: "badge s-stopped" }, "STOP requested") : null,
+      el("span", { class: "grow" }),
+      el("span", { class: "muted small" }, `${d.passed}/${total} steps`)),
+    el("span", { class: "bar", role: "progressbar", "aria-valuenow": String(pct), "aria-valuemin": "0", "aria-valuemax": "100", "aria-label": "steps passed" }, fill),
+    el("div", { class: "now-line" }, d.alive && d.current ? el("span", { class: "spinner sm", "aria-label": "running" }) : null,
+      el("span", {}, "Now: ", cur),
+      d.alive && d.activity && d.activity.text ? el("span", { class: "act" }, d.activity.text) : null),
     d.reason ? el("p", { class: d.status === "escalation" ? "reason" : "muted" }, d.reason) : null,
-    el("p", {}, "Current: ", cur),
-    el("p", { class: "muted" },
+    el("p", { class: "muted small" },
       `${d.passed}/${d.steps.length} steps passed · ${d.total_sessions} sessions · ~$${d.total_cost_usd} API-equivalent · ` +
       `coder ${d.model_override || d.config.coder_model} · eval ${d.model_override || d.config.eval_model} · ${d.config.image}`),
     roundLine(d),
@@ -1050,6 +1069,39 @@ async function refresh(full) {
   return hands.store.sync(current);    // `full` is history: attempts come with every changed snapshot
 }
 
+// Collapsible panels (0.6): <details class="panel"> per section; open state remembered per project in
+// localStorage (hands.panels.<name>), defaults from the project's state. A patch keeps the live open state.
+const PANEL_DEFAULTS = {
+  plan: (d) => ["ready", "planning", "failed"].includes((d.plan && d.plan.state) || "") || !!(d.plan && d.plan.running),
+  rounds: (d) => !!(d.round && d.round.record && d.round.record.status !== "merged"),
+  setup: (d) => !(d.setup && d.setup.spec_ready),
+  env: () => false, steps: () => true, metrics: () => false, log: (d) => !!d.alive, attempts: () => false,
+  progress: () => false, viewer: () => false, create: () => true,
+};
+function panelsSaved(name) {
+  try { const v = JSON.parse(localStorage.getItem(`hands.panels.${name}`) || "{}"); return v && typeof v === "object" ? v : {}; }
+  catch (e) { return {}; }
+}
+function panelOpen(name, key, d) {
+  const saved = panelsSaved(name);
+  if (typeof saved[key] === "boolean") return saved[key];
+  const f = PANEL_DEFAULTS[key];
+  return f ? !!f(d) : false;
+}
+function panel(name, key, title, d, body, hint) {
+  if (!body) return null;
+  return el("details", { class: "panel", "data-key": `panel:${key}`, "data-panel": key, ...(panelOpen(name, key, d) ? { open: "" } : {}) },
+    el("summary", {}, el("span", { class: "ptitle" }, title), hint ? el("span", { class: "muted small" }, hint) : null),
+    body);
+}
+function onPanelToggle(ev) {
+  const t = ev.target;
+  if (!t || !t.matches || !t.matches("details.panel[data-panel]") || !current) return;
+  const saved = panelsSaved(current);
+  saved[t.dataset.panel] = t.open;
+  try { localStorage.setItem(`hands.panels.${current}`, JSON.stringify(saved)); } catch (e) { /* ignore */ }
+}
+
 // Build the page tree for one snapshot and patch it into #main (the first paint replaces "Loading…").
 function render(name, d, log) {
   if (!d) return;
@@ -1059,14 +1111,20 @@ function render(name, d, log) {
   const createSec = d.create && d.create.state !== "done"
     ? el("section", { "data-key": "create" }, el("h2", {}, `Creation: ${d.create.state}`), d.create.error ? el("p", { class: "reason" }, d.create.error) : null,
       el("pre", {}, d.create.lines.join("\n"))) : null;
-  const content = el("div", { class: "content" }, ...[statusSection(d), createSec,
-    d.managed ? planSection(d) : null,
-    roundsSection(d),
-    showSetup ? setupSection(d) : null,
-    envSection(name),
-    el("div", { class: "grid2" }, stepsSection(d), metricsSection(d)), logSec,
-    el("div", { class: "grid2" }, att, progressSection(d)),
-    el("section", { "data-key": "viewer" }, keep(viewerTitle, "viewer-title"), keep(viewer, "viewer-pre"))].filter(Boolean));
+  const p = d.plan || {};
+  const failed = d.steps.filter((s) => s.status === "failed").length;
+  const content = el("div", { class: "content" }, ...[statusSection(d),
+    panel(name, "create", "Creation", d, createSec),
+    d.managed ? panel(name, "plan", "Plan", d, planSection(d), p.running ? "planning…" : p.state && p.state !== "none" ? p.state : "") : null,
+    panel(name, "rounds", "Change rounds", d, roundsSection(d)),
+    showSetup ? panel(name, "setup", "Setup", d, setupSection(d)) : null,
+    panel(name, "env", "Environment", d, envSection(name)),
+    panel(name, "steps", "Steps", d, stepsSection(d), `${d.passed}/${d.steps.length} passed${failed ? ` · ${failed} failed` : ""}`),
+    panel(name, "metrics", "Sessions", d, metricsSection(d), `${d.total_sessions} · ~$${d.total_cost_usd}`),
+    panel(name, "log", "Runner log", d, logSec, d.alive ? "live" : ""),
+    panel(name, "attempts", "Attempts", d, att, attemptsCache.name === name ? String(attemptsCache.rows.length) : ""),
+    panel(name, "progress", "Progress notes", d, progressSection(d), String((d.progress || []).length)),
+    panel(name, "viewer", "File", d, el("section", { "data-key": "viewer" }, keep(viewerTitle, "viewer-title"), keep(viewer, "viewer-pre")))].filter(Boolean));
   const next = el("div", { class: "layout" }, content, stepBar(d));
   const live = $("#main").firstElementChild;
   if (live && live.classList.contains("layout")) hands.render.patch(live, next);
@@ -1189,6 +1247,7 @@ function initShell() {
 document.addEventListener("DOMContentLoaded", async () => {
   initShell();
   document.addEventListener("click", dispatch);
+  document.addEventListener("toggle", onPanelToggle, true);     // toggle does not bubble: capture it
   logPanel = hands.logpanel.create(document, hands.store.logAppend);
   hands.store.subscribe(onSnapshot);
   let saved = null;

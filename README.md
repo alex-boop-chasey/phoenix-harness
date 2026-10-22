@@ -33,6 +33,10 @@ From the Mac: `ssh -N -L 8090:127.0.0.1:8090 builder`, then on the VPS `hands-da
 (must be http://127.0.0.1:8090, not localhost). Shows status, steps, sessions, runner log, attempts
 (prompt, diff, acceptance logs, verdict) and progress notes; buttons: Start, Stop, Ack, Ack + clear model.
 Login codes are single use; sessions live in memory for 12 h (restart = log in again).
+Since 0.6 the project page is pushed, not polled: the server streams "changed" events per project
+(Server-Sent Events) and the page fetches only what moved, patching the DOM in place, so scroll positions,
+open panels and typed text survive updates. The page is an overview strip (status, progress, what runs now,
+actions) over collapsible panels whose open state is remembered per project.
 Sections (0.5): Project builder (all of the above, projects as closable tabs), Session manager (persistent Claude
 Code terminals; one can be live on Telegram, setup: docs/telegram.md). Everything is served from the same process
 with the same login, Host/Origin/CSRF checks and CSP. Files on the VPS are browsed with the separate File Browser

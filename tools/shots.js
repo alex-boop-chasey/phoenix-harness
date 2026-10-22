@@ -43,6 +43,10 @@ function watch(page, label) {
 }
 
 const tab = (page, name) => page.locator(`#tabs .tab[data-name="${name}"]`);
+// 0.6: sections sit in collapsible panels (details.panel[data-panel]); a flow that drives a panel's content opens it first
+const openPanels = (page, keys) => page.evaluate((ks) => {
+  for (const d of document.querySelectorAll("details.panel[data-panel]")) if (ks === "all" || ks.includes(d.dataset.panel)) d.open = true;
+}, keys);
 
 async function selectProject(page, name) {
   await tab(page, name).click();
@@ -349,9 +353,11 @@ async function capture(context, name, width, theme) {
       await envRoot(page).locator(".error").first().waitFor({ timeout: 5000 });
     } else if (name === "env") {
       await selectProject(page, "blog");
+      await openPanels(page, ["env"]);
       await envRoot(page).locator(".envrow").first().waitFor({ timeout: 10000 });
     } else if (name === "envbad") {
       await selectProject(page, "blog");
+      await openPanels(page, ["env"]);
       await envRoot(page).locator(".envrow").first().waitFor({ timeout: 10000 });
       await addEnvRow(page, "bad key", "x");
       await addEnvRow(page, "HANDS_SECRET", "y");
@@ -396,6 +402,7 @@ async function capture(context, name, width, theme) {
     } else if (name === "log-keep") {
       // 0.6: the runner log appends in place; a reader scrolled up is not dragged down, Follow brings them back
       await selectProject(page, "bookings");
+      await openPanels(page, ["log"]);
       const log = page.locator("#log");
       await log.waitFor({ timeout: 10000 });
       const r = await page.evaluate(() => {
@@ -484,11 +491,12 @@ async function tour(context) {
   const plusNote = await plusDuringRefresh(page);
   for (const name of names) {
     await selectProject(page, name);
+    await openPanels(page, "all");
     await page.locator("#attempts-wrap section").waitFor({ timeout: 5000 }).catch(() => {});   // loads async
     const f = page.locator("#attempts-wrap .files button").first();
     if (await f.count()) {
       await f.click();
-      await page.locator("main section:last-of-type pre", { hasText: /\S/ }).waitFor({ timeout: 10000 });
+      await page.locator("details.panel[data-panel=viewer] pre", { hasText: /\S/ }).waitFor({ timeout: 10000 });
       attemptFiles++;
     }
     const pf = page.locator(".files button", { hasText: /^(steps\.json|PLAN\.md)$/ }).first();
@@ -580,6 +588,7 @@ async function envFlow(page) {
   const bodyHas = async (s) => (await page.evaluate(() => document.body.innerHTML)).includes(s);
 
   await selectProject(page, "wiki");
+  await openPanels(page, ["env"]);
   const root = envRoot(page);
   await root.locator("button", { hasText: "+ Add variable" }).waitFor({ timeout: 10000 });
   if (await root.locator(".envrow").count()) throw new Error("env: wiki should start with no variables");
@@ -597,6 +606,7 @@ async function envFlow(page) {
   await page.reload({ waitUntil: "networkidle" });
   await waitBuilder(page);
   await selectProject(page, "wiki");
+  await openPanels(page, ["env"]);
   await root.locator(".envrow").nth(2).waitFor({ timeout: 10000 });
   const keys = await root.locator(".envrow input[readonly]").evaluateAll((els) => els.map((e) => e.value));
   if (keys.join() !== "STRIPE_SECRET,STRIPE_WEBHOOK,PUBLIC_URL") throw new Error(`env: keys after reload: ${keys}`);

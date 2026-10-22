@@ -221,3 +221,18 @@ class TestStoreDriven(unittest.TestCase):
         self.assertIn("hands.store.open(", app)
         self.assertIn("hands.store.subscribe(", app)
         self.assertNotIn("refresh(ticks % 8 === 0)", app)
+
+
+class TestOverviewPanels(unittest.TestCase):
+    """Task 7: a sticky overview strip, then remembered <details class="panel"> sections."""
+
+    def test_overview_and_panels_present(self):
+        app = (STATIC / "app.js").read_text()
+        self.assertIn('class: "overview"', app)
+        self.assertIn('class: "panel"', app)
+        self.assertIn("hands.panels.", app)                      # localStorage key prefix, per project
+        self.assertIn('addEventListener("toggle"', app)
+        css = (STATIC / "app.css").read_text()
+        self.assertIn(".overview {", css)
+        self.assertIn("details.panel", css)
+        self.assertEqual((ROOT / "VERSION").read_text().strip(), "0.6.0")
