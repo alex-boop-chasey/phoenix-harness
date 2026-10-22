@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from base64 import b64encode
 from pathlib import Path
 
-from . import accview, claude, codesummary, docker, gitops, rounds, toolusage, workspace
+from . import accview, claude, codesummary, docker, gitops, planaudit, rounds, toolusage, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -166,9 +166,20 @@ def check_output(cfg: Config, candidate: Path, changed: list[str], amend: AmendB
     for f in sorted(shared):
         if re.search(r"\.(test|spec)\.[A-Za-z]+$", f) and not any(f in str(c) for c in [*sp.setup, *sp.regression, sp.e2e_command]):
             errs.append(f"acceptance/{f} is not referenced by any step (every test must belong to a step)")
+    errs += check_audit(candidate / "PLAN.md")
     if amend:
         errs += check_amend(cfg, candidate, sp, amend)
     return errs
+
+
+def check_audit(plan: Path) -> list[str]:
+    """Problems with PLAN.md's `## Self-audit` table and `## Audit findings` (hands.planaudit) against the
+    runner's checklist; an unreadable checklist is itself a problem (the check never silently passes)."""
+    try:
+        checklist = planaudit.CHECKLIST_FILE.read_text(errors="replace")
+    except OSError as e:
+        return [f"self-audit checklist unreadable ({planaudit.CHECKLIST_FILE}): {e.strerror}"]
+    return [f"PLAN.md self-audit: {m}" for m in planaudit.check(plan.read_text(errors="replace"), checklist)]
 
 
 # ---------------------------------------------------------------- amend mode checks
@@ -841,7 +852,9 @@ def _plan(cfg: Config, feedback: str, log: Log, amend: bool = False) -> int:
         errors = check_output(cfg, candidate, changed, base)
         if not errors:
             break
-        log(f"round {rnd}: {len(errors)} problem(s): " + " | ".join(errors[:5]))
+        log(f"round {rnd}: {len(errors)} problem(s)")
+        for e in errors:
+            log(f"  {e}")
         if rnd == MAX_ROUNDS:
             raise PlanError(f"plan still invalid after {MAX_ROUNDS} rounds: " + " | ".join(errors[:8]))
         workspace.rmtree(overlay)

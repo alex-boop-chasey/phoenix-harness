@@ -16,7 +16,7 @@ import tmpdirs  # noqa: E402,F401  (removes every mkdtemp dir after each test)
 os.environ["HANDS_NO_NOTIFY"] = "1"
 os.environ["HANDS_TEST_ALLOW_ROOT"] = "1"
 
-from hands import config as cfgmod, newproject, planner  # noqa: E402
+from hands import config as cfgmod, newproject, planaudit, planner  # noqa: E402
 import test_newproject as tn  # noqa: E402
 
 FAKE = ROOT / "tests" / "fake_docker.py"
@@ -26,13 +26,17 @@ def git(*a, cwd=None):
     return subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True, text=True).stdout
 
 
+AUDIT = ("\n## Self-audit\n| Area | Status | Where / why |\n|---|---|---|\n"
+         + "".join(f"| {i} | addressed | Task 1 covers it |\n" for i, _ in planaudit.parse_checklist(planaudit.CHECKLIST_FILE.read_text()))
+         + "\n## Audit findings\n- Checked the deploy path by reading the scaffold; nothing changed.\n")
+
 GOOD = {
     "steps.json": json.dumps({"version": 1, "project": "site", "allowed_paths": ["src/**", "package.json"],
                               "always_refs": ["docs/conventions.md"], "pins": {"astro": "7.3.0"},
                               "steps": [{"id": "S01", "title": "skeleton", "goal": "make it",
                                          "refs": ["docs/design.md#architecture"],
                                          "acceptance": ["node --test acceptance/s01.test.mjs"]}]}),
-    "PLAN.md": "# Plan\n\nSummary: a site.\n",
+    "PLAN.md": "# Plan\n\nSummary: a site.\n" + AUDIT,
     "docs/design.md": "# Design\n\n## Architecture\n\nAstro.\n",
     "docs/conventions.md": "# Conventions\n\npnpm@12.11.2\n",
     "docs/plan.md": "# Plan\n\n### Task 1: Skeleton\n\nDo it.\n",
@@ -220,6 +224,31 @@ class TestPlanner(tn.Base):
         self.assertIn("ids starting with C<n>- are reserved for amendment rounds", p)
         self.assertIn("tests_changed is only for amendments", p)
 
+    def test_plan_without_self_audit_gets_fix_round_with_problem_lines(self):
+        bad = {**GOOD, "PLAN.md": "# Plan\n\nSummary: a site.\n"}
+        self.queue({"role": "planner", "files": bad}, {"role": "planner", "files": GOOD})
+        self.assertEqual(planner.plan(self.cfg()), 0)
+        p = json.loads((self.tmp / "prompts.jsonl").read_text().splitlines()[1])["prompt"]
+        log = (planner.pdir(self.cfg()) / "plan.log").read_text()
+        for line in ("PLAN.md self-audit: missing section: ## Self-audit", "PLAN.md self-audit: missing area: auth",
+                     "PLAN.md self-audit: missing area: setup-record-used",
+                     "PLAN.md self-audit: missing section: ## Audit findings"):
+            self.assertIn(line, p)
+            self.assertIn(line, log)
+
+    def test_bad_self_audit_fails_the_attempt(self):
+        table = "\n## Self-audit\n| Area | Status | Where / why |\n|---|---|---|\n| auth | maybe | Task 2 |\n"
+        bad = {**GOOD, "PLAN.md": "# Plan\n" + table + "\n## Audit findings\n\n"}
+        self.queue(*[{"role": "planner", "files": bad}] * 3)
+        self.assertEqual(planner.plan(self.cfg()), 1)
+        st = planner.read_state(self.cfg())
+        self.assertEqual(st["state"], "failed")
+        self.assertIn("PLAN.md self-audit: bad status for auth: maybe", st["error"])
+        log = (planner.pdir(self.cfg()) / "plan.log").read_text()
+        self.assertIn("PLAN.md self-audit: reason too short for auth", log)
+        self.assertIn("PLAN.md self-audit: empty section: ## Audit findings", log)
+        self.assertGreaterEqual(log.count("PLAN.md self-audit: missing area: errors"), 3)   # one per round
+
     def test_three_bad_rounds_fail_without_pr(self):
         bad = {**GOOD, ".github/CODEOWNERS": "* @evil\n"}
         self.queue(*[{"role": "planner", "files": bad}] * 3)
@@ -238,7 +267,7 @@ class TestPlanner(tn.Base):
 
     def test_replan_with_feedback_updates_same_pr(self):
         self.queue({"role": "planner", "files": GOOD},
-                   {"role": "planner", "files": {"PLAN.md": "# Plan v2\n"}})
+                   {"role": "planner", "files": {"PLAN.md": "# Plan v2\n" + AUDIT}})
         planner.plan(self.cfg())
         self.assertEqual(planner.plan(self.cfg(), "drop the blog"), 0)
         prompts = [json.loads(x) for x in (self.tmp / "prompts.jsonl").read_text().splitlines()]

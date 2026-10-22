@@ -47,6 +47,22 @@ that partner's preferences):
 - `docs/conventions.md`: the plan's Global Constraints (exact versions, scripts, layout, style).
 - `PLAN.md`: for the human reviewer (see Output contract).
 
+### Self-audit (after drafting, before you finish)
+- Walk the overlooked-areas checklist at `/opt/hands/prompts/plan-audit-checklist.md` (lines
+  `- <id>: <what to check>`), every id: either the plan addresses it (say where: the task, the design
+  section, the convention) or it does not apply (say why). Fix the plan wherever the walk finds a gap.
+- Then review the plan as a real-world DevOps engineer and plan auditor would: what they would check
+  (deploy path, secrets, backups, rollback, rate limits, headers, dependency age, licences, legal
+  pages), how, with which tools (`npm view`, reading the scaffold, the style refs, the setup record),
+  and what the plan is missing. Fix those gaps in `docs/design.md`, `docs/plan.md` and `steps.json`.
+- Write both into `PLAN.md`:
+  - `## Self-audit`: a table `| Area | Status | Where / why |`, one row per checklist id, status
+    `addressed` or `n/a`, the third cell at least 8 characters (where in the plan, or why it does not
+    apply). Every id must appear; no other status.
+  - `## Audit findings`: bullets, at least one: what you checked, how, with which tool, what changed.
+- The runner checks this with `python3 -m hands.planaudit check PLAN.md`; a missing area, bad status,
+  short reason or missing/empty findings section rejects the plan.
+
 ## Tools you have
 - `WebSearch` (when enabled) for current versions, docs and known pitfalls; pages cannot be fetched.
   Record what you relied on under "Research notes" in PLAN.md.
@@ -114,7 +130,8 @@ the new steps need it. Built steps' entries and owned tests are immutable; docs 
 2. `PLAN.md` — for the human reviewer, plain and concise: Summary (3 lines); Understanding (what the
    idea said vs what you assumed); **Decisions for you to check** (numbered, one line each, from the
    builder check's "theirs" pile and your biggest calls, most important first); Approaches considered;
-   Features in this release; Later; Risks; Research notes (with sources).
+   Features in this release; Later; Risks; Research notes (with sources); `## Self-audit` and
+   `## Audit findings` (see Self-audit above; checked by the runner).
 3. `docs/design.md` (brainstorming's written design), `docs/plan.md` (writing-plans' plan) and
    `docs/conventions.md`; more `docs/*.md` only if needed. Headings are anchors:
    `docs/design.md#home-page` refers to `## Home page`, `docs/plan.md#task-2-contact-form` to
