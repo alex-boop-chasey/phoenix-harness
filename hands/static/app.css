@@ -364,7 +364,7 @@ dialog.dialog.wide { max-width: min(600px, calc(100vw - 32px)); width: 100%; }
 }
 @media (max-width: 900px) {
   .stepbar { display: none; }                 /* the overview strip carries progress and the current step */
-  .overview { top: calc(var(--topbar-h) + 45px); }
+  .overview { position: static; }           /* phone: the whole page scrolls as one, nothing pinned */
   .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
   .topbar { display: flex; align-items: center; gap: var(--sp-3); height: var(--topbar-h); padding: 0 var(--sp-4);
             background: var(--surface); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 6; }
