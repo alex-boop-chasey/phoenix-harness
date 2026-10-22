@@ -393,6 +393,29 @@ async function capture(context, name, width, theme) {
       if (after !== before) throw new Error(`scroll-keep: Steps panel scrollTop ${before} -> ${after} after a refresh`);
       const out = await page.locator("#action-out").count();
       if (out !== 1) throw new Error(`scroll-keep: expected one #action-out, found ${out}`);
+    } else if (name === "log-keep") {
+      // 0.6: the runner log appends in place; a reader scrolled up is not dragged down, Follow brings them back
+      await selectProject(page, "bookings");
+      const log = page.locator("#log");
+      await log.waitFor({ timeout: 10000 });
+      const r = await page.evaluate(() => {
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync("#log { max-height: 60px !important; }");
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+        const pre = document.getElementById("log");
+        const before = pre.textContent;
+        pre.scrollTop = 0;
+        const n = logPanel.lines().length;
+        logPanel.update(logPanel.lines().concat(["rig: appended line one", "rig: appended line two"]));
+        const kept = pre.textContent.startsWith(before) && pre.textContent.endsWith("rig: appended line two");
+        return { n, after: logPanel.lines().length, top: pre.scrollTop, kept, sh: pre.scrollHeight, ch: pre.clientHeight };
+      });
+      if (r.after !== r.n + 2 || !r.kept) throw new Error(`log-keep: append went wrong: ${JSON.stringify(r)}`);
+      if (r.top !== 0) throw new Error(`log-keep: a reader scrolled to the top was moved to ${r.top}`);
+      await page.locator("section[data-key=log] button", { hasText: "Follow" }).click();
+      const bottom = await page.evaluate(() => { const p = document.getElementById("log"); return p.scrollTop + p.clientHeight >= p.scrollHeight - 1; });
+      if (!bottom) throw new Error("log-keep: Follow did not scroll to the bottom");
+      console.log(`log-keep ok: ${r.n} -> ${r.after} lines, scroll kept at top, Follow to bottom`);
     } else if (name === "quiet") {
       // 0.6: an idle project costs nothing: one change feed, no polling of the project payloads
       const reqs = [];

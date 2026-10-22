@@ -84,6 +84,7 @@ MAX_LOG_BYTES = 1_000_000
 STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8"),
                 "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                 "/store.js": ("store.js", "text/javascript; charset=utf-8"),
+                "/logpanel.js": ("logpanel.js", "text/javascript; charset=utf-8"),
                 "/render.js": ("render.js", "text/javascript; charset=utf-8"),
                 # morphdom 2.7.4 (MIT), vendored: in-place DOM patching for the builder page (0.6)
                 "/vendor/morphdom-2.7.4.min.js": ("vendor/morphdom-2.7.4.min.js", "text/javascript; charset=utf-8"),

@@ -186,6 +186,8 @@ pre { font: var(--fs-0)/1.55 var(--mono); background: var(--surface-2); padding:
       overflow: auto; max-height: 520px; white-space: pre-wrap; word-break: break-word; }
 pre:empty { display: none; }
 .log-small { max-height: 260px; }
+.loghead { margin-bottom: var(--sp-2); } .loghead h2 { margin-right: auto; }
+.loghead .btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .reason { color: var(--bad); white-space: pre-wrap; }
 .out { margin-top: 8px; }
 .goal { font-size: var(--fs-0); margin-top: 2px; white-space: pre-wrap; }

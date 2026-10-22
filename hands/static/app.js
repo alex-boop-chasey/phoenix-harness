@@ -77,6 +77,7 @@ function select(name) {
   viewerTitle.textContent = "File";
   viewer.textContent = "Pick an attempt file.";
   lastDetail = null; lastLog = null; attemptsCache = { name: null, rows: [] };
+  logPanel.clear();
   hands.store.open(name);              // change feed + first fetch; onSnapshot renders what arrives
   const known = hands.store.get(name);
   if (known && known.detail) onSnapshot(name, { detail: known.detail });   // seen before: paint now, a 304 publishes nothing
@@ -93,13 +94,10 @@ function onSnapshot(name, patch) {
   const d = snap.detail;
   if (!d) return;
   if (d.error) { $("#main").replaceChildren(el("section", { class: "reason" }, d.error)); return; }
-  const logPre = document.getElementById("log");
-  const atBottom = !logPre || logPre.scrollTop + logPre.clientHeight >= logPre.scrollHeight - 20;
   lastDetail = d; lastLog = snap.log;
   attemptsCache = { name, rows: snap.attempts || [] };
   render(name, d, snap.log);
-  const np = document.getElementById("log");
-  if (atBottom && np) np.scrollTop = np.scrollHeight;
+  if (patch.log || !logPanel.lines().length) logPanel.update((snap.log && snap.log.lines) || []);
   $("#clock").textContent = `updated ${new Date().toLocaleTimeString()}`;
 }
 
@@ -338,6 +336,7 @@ async function action(name, act, label) {
 // here with the snapshot of the moment, never by a closure on the node (a patch keeps the node).
 let lastDetail = null;                 // the detail the page was last rendered from
 let lastLog = null;
+let logPanel = null;                   // hands.logpanel instance, created once the scripts are loaded
 const actionOut = el("pre", { id: "action-out", class: "out", "data-self-managed": "" }, "");
 function dispatch(ev) {
   const t = ev.target.closest("[data-act]");
@@ -1055,7 +1054,7 @@ async function refresh(full) {
 function render(name, d, log) {
   if (!d) return;
   const att = el("div", { id: "attempts-wrap" }, attemptsCache.name === name ? attemptsSection(name, attemptsCache.rows) : null);
-  const logSec = el("section", { "data-key": "log" }, el("h2", {}, "Runner log"), el("pre", { id: "log" }, ((log && log.lines) || []).join("\n")));
+  const logSec = keep(logPanel.root, "log");
   const showSetup = d.managed || !(d.setup && d.setup.spec_ready);
   const createSec = d.create && d.create.state !== "done"
     ? el("section", { "data-key": "create" }, el("h2", {}, `Creation: ${d.create.state}`), d.create.error ? el("p", { class: "reason" }, d.create.error) : null,
@@ -1190,6 +1189,7 @@ function initShell() {
 document.addEventListener("DOMContentLoaded", async () => {
   initShell();
   document.addEventListener("click", dispatch);
+  logPanel = hands.logpanel.create(document, hands.store.logAppend);
   hands.store.subscribe(onSnapshot);
   let saved = null;
   try { saved = localStorage.getItem("hands.project"); } catch (e) { saved = null; }
