@@ -154,9 +154,10 @@ class TestEvents(DashProject):
         self.assertIn(b"too many streams", body + self.read_until(s, b"}"))
 
     def test_events_slot_released_when_client_leaves(self):
+        dashboard.SSE_PING = 60.0                         # no ping to notice the hang-up on: the socket must tell
         held = [self.stream() for _ in range(dashboard.SSE_MAX)]
         held[0][0].close()
-        time.sleep(0.5)                                   # the handler notices on its next write
+        time.sleep(0.4)
         s, head, _ = self.stream()
         self.assertIn(" 200 ", head.splitlines()[0])
 
@@ -209,3 +210,14 @@ class TestMorphRendering(unittest.TestCase):
             d.close()
         design = (ROOT / "docs" / "design.md").read_text()
         self.assertIn("7de128d61778142f65dcd7ee02d6f2a2a2dfa086bf508d3083de4b42ebe464cc", design)
+
+
+class TestStoreDriven(unittest.TestCase):
+    """Task 5: the builder page is driven by store events; no 4 s full-page poll remains."""
+
+    def test_no_four_second_interval(self):
+        app = (STATIC / "app.js").read_text()
+        self.assertNotIn("setInterval(tick, 4000)", app)
+        self.assertIn("hands.store.open(", app)
+        self.assertIn("hands.store.subscribe(", app)
+        self.assertNotIn("refresh(ticks % 8 === 0)", app)

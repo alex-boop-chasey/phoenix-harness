@@ -96,14 +96,14 @@
 
     function open(name) {
       close(name);
-      const l = { es: null, timer: null, syncing: false, dirty: false };
+      const l = { es: null, timer: null, syncing: false, dirty: false, opened: false };
       live.set(name, l);
       const ES = deps.EventSource;
       if (typeof ES === "function") {
         try {
           l.es = new ES(`/api/p/${encodeURIComponent(name)}/events`);
           l.es.addEventListener("change", () => sync(name));
-          l.es.addEventListener("open", () => { poll(name, false); sync(name); });
+          l.es.addEventListener("open", () => { poll(name, false); if (l.opened) sync(name); l.opened = true; });
           l.es.addEventListener("error", () => poll(name, true));
         } catch (e) { l.es = null; }
       }

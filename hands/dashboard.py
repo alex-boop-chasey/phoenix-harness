@@ -36,6 +36,8 @@ import json
 import os
 import re
 import secrets
+import select
+import socket
 import shlex
 import stat
 import subprocess
@@ -1192,7 +1194,11 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
             t0 = quiet = time.monotonic()
             while time.monotonic() - t0 < SSE_LIFE:
-                time.sleep(SSE_POLL)
+                # wait SSE_POLL, or less when the socket becomes readable: a browser never writes on an
+                # event stream, so readable means it hung up (EOF), and the slot is freed at once
+                if select.select([self.connection], [], [], SSE_POLL)[0]:
+                    if not self.connection.recv(1, socket.MSG_PEEK):
+                        break
                 now = version(cfg)
                 if now != last:
                     last = now

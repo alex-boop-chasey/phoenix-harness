@@ -387,12 +387,23 @@ async function capture(context, name, width, theme) {
       });
       if (!picked || picked.top < 80) throw new Error(`scroll-keep: no panel tall enough to scroll (got ${JSON.stringify(picked)})`);
       const before = picked.top;
-      await page.evaluate(async () => { await refresh(false); await refresh(false); });   // two updates, as the live page gets
+      await page.evaluate(async () => { await refresh(false); render(current, lastDetail, lastLog); render(current, lastDetail, lastLog); });   // a resync, then two re-renders as updates would
       await page.waitForTimeout(300);
       const after = await page.evaluate((i) => { const b = document.querySelectorAll("#main .scroll, #main pre")[i]; return b ? b.scrollTop : -1; }, picked.idx);
       if (after !== before) throw new Error(`scroll-keep: Steps panel scrollTop ${before} -> ${after} after a refresh`);
       const out = await page.locator("#action-out").count();
       if (out !== 1) throw new Error(`scroll-keep: expected one #action-out, found ${out}`);
+    } else if (name === "quiet") {
+      // 0.6: an idle project costs nothing: one change feed, no polling of the project payloads
+      const reqs = [];
+      page.on("request", (r) => { if (r.url().includes("/api/p/")) reqs.push(r.url().replace(/^.*\/api\//, "/api/")); });
+      await selectProject(page, "bookings");
+      await page.waitForTimeout(20000);
+      const feeds = reqs.filter((u) => u.endsWith("/events")).length;
+      const data = reqs.filter((u) => !u.endsWith("/events") && !u.endsWith("/env"));   // the env editor loads itself once
+      if (feeds !== 1) throw new Error(`quiet: expected one change feed, saw ${feeds}: ${reqs.join(" ")}`);
+      if (data.length > 3) throw new Error(`quiet: ${data.length} project requests in 20 s on an idle project: ${data.join(" ")}`);
+      console.log(`quiet ok: ${data.length} project requests + 1 feed in 20 s`);
     } else if (name === "merge" || name === "discard") {
       // 0.5.8: the sha-pinned Merge / Discard confirmation on a round whose steps all passed (florist)
       await selectProject(page, "florist");

@@ -69,6 +69,7 @@ async function loadProjects() {
 function select(name) {
   mode = "project";
   domainAck = false;
+  if (current && current !== name) hands.store.close(current);
   current = name;
   delete envPanels[name];              // fresh editor (and listing) each time a project is opened
   try { localStorage.setItem("hands.project", name); } catch (e) { /* ignore */ }
@@ -76,8 +77,30 @@ function select(name) {
   viewerTitle.textContent = "File";
   viewer.textContent = "Pick an attempt file.";
   lastDetail = null; lastLog = null; attemptsCache = { name: null, rows: [] };
-  refresh(true);
+  hands.store.open(name);              // change feed + first fetch; onSnapshot renders what arrives
+  const known = hands.store.get(name);
+  if (known && known.detail) onSnapshot(name, { detail: known.detail });   // seen before: paint now, a 304 publishes nothing
   loadProjects().catch(() => {});      // tab highlight at once, not on the next tick
+}
+
+// The store publishes (name, patch) when a project's detail, log or attempts changed on the server (or an
+// error occurred); the page re-renders from the full snapshot, patched in place.
+function onSnapshot(name, patch) {
+  if (name !== current || mode !== "project") return;
+  const snap = hands.store.get(name);
+  if (!snap) return;
+  if (patch.error !== undefined && !patch.detail) { $("#clock").textContent = `update failed: ${patch.error}`; return; }
+  const d = snap.detail;
+  if (!d) return;
+  if (d.error) { $("#main").replaceChildren(el("section", { class: "reason" }, d.error)); return; }
+  const logPre = document.getElementById("log");
+  const atBottom = !logPre || logPre.scrollTop + logPre.clientHeight >= logPre.scrollHeight - 20;
+  lastDetail = d; lastLog = snap.log;
+  attemptsCache = { name, rows: snap.attempts || [] };
+  render(name, d, snap.log);
+  const np = document.getElementById("log");
+  if (atBottom && np) np.scrollTop = np.scrollHeight;
+  $("#clock").textContent = `updated ${new Date().toLocaleTimeString()}`;
 }
 
 // ---- project tabs (WAI-ARIA tabs: roving tabindex, arrows move, Enter opens, Delete closes)
@@ -1024,29 +1047,8 @@ function planSection(d) {
 async function refresh(full) {
   if (mode === "new" || mode === "empty") return;
   if (mode === "creating") return refreshCreating();
-  const name = current;
-  if (!name) return;
-  try {
-    const [d, log] = await Promise.all([api(`/api/p/${encodeURIComponent(name)}`), api(`/api/p/${encodeURIComponent(name)}/log?lines=300`)]);
-    if (name !== current || mode !== "project") return;
-    if (d.error) { $("#main").replaceChildren(el("section", { class: "reason" }, d.error)); return; }
-    const logPre = document.getElementById("log");
-    const atBottom = !logPre || logPre.scrollTop + logPre.clientHeight >= logPre.scrollHeight - 20;
-    if (full || attemptsCache.name !== name) {
-      api(`/api/p/${encodeURIComponent(name)}/attempts`).then((rows) => {
-        if (current !== name) return;
-        attemptsCache = { name, rows };
-        render(name, lastDetail, lastLog);            // same snapshot, now with the attempts
-      }).catch(() => {});
-    }
-    lastDetail = d; lastLog = log;
-    render(name, d, log);
-    const np = document.getElementById("log");
-    if (atBottom && np) np.scrollTop = np.scrollHeight;
-    $("#clock").textContent = `updated ${new Date().toLocaleTimeString()}`;
-  } catch (e) {
-    $("#clock").textContent = `update failed: ${e.message}`;
-  }
+  if (!current) return;
+  return hands.store.sync(current);    // `full` is history: attempts come with every changed snapshot
 }
 
 // Build the page tree for one snapshot and patch it into #main (the first paint replaces "Loading…").
@@ -1130,6 +1132,9 @@ async function loadUsage() {
   } catch (e) { /* keep last */ }
 }
 
+// Housekeeping tick (0.6): the project page itself is pushed by the store (SSE); this only refreshes the
+// tab strip, the usage meters, the creating page and the session list.
+const TICK_MS = 5000;
 let ticks = 0;
 function tick() {
   if (document.hidden) return;
@@ -1137,10 +1142,10 @@ function tick() {
   const typing = a && (a.tagName === "TEXTAREA" || a.tagName === "INPUT") && !(a.closest && a.closest(".xterm"));
   if (typing) return;   // don't redraw while typing in a form (the terminal's own textarea is fine)
   if (sectionFromHash() === "sessions") { if (window.hands && window.hands.sessions) window.hands.sessions.poll(); ticks += 1; return; }
-  loadProjects().catch(() => {});
-  if (ticks % 4 === 0) loadUsage();
+  if (ticks % 2 === 0) loadProjects().catch(() => {});      // every 10 s
+  if (ticks % 12 === 0) loadUsage();                         // every 60 s
+  if (mode === "creating") refreshCreating();
   ticks += 1;
-  refresh(ticks % 8 === 0);   // attempts list reloads every ~30 s
 }
 
 // ---- app shell: sections (#/builder, #/sessions) and the phone drawer
@@ -1185,12 +1190,13 @@ function initShell() {
 document.addEventListener("DOMContentLoaded", async () => {
   initShell();
   document.addEventListener("click", dispatch);
+  hands.store.subscribe(onSnapshot);
   let saved = null;
   try { saved = localStorage.getItem("hands.project"); } catch (e) { saved = null; }
   current = saved;
   await loadProjects().catch(() => {});
   loadUsage();
   if (current && current === saved) select(current);
-  timer = setInterval(tick, 4000);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+  timer = setInterval(tick, TICK_MS);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { tick(); refresh(false); } });
 });
