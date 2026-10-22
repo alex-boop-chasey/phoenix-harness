@@ -769,6 +769,11 @@ def plan(cfg: Config, feedback: str = "", amend: bool = False) -> int:
 def _plan(cfg: Config, feedback: str, log: Log, amend: bool = False) -> int:
     if Lock.held(cfg.state_dir / "runner.lock"):
         raise Refusal("the build is running; stop it before planning")
+    from . import nextproject
+    blocked = nextproject.gate_reasons(cfg)
+    if blocked:
+        raise Refusal(f"planning may not start yet: {'; '.join(blocked)} "
+                      f"(fix: hands {cfg.name} refs retry N | refs remove N | setup)")
     prev = read_state(cfg)
     # the dashboard writes state=planning (+ prev_state) before spawning this process: decide on the state before that
     prev_state = (prev.get("prev_state") or "") if prev.get("state") == "planning" else prev.get("state")

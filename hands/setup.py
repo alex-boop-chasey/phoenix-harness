@@ -553,6 +553,18 @@ def _set_setup(st, opts: SetupOptions, status: str, record_doc: dict | None = No
     cur["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     st.data["setup"] = cur
     st.save()
+    _mirror_next(Path(st.dir), opts, status, record_doc)
+
+
+def _mirror_next(state_dir: Path, opts: SetupOptions, status: str, record_doc: dict | None) -> None:
+    """next.json (hands.nextstate) carries the same setup record when the project has one."""
+    from . import nextstate
+    path = state_dir / nextstate.FILE
+    if not path.exists():
+        return
+    state = nextstate.load(path)
+    state["setup"] = {"framework": opts.framework, "libs": list(opts.libs), "status": status, "record": record_doc}
+    nextstate.save(path, state)
 
 
 def run(cfg, framework: int | None = None, libs: list[str] | None = None) -> int:

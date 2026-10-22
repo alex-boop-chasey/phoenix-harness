@@ -56,6 +56,7 @@ DEFAULT_COLS, DEFAULT_ROWS = 120, 40    # until the first viewer sends its size
 # this host must never load it); a live session enables it for itself with --settings (step 17), which
 # merges over the user settings. Verified on Claude Code 2.1.292: with that flag the debug log shows the
 # plugin enabled, its skills loaded and its MCP server started; without it, nothing of the plugin loads.
+PLAN_CHAT_ROLE = "plan-chat"           # hands.planchat.ROLE: records of project planning chats (containers)
 TELEGRAM_PLUGIN = "telegram@claude-plugins-official"
 TELEGRAM_CHANNEL = f"plugin:{TELEGRAM_PLUGIN}"
 TELEGRAM_SETTINGS = json.dumps({"enabledPlugins": {TELEGRAM_PLUGIN: True}}, separators=(",", ":"))
@@ -147,6 +148,10 @@ def session_env() -> dict[str, str]:
     return env
 
 
+def is_plan_chat(rec: dict) -> bool:
+    return rec.get("role") == PLAN_CHAT_ROLE
+
+
 def is_telegram(rec: dict) -> bool:
     """The record's live-on-Telegram flag; only the JSON boolean true counts."""
     return rec.get("telegram") is True
@@ -223,8 +228,9 @@ class Proc:
     posix_spawn with setsid + opening the slave by path as fd 0 gives the child a controlling terminal
     (SIGWINCH/SIGHUP reach it), and Python fds are close-on-exec so it sees nothing else."""
 
-    def __init__(self, sid: str, argv: list[str], env: dict[str, str], cwd: str):
+    def __init__(self, sid: str, argv: list[str], env: dict[str, str], cwd: str, on_exit=None):
         self.sid, self.argv, self.cwd = sid, list(argv), cwd
+        self._on_exit = on_exit                 # called once by the drain thread after the child is gone
         self.started = time.time()
         self._lock = threading.Lock()
         self._buf = bytearray()
@@ -369,6 +375,11 @@ class Proc:
                 self._viewers.clear()
             for v in vs:
                 v.ended()
+            if self._on_exit is not None:
+                try:
+                    self._on_exit()
+                except Exception:
+                    pass
 
     def kill(self) -> None:
         """End the session: SIGHUP (what a closed terminal sends), then SIGKILL. Idempotent."""
@@ -397,17 +408,19 @@ class PtyBackend:
         self._lock = threading.Lock()
 
     def start(self, rec: dict, resume: bool) -> None:
+        if is_plan_chat(rec):                   # never the host claude with the dashboard user's login
+            raise PlanChatSession(str(rec.get("project") or ""))
         argv = claude_argv(rec["id"], resume, is_telegram(rec))
         self.launch(rec["id"], argv, session_env(), rec["cwd"])
 
-    def launch(self, sid: str, argv: list[str], env: dict[str, str], cwd: str) -> Proc:
+    def launch(self, sid: str, argv: list[str], env: dict[str, str], cwd: str, on_exit=None) -> Proc:
         validate_id(sid)
         with self._lock:
             old = self._procs.get(sid)
             if old is not None and old.alive():
                 raise Conflict("the session is already running")
             try:
-                proc = Proc(sid, argv, env, cwd)
+                proc = Proc(sid, argv, env, cwd, on_exit)
             except OSError as e:
                 raise ValueError(f"could not start the session: {e}")
             self._procs[sid] = proc
@@ -466,6 +479,13 @@ class Store:
 
     def create(self, cwd: Path, telegram: bool = False) -> dict:
         rec = {"id": new_id(), "cwd": str(cwd), "created": round(time.time(), 3), "title": "", "telegram": telegram is True}
+        self._write(rec)
+        return rec
+
+    def create_plan_chat(self, sid: str, project: str, cwd: Path) -> dict:
+        """A project's planning chat: hidden from the default list, never resumed as a host claude."""
+        rec = {"id": validate_id(sid), "cwd": str(cwd), "created": round(time.time(), 3), "title": "",
+               "telegram": False, "project": project, "role": PLAN_CHAT_ROLE, "hidden": True}
         self._write(rec)
         return rec
 
@@ -529,7 +549,8 @@ class Store:
             has_transcript = False
         return {"id": sid, "title": title, "cwd": rec["cwd"], "created": created, "last_active": last,
                 "live": BACKEND.alive(sid), "viewers": BACKEND.viewers(sid), "transcript": has_transcript,
-                "telegram": is_telegram(rec)}
+                "telegram": is_telegram(rec), "role": str(rec.get("role") or ""),
+                "project": str(rec.get("project") or ""), "hidden": rec.get("hidden") is True}
 
     def listing(self) -> list[dict]:
         rows = [self.row(r) for r in self.records()]
@@ -590,11 +611,14 @@ def start_new(cwd_raw, telegram=None) -> dict:
 
 def resume(sid: str, telegram=None) -> dict:
     """Restart a stopped session. telegram=None keeps the record's flag; True/False sets it (persisted)
-    before the start, so a session can be moved on or off Telegram by stop + resume."""
+    before the start, so a session can be moved on or off Telegram by stop + resume. A planning chat is
+    refused (PlanChatSession): it only ever runs in its container, started by its project."""
     want = None if telegram is None else _flag(telegram)
     with _MUTEX:
         st = Store()
         rec = st.get(sid)
+        if is_plan_chat(rec):
+            raise PlanChatSession(str(rec.get("project") or ""))
         if BACKEND.alive(sid):
             raise Conflict("the session is already running")
         validate_cwd(rec["cwd"])
@@ -605,6 +629,32 @@ def resume(sid: str, telegram=None) -> dict:
             rec["telegram"] = live
             st._write(rec)
         BACKEND.start(rec, resume=True)
+        return st.row(rec)
+
+
+def start_plan_chat(sid: str, project: str, cwd: Path, argv: list[str], on_exit=None) -> dict:
+    """Run a project's planning chat (hands.nextproject builds the container argv) on a PTY under the record
+    `sid` (created on first start). The argv runs with the clean session environment; on_exit runs when the
+    terminal ends (removes the chat's env file)."""
+    with _MUTEX:
+        st = Store()
+        try:
+            rec = st.get(sid)
+        except LookupError:
+            rec = None
+        if rec is not None and not is_plan_chat(rec):
+            raise Conflict("that session id belongs to another session")
+        if BACKEND.alive(sid):
+            raise Conflict("the planning chat is already running")
+        created = rec is None
+        if created:
+            rec = st.create_plan_chat(sid, project, cwd)
+        try:
+            BACKEND.launch(sid, argv, session_env(), str(cwd), on_exit=on_exit)
+        except Exception:
+            if created:
+                st._path(sid).unlink(missing_ok=True)
+            raise
         return st.row(rec)
 
 
@@ -624,6 +674,15 @@ def delete(sid: str) -> dict:
 
 class Conflict(Exception):
     pass
+
+
+class PlanChatSession(Conflict):
+    """A planning chat cannot be resumed from the Session manager: its project starts it (in the container)."""
+
+    def __init__(self, project: str):
+        self.project = project
+        super().__init__(f"this is the planning chat of {project or 'a project'}: resume it from the project page "
+                         f"(Plan with Claude), never as a host session")
 
 
 # ---------------------------------------------------------------- viewers (one WebSocket attached to a Proc)

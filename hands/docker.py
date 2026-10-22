@@ -89,28 +89,57 @@ def build_argv(cfg: Config, r: Run) -> list[str]:
     return argv
 
 
+def firewall_args(cfg: Config) -> list[str]:
+    """The firewalled profile as `docker run` flags for a launch request built elsewhere (hands.planchat): the
+    hands entrypoint applies the egress firewall (default allowlist) and drops to the host uid."""
+    return ["--user", "0:0", "--entrypoint", ENTRY,
+            "--cap-add", "NET_ADMIN", "--cap-add", "NET_RAW", "-e", "HANDS_FIREWALL=1",
+            "-e", f"HOST_UID={os.getuid()}", "-e", f"HOST_GID={os.getgid()}", "-e", f"TZ={cfg.tz}",
+            "--memory", cfg.memory, "--memory-swap", cfg.memory, "--cpus", cfg.cpus,
+            "--mount", Mount(cfg.runner_home / "container" / "entry.sh", ENTRY).arg()]
+
+
+def prebuilt_argv(cfg: Config, argv: list[str], name: str, role: str) -> list[str]:
+    """A launch request's own `docker run ...` argv (hands.stylerefs.plan_capture) with the configured docker
+    binary, a container name and the hands labels (so cleanup_orphans and kill find it)."""
+    if list(argv[:2]) != ["docker", "run"]:
+        raise ValueError("launch request must be a docker run argv")
+    return [cfg.docker_bin, "run", "--name", name, "--label", f"hands.project={cfg.name}",
+            "--label", f"hands.role={role}", *argv[2:]]
+
+
+def run_argv(cfg: Config, argv: list[str], name: str, role: str, stdout: Path | None = None,
+             stderr: Path | None = None, timeout_s: int = 3600) -> int:
+    """Run a prebuilt launch request to completion (same timeout and cleanup rules as `run`)."""
+    return _execute(cfg, prebuilt_argv(cfg, argv, name, role), name, None, stdout, stderr, timeout_s, False)
+
+
 def run(cfg: Config, r: Run) -> int:
     """Run a container to completion. Returns exit code; 124 on timeout (container force-removed)."""
-    argv = build_argv(cfg, r)
-    stdin = open(r.stdin, "rb") if r.stdin else subprocess.DEVNULL
-    stdout = open(r.stdout, "ab" if r.append_stdout else "wb") if r.stdout else subprocess.DEVNULL
-    if r.stderr and r.stderr == r.stdout:
+    return _execute(cfg, build_argv(cfg, r), r.name, r.stdin, r.stdout, r.stderr, r.timeout_s, r.append_stdout)
+
+
+def _execute(cfg: Config, argv: list[str], name: str, stdin_p: Path | None, stdout_p: Path | None,
+             stderr_p: Path | None, timeout_s: int, append_stdout: bool) -> int:
+    stdin = open(stdin_p, "rb") if stdin_p else subprocess.DEVNULL
+    stdout = open(stdout_p, "ab" if append_stdout else "wb") if stdout_p else subprocess.DEVNULL
+    if stderr_p and stderr_p == stdout_p:
         stderr = subprocess.STDOUT
     else:
-        stderr = open(r.stderr, "ab") if r.stderr else subprocess.DEVNULL
+        stderr = open(stderr_p, "ab") if stderr_p else subprocess.DEVNULL
     try:
         p = subprocess.Popen(argv, stdin=stdin, stdout=stdout, stderr=stderr)
         try:
-            return p.wait(timeout=r.timeout_s)
+            return p.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            kill(cfg, r.name)
+            kill(cfg, name)
             try:
                 p.wait(timeout=60)
             except subprocess.TimeoutExpired:
                 p.kill()
             return 124
         except BaseException:
-            kill(cfg, r.name)
+            kill(cfg, name)
             raise
     finally:
         for fh in (stdin, stdout, stderr):

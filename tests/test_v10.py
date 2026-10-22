@@ -664,6 +664,25 @@ class TestSessionsAPI(unittest.TestCase):
                   f"/api/sessions/{sid}/boom"):
             self.assertEqual(self.post(p)[0], 404, p)
 
+    def test_plan_chat_resume_goes_to_its_project_never_the_host_claude(self):
+        # a planning chat (hands.nextproject) must only ever run in its container: Resume in the Session manager
+        # relaunches it through the project (POST /api/projects/<p>/plan-chat), not with the dashboard's login
+        sid = sessions.new_id()
+        sessions.Store().create_plan_chat(sid, "proj", self.home / "work")
+        calls = []
+        old = dashboard.plan_chat
+        dashboard.plan_chat = lambda name: calls.append(name) or {"session_id": sid}
+        try:
+            st, r = self.post(f"/api/sessions/{sid}/resume")
+            self.assertEqual((st, r["id"], r["role"], r["hidden"]), (200, sid, "plan-chat", True))
+            self.assertEqual(calls, ["proj"])
+            self.assertEqual(self.post(f"/api/sessions/{sid}/resume", {"telegram": True})[0], 400)
+        finally:
+            dashboard.plan_chat = old
+        self.assertEqual(self.fake.started, [], "no host claude was started")
+        with self.assertRaises(sessions.PlanChatSession):
+            sessions.resume(sid)
+
     def test_api_unauthenticated_and_csrf(self):
         rec = self.new_session()
         sid = rec["id"]

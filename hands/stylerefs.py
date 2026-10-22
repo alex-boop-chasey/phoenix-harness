@@ -546,6 +546,135 @@ def remove(spec_dir: Path, index: int) -> None:
     _commit_dir(spec_dir, f"refs/style-refs/{index:02d}", f"style refs: remove {index:02d}")
 
 
+# --------------------------------------------------------------------------------------------- pipeline
+
+ANALYST_TIMEOUT = 3600
+
+
+def work_dir(project, index: int) -> Path:
+    """Per-ref scratch space in the project's state dir: raw/ (capture), clean/ (sanitised), out/ (analyst)."""
+    return Path(project.state_dir) / "style-refs" / f"{index:02d}"
+
+
+def _copy_frames(src: Path, dest: Path) -> None:
+    """Capture frames for the analyst: regular .png files only (no symlinks, nothing else)."""
+    if not src.is_dir():
+        return
+    for rel in _frame_files(src):
+        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src / rel, dest / rel)
+
+
+def process(project, index: int, capture_dir: Path | None = None) -> str:
+    """Capture -> sanitise -> analyst -> validate -> freeze for style ref `index` of `project` (a Config),
+    updating its status in next.json at each stage. Returns the final status (`frozen` or `failed`); every
+    failure is recorded as the ref's reason, so the status never stays at capturing/analysing."""
+    from . import claude, docker, nextstate, toolusage
+    from .docker import ENTRY, Mount, Run
+    from .state import State
+
+    state_file = Path(project.state_dir) / nextstate.FILE
+    url = nextstate.ref(nextstate.load(state_file), index)["url"]
+    host = validate_host(url)
+    st = State(project.state_dir)
+    work = work_dir(project, index)
+    raw, clean, out = work / "raw", work / "clean", work / "out"
+
+    def fail(reason: str) -> str:
+        nextstate.set_ref(state_file, index, "failed", reason)
+        st.log(f"style ref {index:02d} failed: {reason}")
+        return "failed"
+
+    try:
+        if work.exists():
+            shutil.rmtree(work)
+        for d in (raw, clean, out):
+            d.mkdir(parents=True)
+        cap_src = Path(capture_dir) if capture_dir else Path(project.runner_home) / "capture"
+        if not (cap_src / "capture.mjs").is_file() or not (cap_src / "node_modules").is_dir():
+            return fail("capture dependencies missing (run tools/setup.sh)")
+
+        # ---- 1. capture: open profile, no token, no env file
+        nextstate.set_ref(state_file, index, "capturing")
+        st.log(f"style ref {index:02d}: capturing {host}")
+        req = plan_capture(url, raw, cap_src, image=project.image)
+        rc = docker.run_argv(project, req.argv, docker.unique_name(project, "capture", f"{index:02d}"), "capture",
+                             stdout=work / "capture.log", stderr=work / "capture.log", timeout_s=CAPTURE_TIMEOUT)
+        try:
+            captured = json.loads((raw / "capture.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            captured = None
+        if rc == 3:
+            return fail("navigation failed")
+        if rc != 0 or captured is None:
+            return fail(f"capture failed (exit {rc})")
+
+        # ---- 2. sanitise: the analyst reads only the allow-listed capture and the frames
+        cleaned = sanitize(captured)
+        if not cleaned:
+            return fail("capture.json is not a schema 1 capture")
+        (clean / "capture.json").write_text(json.dumps(cleaned, indent=1) + "\n", encoding="utf-8")
+        _copy_frames(raw / "frames", clean / "frames")
+
+        # ---- 3. analyst: firewalled, exactly one env var from ANALYST_ANTHROPIC_API_KEY
+        nextstate.set_ref(state_file, index, "analysing")
+        secrets = Path(project.project_env) if project.project_env else work / "no-secrets"
+        try:
+            areq = plan_analyst(clean, out, secrets, work / "env", Path(project.runner_home) / "prompts" / "analyst.md",
+                                index=index, host=host, image=project.image)
+        except AnalystTokenMissing as e:
+            return fail(str(e))
+        try:
+            mounts = [Mount(Path(project.runner_home) / "container" / "entry.sh", ENTRY)]
+            mounts += [Mount(Path(m["host"]), m["container"], ro=m["mode"] == "ro") for m in areq.mounts]
+            rc = docker.run(project, Run(name=docker.unique_name(project, "analyst", f"{index:02d}"), role="analyst",
+                                         cmd=areq.command, mounts=mounts, env_files=[Path(areq.env_file)],
+                                         stdout=work / "analyst.jsonl", stderr=work / "analyst.err",
+                                         timeout_s=ANALYST_TIMEOUT))
+        finally:
+            Path(areq.env_file).unlink(missing_ok=True)
+        try:
+            toolusage.write_tools_json(work / "analyst.jsonl", "analyst", work / "tools.json")
+        except OSError as e:
+            st.log(f"style ref {index:02d}: tools.json not written: {e}")
+        res = claude.parse(work / "analyst.jsonl", rc, work / "analyst.err")
+        if not res.ok:
+            return fail(f"analyst session failed ({res.kind})")
+
+        # ---- 4. validate both files, then freeze into the spec repo
+        errors = []
+        try:
+            errors += validate_style(json.loads((out / "style.json").read_text(encoding="utf-8")))
+        except (OSError, ValueError) as e:
+            errors.append(f"style.json unreadable: {type(e).__name__}")
+        try:
+            errors += validate_report((out / "report.md").read_text(encoding="utf-8"))
+        except (OSError, UnicodeError) as e:
+            errors.append(f"report.md unreadable: {type(e).__name__}")
+        if errors:
+            return fail("invalid analyst output: " + "; ".join(errors[:5]))
+        try:
+            freeze(out, Path(project.spec_dir), index, host)
+        except (FreezeError, OSError) as e:
+            return fail(f"freeze failed: {e}")
+    except nextstate.InvalidInput:
+        raise
+    except Exception as e:
+        return fail(f"internal error: {type(e).__name__}: {e}")
+    nextstate.set_ref(state_file, index, "frozen")
+    st.log(f"style ref {index:02d} frozen: refs/style-refs/{index:02d} ({host})")
+    return "frozen"
+
+
+def validate_host(url: str) -> str:
+    """The bare host of a validated URL (the report title and the freeze commit name it)."""
+    from urllib.parse import urlsplit
+    host = urlsplit(validate_url(url)).hostname or ""
+    if not HOST_RE.match(host):
+        raise InvalidUrl("url host is not a plain host name")
+    return host
+
+
 # -------------------------------------------------------------------------------------------------- CLI
 
 def _load_json(path: str) -> Any:

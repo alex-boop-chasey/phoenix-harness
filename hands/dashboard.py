@@ -26,7 +26,12 @@ Security model (the dashboard can start builds, so it is treated as a control pl
   verdicts) is rendered as text, never HTML
 - read-only over state files except: STOP file, and `hands <p> start|ack` run as subprocesses;
   it owns ~/.config/hands/ui.json (closed tabs), sessions/, secrets/<slug>/
-- it never holds the GitHub token and never mounts anything
+- style refs and setup (POST/DELETE /api/projects/<p>/style-refs..., POST .../setup/retry) run as
+  `hands <p> refs add|retry|remove` / `hands <p> setup` subprocesses; DELETE has the same origin rules as POST
+- it never holds the GitHub token and mounts nothing itself, with one exception: a project's planning chat
+  (POST /api/projects/<p>/plan-chat, hands.nextproject) is a Session manager terminal running the
+  hands.planchat container (firewalled, one ANTHROPIC_API_KEY env file, spec/app read-only); its
+  plan_session lives in the project's next.json, and plan-chat/approve commits the hash-pinned brief
 """
 from __future__ import annotations
 
@@ -361,7 +366,7 @@ def env_update(name: str, req) -> dict:
 
 
 VERSION_FILES = ("state.json", "activity.json", "runner.log", "metrics.jsonl", "progress.jsonl", "round.log",
-                 "plan/plan.json", "plan/plan-activity.json", "plan/plan.log")
+                 "plan/plan.json", "plan/plan-activity.json", "plan/plan.log", "next.json")
 
 
 def version(cfg: cfgmod.Config) -> str:
@@ -418,7 +423,8 @@ def detail(name: str) -> dict:
                           "reasons": (x.get("reasons") or [])[:12]})
     out.update({"steps": steps, "spec_error": spec_err, "spec_commit": spec_commit,
                 "managed": cfg.managed, "setup": setup_info(cfg), "create": create_info(name), "plan": plan_info(cfg),
-                "round": round_info(cfg, st, [s["id"] for s in steps] if not spec_err else None)})
+                "round": round_info(cfg, st, [s["id"] for s in steps] if not spec_err else None),
+                "next": next_info(cfg)})
     return out
 
 
@@ -542,14 +548,16 @@ def spawn_cli(log: Path, argv_tail: list[str], stdin_text: str = "") -> None:
 
 
 def plan_action(name: str, action: str, feedback: str, head_sha: str = "", shared_ack: bool = False,
-                domains_ack: bool = False, tests_ack: bool = False) -> dict:
-    """plan | amend | approve. `amend` = `hands NAME plan --amend` with the change request on stdin. Approving a
+                domains_ack: bool = False, tests_ack: bool = False, req: dict | None = None) -> dict:
+    """plan | amend | approve. `amend` = `hands NAME plan --amend` with the change request on stdin (and, from
+    `req`, new style_refs[] / framework / libs[] as CLI flags, processed before the planner runs). Approving a
     plan that adds network domains needs domains_ack, an amendment that changes shared settings (regression,
     allowed_paths, ...) needs shared_ack: the review ticks, passed on to the CLI as --ack-domains / --ack-shared."""
     from . import planner
     cfg = load_cfg(name)
     if not cfg.managed:
         raise ValueError("planning is only for projects created by hands")
+    extra = next_flags(req) if (req and action == "amend") else []
     with _CREATE_MUTEX:
         d = planner.pdir(cfg)
         if Lock.held(d / "plan.lock"):
@@ -581,7 +589,7 @@ def plan_action(name: str, action: str, feedback: str, head_sha: str = "", share
         if action in ("plan", "amend"):            # visible at once; the child takes the lock and reads prev_state
             planner.write_state(cfg, state="planning", error="", prev_state=st.get("state") or "none",
                                 **({"mode": "amend"} if action == "amend" else {}))
-        argv = {"plan": [name, "plan"], "amend": [name, "plan", "--amend"],
+        argv = {"plan": [name, "plan"], "amend": [name, "plan", "--amend", *extra],
                 "approve": [name, "approve", head_sha] + (["--ack-shared"] if shared_ack else []) + (["--ack-domains"] if domains_ack else [])
                 + (["--ack-tests"] if tests_ack else [])}[action]
         spawn_cli(d / "plan.log", argv, feedback if action in ("plan", "amend") else "")
@@ -645,8 +653,12 @@ def create_info(slug: str) -> dict | None:
     return {"state": st.get("state"), "error": st.get("error", ""), "lines": text.splitlines()[-200:]}
 
 
-def start_create(slug: str, description: str, from_repo: str = "", branch: str = "", ruleset: bool = False) -> dict:
+def start_create(slug: str, description: str, from_repo: str = "", branch: str = "", ruleset: bool = False,
+                 req: dict | None = None) -> dict:
+    """`hands SLUG create --then-plan` detached; `req` may carry style_refs[], framework and libs[] (validated here,
+    passed on as --style-ref/--framework/--libs)."""
     from . import newproject
+    next_extra = next_flags(req or {})
     try:
         newproject.validate_slug(slug)
         from_repo = (from_repo or "").strip()
@@ -669,6 +681,7 @@ def start_create(slug: str, description: str, from_repo: str = "", branch: str =
             extra += ["--branch", branch]
         if ruleset:
             extra.append("--ruleset")
+    extra += next_extra
     with _CREATE_MUTEX:
         if (config_home() / "projects" / f"{slug}.toml").exists():
             raise ValueError(f"project {slug} already exists")
@@ -829,6 +842,154 @@ def run_action(name: str, action: str) -> dict:
         return {"rc": 124, "output": "timed out"}
 
 
+# ---------------------------------------------------------------- style refs, setup, planning chat (Phase 2)
+REF_INDEX = re.compile(r"^[1-9][0-9]?$")
+
+
+def _ref_index(text: str) -> int:
+    if not REF_INDEX.match(text):
+        raise LookupError(text)
+    return int(text)
+
+
+def _json_body(body: bytes) -> dict:
+    try:
+        req = json.loads(body or b"{}")
+    except ValueError:
+        raise ValueError("bad json")
+    if not isinstance(req, dict):
+        raise ValueError("bad json")
+    return req
+
+
+def next_info(cfg) -> dict:
+    from . import nextproject
+    try:
+        return nextproject.info(cfg)
+    except Exception as e:                        # the project page renders without the Phase 2 panel
+        return {"error": type(e).__name__, "style_refs": [], "setup": None, "plan_session": None, "gate": []}
+
+
+def next_flags(req: dict) -> list[str]:
+    """`--style-ref URL ... --framework N --libs a,b` for the create/plan CLI from a form body with optional
+    `style_refs[]`, `framework` and `libs[]`, validated here so a bad form never spawns anything."""
+    from . import nextstate
+    refs, framework, libs = req.get("style_refs"), req.get("framework"), req.get("libs")
+    if isinstance(framework, str) and framework.strip().isdigit():
+        framework = int(framework.strip())
+    try:
+        urls, fw, lb = nextstate.validate([] if refs is None else refs, 1 if framework is None else framework,
+                                          [] if libs is None else libs)
+    except nextstate.InvalidInput as e:
+        raise ValueError(str(e))
+    flags = []
+    for u in urls:
+        flags += ["--style-ref", u]
+    if framework is not None:
+        flags += ["--framework", str(fw)]
+    if libs is not None:
+        flags += ["--libs", ",".join(lb)]
+    return flags
+
+
+def _idle(cfg) -> None:
+    from . import nextproject
+    why = nextproject.busy(cfg)
+    if why:
+        raise sessions.Conflict(why)
+
+
+def style_refs_add(name: str, req: dict) -> dict:
+    """POST /api/projects/NAME/style-refs {"urls": [...]}: `hands NAME refs add URL...` detached (the URLs get the
+    next indexes and the pipeline runs; log: state/refs.log)."""
+    from . import nextproject, nextstate
+    cfg = load_cfg(name)
+    urls = req.get("urls", req.get("style_refs"))
+    if not isinstance(urls, list) or not urls:
+        raise ValueError("urls: a non-empty list of http(s) URLs")
+    try:
+        urls = nextstate.check_urls(urls)
+        state = nextstate.load(nextproject.file(cfg))
+    except nextstate.InvalidInput as e:
+        raise ValueError(str(e))
+    if any(r["url"] in urls for r in state["style_refs"]):
+        raise ValueError("a URL is already a style ref of this project")
+    if len(state["style_refs"]) + len(urls) > nextstate.MAX_REFS:
+        raise ValueError(f"at most {nextstate.MAX_REFS} style refs per project")
+    with _CREATE_MUTEX:
+        _idle(cfg)
+        spawn_cli(cfg.state_dir / "refs.log", [name, "refs", "add", *urls])
+    return {"ok": True, "urls": urls}
+
+
+def _known_ref(cfg, index: int) -> None:
+    from . import nextproject, nextstate
+    try:
+        nextstate.ref(nextstate.load(nextproject.file(cfg)), index)
+    except nextstate.UnknownRef:
+        raise LookupError(f"style ref {index}")
+    except nextstate.InvalidInput as e:
+        raise ValueError(str(e))
+
+
+def style_ref_retry(name: str, index: int) -> dict:
+    """POST /api/projects/NAME/style-refs/N/retry: `hands NAME refs retry N` detached."""
+    cfg = load_cfg(name)
+    _known_ref(cfg, index)
+    with _CREATE_MUTEX:
+        _idle(cfg)
+        spawn_cli(cfg.state_dir / "refs.log", [name, "refs", "retry", str(index)])
+    return {"ok": True, "index": index}
+
+
+def style_ref_delete(name: str, index: int) -> dict:
+    """DELETE /api/projects/NAME/style-refs/N: `hands NAME refs remove N` detached."""
+    cfg = load_cfg(name)
+    _known_ref(cfg, index)
+    with _CREATE_MUTEX:
+        _idle(cfg)
+        spawn_cli(cfg.state_dir / "refs.log", [name, "refs", "remove", str(index)])
+    return {"ok": True, "index": index}
+
+
+def setup_retry(name: str) -> dict:
+    """POST /api/projects/NAME/setup/retry: `hands NAME setup` detached (log: state/setup.log)."""
+    cfg = load_cfg(name)
+    with _CREATE_MUTEX:
+        _idle(cfg)
+        spawn_cli(cfg.state_dir / "setup.log", [name, "setup"])
+    return {"ok": True}
+
+
+def plan_chat(name: str) -> dict:
+    """POST /api/projects/NAME/plan-chat: start or resume the planning chat (hidden Session manager session in
+    the firewalled container); {session_id, status, live}."""
+    from . import nextproject
+    cfg = load_cfg(name)
+    with _CREATE_MUTEX:
+        return nextproject.plan_chat_start(cfg)
+
+
+def plan_chat_resume(rec: dict, telegram=None) -> dict:
+    """Session manager Resume on a planning chat: relaunched by its project (container), never as a host claude."""
+    if telegram is True:
+        raise ValueError("a planning chat cannot run on Telegram")
+    plan_chat(str(rec.get("project") or ""))
+    return sessions.Store().row(sessions.Store().get(rec["id"]))
+
+
+def plan_chat_approve(name: str, req: dict) -> dict:
+    """POST /api/projects/NAME/plan-chat/approve {"sha256"}: the hash the page showed; hash-pinned copy of the
+    brief into the spec repo (approval does not start planning)."""
+    from . import nextproject
+    cfg = load_cfg(name)
+    sha = req.get("sha256")
+    if not isinstance(sha, str):
+        raise ValueError("sha256 required")
+    with _CREATE_MUTEX:
+        return nextproject.plan_chat_approve(cfg, sha)
+
+
 # ---------------------------------------------------------------- http
 class Handler(BaseHTTPRequestHandler):
     server_version = "hands-dash"
@@ -861,7 +1022,7 @@ class Handler(BaseHTTPRequestHandler):
             self._requests += 1
             if not self._read_body():        # every request's body is consumed (or the connection closed)
                 return                       # before anything answers, so no leftover bytes become the
-            if self.command not in ("GET", "HEAD", "POST"):      # next request on a kept-alive connection
+            if self.command not in ("GET", "HEAD", "POST", "DELETE"):   # next request on a kept-alive connection
                 self.close_connection = True
                 self.send_error(501, f"Unsupported method ({self.command!r})")
                 return
@@ -1019,6 +1180,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._dispatch("POST")
 
+    def do_DELETE(self):
+        self._dispatch("DELETE")
+
     def _dispatch(self, method: str) -> None:
         try:
             kind = self._host_kind()
@@ -1044,11 +1208,13 @@ class Handler(BaseHTTPRequestHandler):
                     if method == "GET" and path == "/":
                         return self._text(401, "Not logged in. On the VPS run: hands-dash url   and open that URL.")
                     return self._json(401, {"error": "not logged in"})
-            if method == "POST":
+            if method in ("POST", "DELETE"):
                 if not self._origin_ok():
                     return self._json(403, {"error": "bad origin"})
                 if len(self._body) > (MAX_ENV_BODY if path.endswith("/env") else MAX_BODY):
                     return self._json(413, {"error": "too large"})
+                if method == "DELETE":
+                    return self._delete(path)
                 return self._post(path, self._body)
             return self._get(path, urllib.parse.parse_qs(u.query))
         except LookupError:
@@ -1130,7 +1296,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("bad json")
             return self._json(200, start_create(str(req.get("slug", "")), str(req.get("description", "")),
                                                 str(req.get("from_repo", "") or ""), str(req.get("branch", "") or ""),
-                                                req.get("ruleset") is True))
+                                                req.get("ruleset") is True, req))
         if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "action" and parts[4] in ("plan", "amend", "approve"):
             try:
                 req = json.loads(body or b"{}")
@@ -1141,7 +1307,8 @@ class Handler(BaseHTTPRequestHandler):
             ack = req.get("shared_ack") is True if isinstance(req, dict) else False
             dack = req.get("domains_ack") is True if isinstance(req, dict) else False
             tack = req.get("tests_ack") is True if isinstance(req, dict) else False
-            return self._json(200, plan_action(parts[2], parts[4], fb, hs, ack, dack, tack))
+            return self._json(200, plan_action(parts[2], parts[4], fb, hs, ack, dack, tack,
+                                               req if isinstance(req, dict) else None))
         if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "action" and parts[4] in ("merge", "discard"):
             try:
                 req = json.loads(body or b"{}")
@@ -1161,6 +1328,18 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 raise ValueError("bad json")
             return self._json(200, env_update(parts[2], req))
+        if len(parts) >= 4 and parts[:2] == ["api", "projects"]:
+            name, rest = parts[2], parts[3:]
+            if rest == ["style-refs"]:
+                return self._json(200, style_refs_add(name, _json_body(body)))
+            if len(rest) == 3 and rest[0] == "style-refs" and rest[2] == "retry":
+                return self._json(200, style_ref_retry(name, _ref_index(rest[1])))
+            if rest == ["setup", "retry"]:
+                return self._json(200, setup_retry(name))
+            if rest == ["plan-chat"]:
+                return self._json(200, plan_chat(name))
+            if rest == ["plan-chat", "approve"]:
+                return self._json(200, plan_chat_approve(name, _json_body(body)))
         if parts == ["api", "sessions", "new"]:
             try:
                 req = json.loads(body or b"{}")
@@ -1180,11 +1359,20 @@ class Handler(BaseHTTPRequestHandler):
                     req = json.loads(body or b"{}")
                 except ValueError:
                     raise ValueError("bad json")
+                rec = sessions.Store().get(sid)
+                if sessions.is_plan_chat(rec):            # its project relaunches it in the container
+                    return self._json(200, plan_chat_resume(rec, req.get("telegram") if isinstance(req, dict) else None))
                 return self._json(200, sessions.resume(sid, req.get("telegram") if isinstance(req, dict) else None))
             if verb == "stop":
                 return self._json(200, sessions.stop(sid))
             if verb == "delete":
                 return self._json(200, sessions.delete(sid))
+        raise LookupError(path)
+
+    def _delete(self, path: str) -> None:
+        parts = [urllib.parse.unquote(p) for p in path.split("/") if p]
+        if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3] == "style-refs":
+            return self._json(200, style_ref_delete(parts[2], _ref_index(parts[4])))
         raise LookupError(path)
 
     # -- change feed (0.6): Server-Sent Events. Host/login checked in _dispatch like every GET. The stream

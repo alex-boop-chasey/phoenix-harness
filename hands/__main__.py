@@ -18,13 +18,22 @@
     --from-repo O/R      build on an existing repo instead of creating <slug>-app: adds a write deploy
                          key to it (and the protect-main ruleset only with --ruleset); --branch B picks
                          the branch to build on (default: the repo's default branch)
+    --style-ref URL      (repeatable) style reference URLs, captured, analysed and frozen into the spec repo
+                         right after the clones exist; --framework N --libs a,b choose the scaffold, which
+                         runs next (state: <state_dir>/next.json); planning waits for both (the gate)
   destroy --confirm P    delete a hands-created project: GitHub repos, keys, folders, config
                          (an imported repo is never deleted: only its hands deploy key is removed)
   plan                   run the planner (feedback on stdin): idea -> spec -> PR hands/plan
+                         (--amend with --style-ref/--framework/--libs: a change request; new refs are processed
+                         first). Refused while the gate is blocked (style refs not frozen, setup not done)
   approve                merge the reviewed plan PR (sha-pinned), refresh the spec, start the build
   setup                  scaffold the app repo with the project's framework/libs choices inside the firewalled
                          container (--framework N --libs a,b store new choices first); commits and pushes
                          `scaffold: ...` only when build, lint and typecheck pass; writes refs/setup.json
+  refs add URL [URL...]  add style reference URLs (change request) and run their pipeline
+  refs retry N [N...]    run the style-ref pipeline again for ref N (capture, analyst, validate, freeze)
+  refs remove N [N...]   drop style ref N (next.json, and refs/style-refs/NN from the spec repo)
+  start refuses while the gate is blocked: a style ref not frozen, or setup pending/running/failed
 hands all watchdog       (cron) watchdog for every project, and keep the dashboard running
 hands all usage          refresh plan usage (one tiny Haiku reply) -> ~/.config/hands/usage.json
 """
@@ -56,8 +65,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("project")
     ap.add_argument("command", choices=["run", "start", "status", "check", "validate", "prompt", "stop", "ack",
                                         "mark-done", "reset-step", "watchdog", "create", "destroy", "plan", "approve", "usage",
-                                        "merge", "discard", "setup"])
+                                        "merge", "discard", "setup", "refs"])
     ap.add_argument("arg", nargs="?")
+    ap.add_argument("args", nargs="*", help="refs add|retry|remove: the URLs or ref indexes")
     ap.add_argument("--steps", type=int)
     ap.add_argument("--clear-model", action="store_true")
     ap.add_argument("--confirm", default="")
@@ -73,7 +83,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--main-sha", default="", help="merge: the main head the page showed")
     ap.add_argument("--framework", type=int, help="setup: 1 None, 2 Astro+Tailwind, 3 +AI kit, 4 Next.js+Tailwind, 5 +AI kit")
     ap.add_argument("--libs", default=None, help="setup: comma-separated library ids (shadcn, gsap); '' for none")
+    ap.add_argument("--style-ref", action="append", default=[], metavar="URL",
+                    help="create / plan --amend: a style reference URL (repeatable)")
     a = ap.parse_args(argv)
+    libs = None if a.libs is None else [x.strip() for x in a.libs.split(",") if x.strip()]
     if a.project == "all":
         if a.command == "usage":
             from . import usage
@@ -86,11 +99,21 @@ def main(argv: list[str] | None = None) -> int:
         from . import newproject
         try:
             if a.command == "create":
+                from . import nextstate
+                try:                                   # refuse bad choices before any repo exists
+                    nextstate.validate(list(a.style_ref), 1 if a.framework is None else a.framework, libs or [])
+                except nextstate.InvalidInput as e:
+                    print(f"FAILED: {e}")
+                    return 2
                 rc = newproject.main_create(a.project, a.from_repo, a.branch, a.ruleset)
-                if rc == 0 and a.then_plan:
+                if rc != 0:
+                    return rc
+                cfg = load(a.project)
+                rc = after_create(cfg, list(a.style_ref), 1 if a.framework is None else a.framework, libs or [])
+                if a.then_plan:
                     from . import planner
                     print("starting the planner (log: dashboard Plan section)", flush=True)
-                    return planner.plan(load(a.project))
+                    return planner.plan(cfg) or rc
                 return rc
             return newproject.destroy(a.project, a.confirm)
         except newproject.CreateError as e:
@@ -101,14 +124,19 @@ def main(argv: list[str] | None = None) -> int:
         from . import planner
         if a.command == "plan":
             fb = sys.stdin.read() if not sys.stdin.isatty() else ""
+            if a.style_ref or a.framework is not None or libs is not None:
+                rc = change_request(cfg, list(a.style_ref), a.framework, libs)
+                if rc != 0:
+                    return rc
             return planner.plan(cfg, fb, amend=a.amend)
         return planner.approve(cfg, a.arg or "", ack_shared=a.ack_shared, ack_domains=a.ack_domains, ack_tests=a.ack_tests)
     if a.command in ("merge", "discard"):
         return round_cmd(cfg, a.command, a.branch_sha, a.main_sha)
     if a.command == "setup":
         from . import setup
-        libs = None if a.libs is None else [x.strip() for x in a.libs.split(",") if x.strip()]
         return setup.run(cfg, framework=a.framework, libs=libs)
+    if a.command == "refs":
+        return refs_cmd(cfg, a.arg or "", a.args)
     r = Runner(cfg)
     st = r.state
     cmd = a.command
@@ -141,10 +169,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     if cmd == "start":
-        from . import setup
-        blocked = setup.blocking_status(st.data)
-        if blocked:
-            print(f"setup status is {blocked}; finish the scaffold first: hands {cfg.name} setup")
+        from . import nextproject, nextstate
+        try:
+            reasons = nextproject.gate_reasons(cfg)
+        except nextstate.InvalidInput as e:
+            reasons = [str(e)]
+        if reasons:
+            print("start refused: planning may not start yet")
+            for why in reasons:
+                print(f"  {why}")
+            print(f"fix: hands {cfg.name} refs retry N | refs remove N | setup")
             return 1
         sess = f"hands-{cfg.name}"
         if subprocess.run(["tmux", "has-session", "-t", f"={sess}"], capture_output=True).returncode == 0:
@@ -176,6 +210,11 @@ def main(argv: list[str] | None = None) -> int:
                   f"tag {rr.get('pre_tag')}; {t['passed']}/{t['total']} passed, "
                   f"{'merge ready' if t['ready'] else t['why'] or 'not ready'})")
         print(f"totals: {d.get('total_sessions', 0)} sessions, ~${d.get('total_cost_usd', 0)} (API-equivalent estimate)")
+        from . import nextproject, nextstate
+        try:
+            print(nextstate.describe(nextstate.load(nextproject.file(cfg))))
+        except nextstate.InvalidInput as e:
+            print(f"(next.json unreadable: {e})")
         try:
             sp = specmod.load(cfg.spec_dir, gitops.head(cfg.spec_dir))
             for s in sp.steps:
@@ -291,6 +330,86 @@ def main(argv: list[str] | None = None) -> int:
         with Lock(cfg.state_dir / "runner.lock"):
             return check(r)
     return 2
+
+
+def after_create(cfg, style_refs: list[str], framework: int, libs: list[str]) -> int:
+    """Right after the clones exist: record the choices, run the style-ref pipeline for every URL, then the
+    scaffold when a framework was chosen. 1 when a ref or the scaffold failed (the project exists either way;
+    `refs retry N` / `refs remove N` / `setup` fix it, and the gate holds planning until then)."""
+    from . import nextproject, setup
+    state = nextproject.init(cfg, style_refs, framework, libs)
+    rc = 0
+    indexes = [r["index"] for r in state["style_refs"]]
+    if indexes and _process(cfg, indexes):
+        rc = 1
+    if state["setup"]["status"] == "pending":
+        print(f"setup: scaffolding {setup.FRAMEWORK_LABELS[framework]}" + (f" + {', '.join(libs)}" if libs else ""),
+              flush=True)
+        if setup.run(cfg) != 0:
+            rc = 1
+    return rc
+
+
+def change_request(cfg, style_refs: list[str], framework: int | None, libs: list[str] | None) -> int:
+    """New style refs and/or setup choices for an existing project; the new refs are processed at once."""
+    from . import nextproject, nextstate
+    why = nextproject.busy(cfg) if style_refs else ""
+    if why:
+        print(f"refused: {why}")
+        return 1
+    try:
+        indexes = nextproject.request(cfg, style_refs, framework, libs)
+    except nextstate.InvalidInput as e:
+        print(f"FAILED: {e}")
+        return 2
+    if indexes:
+        _process(cfg, indexes)
+    if framework is not None or libs is not None:
+        print(f"setup: {f'pending; run: hands {cfg.name} setup' if nextproject.setup_pending(cfg) else 'nothing to scaffold'}")
+    return 0
+
+
+def _process(cfg, indexes: list[int]) -> int:
+    """Run the pipeline for these refs and print each outcome; returns how many failed."""
+    from . import nextproject, nextstate
+    print(f"style refs: processing {', '.join(f'{i:02d}' for i in indexes)} (log: {cfg.state_dir}/runner.log)", flush=True)
+    failed = nextproject.process_refs(cfg, indexes)
+    for r in nextstate.load(nextproject.file(cfg))["style_refs"]:
+        if r["index"] in indexes:
+            print(f"style ref {r['index']:02d} {r['status']}" + (f": {r['reason']}" if r.get("reason") else ""))
+    return failed
+
+
+def refs_cmd(cfg, verb: str, args: list[str]) -> int:
+    """`refs add URL...` (change request), `refs retry N...` (back to queued, pipeline again), `refs remove N...`."""
+    from . import nextproject, nextstate, stylerefs
+    if verb not in ("add", "retry", "remove") or not args:
+        print("usage: hands <project> refs add URL [URL...] | refs retry N [N...] | refs remove N [N...]")
+        return 2
+    why = nextproject.busy(cfg)
+    if why:
+        print(f"refused: {why}")
+        return 1
+    if verb == "add":
+        return change_request(cfg, args, None, None)
+    if not all(re.fullmatch(r"[0-9]{1,2}", x) for x in args):
+        print("ref indexes must be integers from 1 to 99")
+        return 2
+    indexes = [int(x) for x in args]
+    try:
+        for i in indexes:
+            nextstate.ref(nextstate.load(nextproject.file(cfg)), i)
+        if verb == "remove":
+            for i in indexes:
+                nextproject.remove_ref(cfg, i)
+                print(f"style ref {i:02d} removed")
+            return 0
+        for i in indexes:
+            nextproject.retry_ref(cfg, i)
+    except (nextstate.InvalidInput, stylerefs.InvalidInput) as e:     # unknown ref; FreezeError (git) on remove
+        print(f"FAILED: {e}")
+        return 1
+    return 1 if _process(cfg, indexes) else 0
 
 
 def round_cmd(cfg, cmd: str, branch_sha: str, main_sha: str) -> int:
