@@ -22,6 +22,9 @@
                          (an imported repo is never deleted: only its hands deploy key is removed)
   plan                   run the planner (feedback on stdin): idea -> spec -> PR hands/plan
   approve                merge the reviewed plan PR (sha-pinned), refresh the spec, start the build
+  setup                  scaffold the app repo with the project's framework/libs choices inside the firewalled
+                         container (--framework N --libs a,b store new choices first); commits and pushes
+                         `scaffold: ...` only when build, lint and typecheck pass; writes refs/setup.json
 hands all watchdog       (cron) watchdog for every project, and keep the dashboard running
 hands all usage          refresh plan usage (one tiny Haiku reply) -> ~/.config/hands/usage.json
 """
@@ -53,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("project")
     ap.add_argument("command", choices=["run", "start", "status", "check", "validate", "prompt", "stop", "ack",
                                         "mark-done", "reset-step", "watchdog", "create", "destroy", "plan", "approve", "usage",
-                                        "merge", "discard"])
+                                        "merge", "discard", "setup"])
     ap.add_argument("arg", nargs="?")
     ap.add_argument("--steps", type=int)
     ap.add_argument("--clear-model", action="store_true")
@@ -68,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ruleset", action="store_true")
     ap.add_argument("--branch-sha", default="", help="merge/discard: the change/C<n> head the page showed")
     ap.add_argument("--main-sha", default="", help="merge: the main head the page showed")
+    ap.add_argument("--framework", type=int, help="setup: 1 None, 2 Astro+Tailwind, 3 +AI kit, 4 Next.js+Tailwind, 5 +AI kit")
+    ap.add_argument("--libs", default=None, help="setup: comma-separated library ids (shadcn, gsap); '' for none")
     a = ap.parse_args(argv)
     if a.project == "all":
         if a.command == "usage":
@@ -100,6 +105,10 @@ def main(argv: list[str] | None = None) -> int:
         return planner.approve(cfg, a.arg or "", ack_shared=a.ack_shared, ack_domains=a.ack_domains, ack_tests=a.ack_tests)
     if a.command in ("merge", "discard"):
         return round_cmd(cfg, a.command, a.branch_sha, a.main_sha)
+    if a.command == "setup":
+        from . import setup
+        libs = None if a.libs is None else [x.strip() for x in a.libs.split(",") if x.strip()]
+        return setup.run(cfg, framework=a.framework, libs=libs)
     r = Runner(cfg)
     st = r.state
     cmd = a.command
@@ -132,6 +141,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     if cmd == "start":
+        from . import setup
+        blocked = setup.blocking_status(st.data)
+        if blocked:
+            print(f"setup status is {blocked}; finish the scaffold first: hands {cfg.name} setup")
+            return 1
         sess = f"hands-{cfg.name}"
         if subprocess.run(["tmux", "has-session", "-t", f"={sess}"], capture_output=True).returncode == 0:
             print(f"tmux session {sess} already running: tmux attach -t {sess}")
