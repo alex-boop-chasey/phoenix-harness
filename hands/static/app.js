@@ -75,6 +75,7 @@ function select(name) {
   $("#main").replaceChildren(el("p", { class: "muted" }, "Loading…"));
   viewerTitle.textContent = "File";
   viewer.textContent = "Pick an attempt file.";
+  lastDetail = null; lastLog = null; attemptsCache = { name: null, rows: [] };
   refresh(true);
   loadProjects().catch(() => {});      // tab highlight at once, not on the next tick
 }
@@ -310,11 +311,33 @@ async function action(name, act, label) {
   refresh(false);
 }
 
+// ---- delegated actions (0.6): every control inside #main carries data-act (+ data-arg/...) and is handled
+// here with the snapshot of the moment, never by a closure on the node (a patch keeps the node).
+let lastDetail = null;                 // the detail the page was last rendered from
+let lastLog = null;
+const actionOut = el("pre", { id: "action-out", class: "out", "data-self-managed": "" }, "");
+function dispatch(ev) {
+  const t = ev.target.closest("[data-act]");
+  if (!t) return;
+  const d = lastDetail, a = t.dataset;
+  if (t.tagName === "A") ev.preventDefault();
+  if (a.act === "run" && d) action(d.name, a.arg, a.label);
+  else if (a.act === "plan" && d) planAction(d.name, a.arg, a.label, a.head || "");
+  else if (a.act === "round" && d && d.round && d.round.merge) roundAction(d, a.arg, d.round.merge);
+  else if (a.act === "attempt-file" && d) { viewerTitle.textContent = `${a.att} / ${a.file}`; showFile(d.name, a.att, a.file, viewer); }
+  else if (a.act === "plan-file" && d) showPlanFile(d.name, a.arg);
+  else if (a.act === "focus-amend") { const x = document.getElementById("amendtext"); if (x) { x.scrollIntoView({ block: "center" }); x.focus(); } }
+  else if (a.act === "select") select(a.arg);
+  else if (a.act === "usage-refresh") refreshUsage(t);
+}
+// a node that owns its state is rendered once; later trees carry a keyed stand-in the patch leaves alone
+const keep = (node, key) => (node.isConnected ? el(node.tagName.toLowerCase(), { "data-key": key, "data-self-managed": "" }) : node);
+
 function statusSection(d) {
   const btn = (act, label, enabled) =>
-    el("button", { class: "act", on: { click: () => action(d.name, act, label) }, ...(enabled ? {} : { disabled: "" }) }, label);
+    el("button", { class: "act", "data-act": "run", "data-arg": act, "data-label": label, ...(enabled ? {} : { disabled: "" }) }, label);
   const cur = d.current ? `${d.current.step} attempt ${d.current.attempt} · ${d.current.phase}` : "—";
-  return el("section", {},
+  return el("section", { "data-key": "status" },
     el("div", { class: "row" }, el("h2", {}, d.name), badge(d.status),
       el("span", { class: "muted" }, d.alive ? "runner alive" : "runner not running"),
       d.stop ? el("span", { class: "badge s-stopped" }, "STOP requested") : null),
@@ -333,36 +356,36 @@ function statusSection(d) {
       btn("stop", "Stop at next safe point", d.alive && !d.stop),
       btn("ack", "Acknowledge escalation", !d.alive && d.status === "escalation"),
       btn("ack-clear-model", "Ack + clear model override", !d.alive && !!d.model_override)),
-    el("pre", { id: "action-out", class: "out" }, ""));
+    keep(actionOut, "action-out"));
 }
 
 function stepsSection(d) {
-  return el("section", {}, el("h2", {}, "Steps"),
+  return el("section", { "data-key": "steps" }, el("h2", {}, "Steps"),
     el("div", { class: "scroll" }, el("table", {},
       el("thead", {}, el("tr", {}, ["Step", "Title", "Status", "Att.", "Commit"].map((h) => el("th", {}, h)))),
       el("tbody", {}, d.steps.map((s) => [
-        el("tr", {}, el("td", {}, s.id), el("td", {}, s.title, s.type === "human" ? " (human)" : ""),
+        el("tr", { "data-key": `step:${s.id}` }, el("td", {}, s.id), el("td", {}, s.title, s.type === "human" ? " (human)" : ""),
           el("td", {}, badge(s.status)), el("td", { class: "num" }, s.attempts), el("td", {}, (s.commit || "").slice(0, 9))),
         s.status === "failed" && s.reasons.length
-          ? el("tr", {}, el("td", {}), el("td", { colspan: "4", class: "reason" }, s.reasons.slice(0, 4).join("\n"))) : null,
+          ? el("tr", { "data-key": `step:${s.id}:why` }, el("td", {}), el("td", { colspan: "4", class: "reason" }, s.reasons.slice(0, 4).join("\n"))) : null,
       ])))));
 }
 
 function metricsSection(d) {
   const rows = d.metrics.slice().reverse();
-  return el("section", {}, el("h2", {}, "Sessions"),
+  return el("section", { "data-key": "metrics" }, el("h2", {}, "Sessions"),
     el("div", { class: "scroll" }, el("table", {},
       el("thead", {}, el("tr", {}, ["Time", "Role", "Step", "Result", "Turns", "$", "Dur"].map((h) => el("th", {}, h)))),
-      el("tbody", {}, rows.map((m) => el("tr", {},
+      el("tbody", {}, rows.map((m) => el("tr", { "data-key": `metric:${m.ts}:${m.role}:${m.step}#${m.attempt}` },
         el("td", {}, localTs(m.ts)), el("td", {}, m.role), el("td", {}, `${m.step}#${m.attempt}`),
         el("td", {}, m.kind), el("td", { class: "num" }, m.turns), el("td", { class: "num" }, Number(m.cost_usd || 0).toFixed(2)),
         el("td", { class: "num" }, `${Math.round((m.duration_s || 0) / 60)}m`)))))));
 }
 
 function progressSection(d) {
-  return el("section", {}, el("h2", {}, "Progress notes"),
+  return el("section", { "data-key": "progress" }, el("h2", {}, "Progress notes"),
     el("div", { class: "scroll" }, d.progress.slice().reverse().map((p) =>
-      el("div", { class: "attempt" }, el("strong", {}, `${p.step} ${p.title || ""}`), " ",
+      el("div", { class: "attempt", "data-key": `note:${p.step}:${p.ts}` }, el("strong", {}, `${p.step} ${p.title || ""}`), " ",
         el("span", { class: "muted" }, `${(p.commit || "").slice(0, 9)} · ${localTs(p.ts)}`),
         el("div", {}, p.summary || ""),
         (p.risks || []).length ? el("div", { class: "muted" }, "Risks: " + p.risks.join("; ")) : null))));
@@ -374,18 +397,18 @@ async function showFile(name, att, f, target) {
   catch (e) { target.textContent = `failed: ${e.message}`; }
 }
 
-const viewer = el("pre", {}, "Pick an attempt file.");
-const viewerTitle = el("h2", {}, "File");
+const viewer = el("pre", { "data-self-managed": "" }, "Pick an attempt file.");
+const viewerTitle = el("h2", { "data-self-managed": "" }, "File");
 
+let attemptsCache = { name: null, rows: [] };      // the last attempts list, rendered synchronously
 function attemptsSection(name, rows) {
-  return el("section", {}, el("h2", {}, "Attempts"),
-    el("div", { class: "scroll" }, rows.map((a) => el("div", { class: "attempt" },
+  return el("section", { "data-key": "attempts" }, el("h2", {}, "Attempts"),
+    el("div", { class: "scroll" }, rows.map((a) => el("div", { class: "attempt", "data-key": `attempt:${a.name}` },
       el("div", { class: "row" }, el("strong", {}, a.name), el("span", { class: "muted" }, when(a.mtime)),
         a.verdict_pass === true ? badge("passed") : a.verdict_pass === false ? badge("failed") : null),
       a.reason ? el("div", { class: "reason" }, a.reason) : null,
       el("div", { class: "files" }, a.files.map((f) =>
-        el("button", { on: { click: () => { viewerTitle.textContent = `${a.name} / ${f.name}`; showFile(name, a.name, f.name, viewer); } } },
-          f.name)))))));
+        el("button", { "data-act": "attempt-file", "data-att": a.name, "data-file": f.name }, f.name)))))));
 }
 
 // ---- environment variables editor (step 07). Used by the New project form (rows kept locally until
@@ -559,7 +582,7 @@ function envPanel(key, name) {
   return envPanels[key];
 }
 function envSection(name) {
-  return el("section", { class: "envsec" }, el("h2", {}, "Environment"),
+  return el("section", { class: "envsec", "data-key": "env" }, el("h2", {}, "Environment"),
     el("p", { class: "muted" }, "Variables for this project's build containers (coder, acceptance tests, evaluator): test API keys, service URLs. Stored under ~/.config/hands/secrets/, never in the repos."),
     envPanel(name, name));
 }
@@ -648,7 +671,7 @@ async function refreshCreating() {
       el("div", { class: "row" }, el("h2", {}, `Creating ${slug}`), badge(c.state === "failed" ? "escalation" : c.state)),
       c.error ? el("p", { class: "reason" }, c.error) : null,
       el("pre", {}, c.lines.join("\n")),
-      done ? el("div", { class: "row out" }, el("button", { class: "act", on: { click: () => select(slug) } }, `Open ${slug}`)) : null,
+      done ? el("div", { class: "row out" }, el("button", { class: "act", "data-act": "select", "data-arg": slug }, `Open ${slug}`)) : null,
       c.state === "failed" ? el("p", { class: "muted" }, c.project_exists
         ? `Fix the cause, then on the VPS: hands ${slug} destroy --confirm ${slug}   and create it again.`
         : "Nothing was created. Fix the cause and create it again.") : null),
@@ -705,8 +728,8 @@ function roundsSection(d) {
   if (!rec && !hist.length) return null;
   const short = (x) => (x || "").slice(0, 9);
   const when = (ts) => ts ? ts.replace("T", " ").replace("Z", " UTC") : "";
-  const btn = (label, onclick, enabled, cls = "act") =>
-    el("button", { class: cls, on: { click: onclick }, ...(enabled ? {} : { disabled: "" }) }, label);
+  const btn = (label, act, enabled, cls = "act") =>
+    el("button", { class: cls, "data-act": "round", "data-arg": act, ...(enabled ? {} : { disabled: "" }) }, label);
   const stepList = (id) => d.steps.filter((s) => s.round === id);
   const icon = (s) => el("span", { class: s.status === "passed" ? "ic ok" : s.status === "failed" ? "ic bad" : "ic" },
     s.status === "passed" ? "✓" : s.status === "failed" ? "✗" : s.status === "discarded" ? "–" : "○");
@@ -736,10 +759,10 @@ function roundsSection(d) {
     const steps = live || (last && last.event === "merged") ? stepList(x.id) : (last && last.steps ? last.steps.map((id) => ({ id, status: "discarded" })) : []);
     const taps = live && rec.status === "open" ? el("div", { class: "row" },
       m.self ? el("span", { class: "muted" }, "Merged by Install update (Phoenix updates itself).")
-        : btn(`Merge change C${x.id} (${short(m.branch_sha)} → ${R.branch} ${short(m.main_sha)})`, () => roundAction(d, "merge", m), m.ready, "btn primary"),
-      btn(`Discard round C${x.id}`, () => roundAction(d, "discard", m), !d.alive && !!m.branch_sha, "btn danger"),
+        : btn(`Merge change C${x.id} (${short(m.branch_sha)} → ${R.branch} ${short(m.main_sha)})`, "merge", m.ready, "btn primary"),
+      btn(`Discard round C${x.id}`, "discard", !d.alive && !!m.branch_sha, "btn danger"),
       !m.ready && !m.self && m.why ? el("span", { class: "muted" }, m.why) : null) : null;
-    return el("div", { class: `round ${cls}` },
+    return el("div", { class: `round ${cls}`, "data-key": `round:${x.id}@${x.opened_at || ""}` },
       el("div", { class: "row" }, el("span", { class: `rtag ${cls}` }, `C${x.id}`), el("strong", {}, x.request ? x.request.split("\n")[0] : `Change round C${x.id}`),
         x.pr_url ? el("a", { href: x.pr_url, target: "_blank", rel: "noopener" }, `PR #${x.pr}`) : x.pr ? el("span", { class: "muted" }, `PR #${x.pr}`) : null),
       el("p", { class: "muted" }, state, x.base_sha ? ` · base ${short(x.base_sha)} (tag ${x.pre_tag || ""})` : ""),
@@ -747,10 +770,9 @@ function roundsSection(d) {
       live && rec.error ? el("p", { class: "reason" }, rec.error) : null,
       taps);
   });
-  const amendHint = el("p", { class: "muted" }, "Change something else: ", el("a", { href: "#", on: { click: (ev) => {
-    ev.preventDefault(); const t = document.getElementById("amendtext"); if (t) { t.scrollIntoView({ block: "center" }); t.focus(); } } } }, "Amend plan"),
+  const amendHint = el("p", { class: "muted" }, "Change something else: ", el("a", { href: "#", "data-act": "focus-amend" }, "Amend plan"),
     " (the planner appends a new round; passed steps are never rebuilt).");
-  return el("section", { class: "rounds" }, el("h2", {}, "Change rounds"), ...cards,
+  return el("section", { class: "rounds", "data-key": "rounds" }, el("h2", {}, "Change rounds"), ...cards,
     R.log ? el("details", {}, el("summary", {}, "Merge / discard log"), el("pre", { class: "log-small" }, R.log)) : null,
     d.managed ? amendHint : null);
 }
@@ -759,7 +781,7 @@ function setupSection(d) {
   const s = d.setup || {};
   const item = (ok, text, hint) => el("li", {}, el("span", { class: ok ? "s-passed" : "s-pending" }, ok ? "✓ " : "○ "), text,
     hint ? el("div", { class: "muted" }, hint) : null);
-  return el("section", {}, el("h2", {}, "Setup"),
+  return el("section", { "data-key": "setup" }, el("h2", {}, "Setup"),
     s.description ? el("p", {}, s.description) : null,
     s.repo_specs ? el("p", { class: "muted" }, `Repos: ${s.repo_specs} · ${s.repo_app}${s.imported ? " (existing repo, imported)" : ""}`) : null,
     el("ul", { class: "checklist" },
@@ -793,10 +815,10 @@ function stepBar(d) {
     if (s.status === "failed") return el("span", { class: "ic bad", "aria-label": "failed" }, "✗");
     return el("span", { class: "ic", "aria-label": "pending" }, "○");
   };
-  return el("aside", { class: "stepbar", "aria-label": "Build steps" },
+  return el("aside", { class: "stepbar", "aria-label": "Build steps", "data-key": "stepbar" },
     el("h2", {}, "Steps ", el("span", { class: "muted" }, `${d.passed}/${d.steps.length}`)),
     d.steps.length ? el("ol", {}, d.steps.map((s) => el("li", {
-      class: [s.id === cur ? "cur" : "", s.status].join(" "), title: (s.reasons || []).slice(0, 2).join("\n") },
+      class: [s.id === cur ? "cur" : "", s.status].join(" "), title: (s.reasons || []).slice(0, 2).join("\n"), "data-key": `rail:${s.id}` },
       icon(s),
       el("div", {}, el("div", {}, el("span", { class: "sid" }, s.id), " ", s.title || ""),
         s.id === cur ? el("div", { class: "muted small" },
@@ -805,8 +827,8 @@ function stepBar(d) {
         s.attempts > 0 && s.status !== "passed" ? el("div", { class: "muted small" }, `${s.attempts} attempt(s)`) : null)))) :
       el("p", { class: "muted" }, "No steps yet: the plan isn't approved."));
 }
-const planViewer = el("pre", {}, "Pick a file to view it.");
-const planViewerTitle = el("h3", {}, "File");
+const planViewer = el("pre", { "data-self-managed": "" }, "Pick a file to view it.");
+const planViewerTitle = el("h3", { "data-self-managed": "" }, "File");
 
 let sharedAck = false;
 let testsAck = false;
@@ -844,7 +866,7 @@ function amendForm(d, p, btn) {
       `(ids C${(p.round || 0) + (p.state === "approved" || !p.mode || p.mode === "fresh" ? 1 : 0)}-…). ` +
       "Existing steps stay as they are; steps already built cannot change. You review the amendment before anything is built."),
     el("label", { for: "amendtext" }, "Change request"), Object.assign(fb, { id: "amendtext" }),
-    el("div", { class: "row out" }, btn("Amend plan", () => planAction(d.name, "amend", "Start the planner on this change"), !d.alive)));
+    el("div", { class: "row out" }, btn("Amend plan", "amend", "Start the planner on this change", !d.alive)));
 }
 
 const valList = (v) => Array.isArray(v) ? (v.length ? v.join(", ") : "(none)") : (v || "(none)");
@@ -893,8 +915,9 @@ async function showPlanFile(name, path) {
 function planSection(d) {
   const p = d.plan || {};
   const st = p.state || "none";
-  const btn = (label, onclick, enabled = true) =>
-    el("button", { class: "act", on: { click: onclick }, ...(enabled ? {} : { disabled: "" }) }, label);
+  const btn = (label, act, confirmLabel, enabled = true, head = "") =>
+    el("button", { class: "act", "data-act": "plan", "data-arg": act, "data-label": confirmLabel, "data-head": head,
+      ...(enabled ? {} : { disabled: "" }) }, label);
   const fb = el("textarea", { rows: "4", maxlength: "8000", class: "feedback",
     placeholder: "What should change? (e.g. 'use Cloudflare Pages, drop the blog, add a pricing page')" });
   fb.value = planFeedback;
@@ -905,12 +928,12 @@ function planSection(d) {
   const amendable = d.setup && d.setup.spec_ready;        // steps.json on the spec branch: only amendments from here on
   if (st === "none") {
     if (amendable) {
-      return el("section", {}, head, p.error ? el("p", { class: "reason" }, p.error) : null, amendForm(d, p, btn),
+      return el("section", { "data-key": "plan" }, head, p.error ? el("p", { class: "reason" }, p.error) : null, amendForm(d, p, btn),
         log ? el("details", {}, el("summary", {}, "Planner log"), log) : null);
     }
-    return el("section", {}, head,
+    return el("section", { "data-key": "plan" }, head,
       el("p", { class: "muted" }, "The planner researches your idea and writes the spec: features, design, steps and acceptance tests. Takes roughly 10-40 minutes."),
-      el("div", { class: "row" }, btn("Plan it", () => planAction(d.name, "plan", "Start the planner"), !d.alive)), log);
+      el("div", { class: "row" }, btn("Plan it", "plan", "Start the planner", !d.alive)), log);
   }
   if (st === "planning" || p.running) {
     const a = p.activity || {};
@@ -918,7 +941,7 @@ function planSection(d) {
     const PH = ["Design (brainstorming)", "Task plan (writing-plans)", "Conventions", "Acceptance tests", "Machine spec", "Review summary"];
     const written = new Set(p.files_written || []);
     const phaseDone = (ph) => [...written].some((f) => phaseOf(f) === ph);
-    return el("section", {}, head,
+    return el("section", { "data-key": "plan" }, head,
       el("div", { class: "now" }, el("span", { class: "spinner", "aria-hidden": "true" }),
         el("div", {},
           el("div", { class: "now-title" }, a.phase ? `Working on: ${a.phase}` : "Planning…",
@@ -931,13 +954,13 @@ function planSection(d) {
   }
   const amend = p.mode === "amend";
   if (st === "approved") {
-    return el("section", {}, head,
+    return el("section", { "data-key": "plan" }, head,
       el("p", { class: "muted" }, `${amend ? `Amendment C${p.round}` : "Plan"} approved and merged${p.pr ? ` (PR #${p.pr})` : ""}. ${p.summary || ""}`),
       p.error ? el("p", { class: "reason" }, p.error) : null,
       amendForm(d, p, btn), log ? el("details", {}, el("summary", {}, "Planner log"), log) : null);
   }
   if (st === "failed" && amend) {
-    return el("section", {}, head, el("p", { class: "reason" }, p.error || "the amendment failed"),
+    return el("section", { "data-key": "plan" }, head, el("p", { class: "reason" }, p.error || "the amendment failed"),
       amendForm(d, p, btn), log ? el("details", {}, el("summary", {}, "Planner log"), log) : null);
   }
   const parts = [head];
@@ -981,21 +1004,21 @@ function planSection(d) {
   }
   if (p.files && p.files.length) {
     parts.push(el("div", { class: "files" }, el("strong", {}, "Files: "),
-      p.files.map((f) => el("button", { on: { click: () => showPlanFile(d.name, f) } }, f))));
-    parts.push(planViewerTitle, planViewer);
+      p.files.map((f) => el("button", { "data-act": "plan-file", "data-arg": f }, f))));
+    parts.push(keep(planViewerTitle, "plan-viewer-title"), keep(planViewer, "plan-viewer"));
   }
   if (p.plan_md) parts.push(el("h3", {}, "PLAN.md"), el("pre", {}, p.plan_md));
   parts.push(el("label", {}, st === "ready" ? "Feedback (optional, for a re-plan)" : "Feedback for the next attempt (optional)"), fb);
   const canApprove = !d.alive && (!(p.domains || []).length || domainAck) && (!amend || !(p.shared_changed || []).length || sharedAck)
     && (!amend || !(p.tests_changed || []).length || testsAck);
   parts.push(el("div", { class: "row out" },
-    st === "ready" ? btn(`Approve & build${amend ? " amendment" : ""} (${(p.head_sha || "").slice(0, 7)})`, () => planAction(d.name, "approve",
-      `Merge PR #${p.pr} at ${(p.head_sha || "").slice(0, 7)} exactly as reviewed and start building`, p.head_sha), canApprove) : null,
-    btn(st === "ready" ? "Re-plan with feedback" : "Plan again", () => planAction(d.name, amend ? "amend" : "plan",
-      st === "ready" ? `Discard this ${amend ? "amendment" : "plan"} and re-plan with your feedback` : "Run the planner again"),
+    st === "ready" ? btn(`Approve & build${amend ? " amendment" : ""} (${(p.head_sha || "").slice(0, 7)})`, "approve",
+      `Merge PR #${p.pr} at ${(p.head_sha || "").slice(0, 7)} exactly as reviewed and start building`, canApprove, p.head_sha || "") : null,
+    btn(st === "ready" ? "Re-plan with feedback" : "Plan again", amend ? "amend" : "plan",
+      st === "ready" ? `Discard this ${amend ? "amendment" : "plan"} and re-plan with your feedback` : "Run the planner again",
       !d.alive && (!amend || !!planFeedback.trim()))));
   if (log) parts.push(el("details", {}, el("summary", {}, "Planner log"), log));
-  return el("section", {}, ...parts);
+  return el("section", { "data-key": "plan" }, ...parts);
 }
 
 async function refresh(full) {
@@ -1007,35 +1030,46 @@ async function refresh(full) {
     const [d, log] = await Promise.all([api(`/api/p/${encodeURIComponent(name)}`), api(`/api/p/${encodeURIComponent(name)}/log?lines=300`)]);
     if (name !== current || mode !== "project") return;
     if (d.error) { $("#main").replaceChildren(el("section", { class: "reason" }, d.error)); return; }
-    const keepOut = document.getElementById("action-out")?.textContent || "";
     const logPre = document.getElementById("log");
     const atBottom = !logPre || logPre.scrollTop + logPre.clientHeight >= logPre.scrollHeight - 20;
-    const top = statusSection(d);
-    const logSec = el("section", {}, el("h2", {}, "Runner log"), el("pre", { id: "log" }, log.lines.join("\n")));
-    let att = document.getElementById("attempts-wrap");
-    if (full || !att) {
-      att = el("div", { id: "attempts-wrap" });
-      api(`/api/p/${encodeURIComponent(name)}/attempts`).then((rows) => att.replaceChildren(attemptsSection(name, rows))).catch(() => {});
+    if (full || attemptsCache.name !== name) {
+      api(`/api/p/${encodeURIComponent(name)}/attempts`).then((rows) => {
+        if (current !== name) return;
+        attemptsCache = { name, rows };
+        render(name, lastDetail, lastLog);            // same snapshot, now with the attempts
+      }).catch(() => {});
     }
-    const showSetup = d.managed || !(d.setup && d.setup.spec_ready);
-    const createSec = d.create && d.create.state !== "done"
-      ? el("section", {}, el("h2", {}, `Creation: ${d.create.state}`), d.create.error ? el("p", { class: "reason" }, d.create.error) : null,
-        el("pre", {}, d.create.lines.join("\n"))) : null;
-    const content = el("div", { class: "content" }, ...[top, createSec,
-      d.managed ? planSection(d) : null,
-      roundsSection(d),
-      showSetup ? setupSection(d) : null,
-      envSection(name),
-      el("div", { class: "grid2" }, stepsSection(d), metricsSection(d)), logSec,
-      el("div", { class: "grid2" }, att, progressSection(d)), el("section", {}, viewerTitle, viewer)].filter(Boolean));
-    $("#main").replaceChildren(el("div", { class: "layout" }, content, stepBar(d)));
-    document.getElementById("action-out").textContent = keepOut;
+    lastDetail = d; lastLog = log;
+    render(name, d, log);
     const np = document.getElementById("log");
-    if (atBottom) np.scrollTop = np.scrollHeight;
+    if (atBottom && np) np.scrollTop = np.scrollHeight;
     $("#clock").textContent = `updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {
     $("#clock").textContent = `update failed: ${e.message}`;
   }
+}
+
+// Build the page tree for one snapshot and patch it into #main (the first paint replaces "Loading…").
+function render(name, d, log) {
+  if (!d) return;
+  const att = el("div", { id: "attempts-wrap" }, attemptsCache.name === name ? attemptsSection(name, attemptsCache.rows) : null);
+  const logSec = el("section", { "data-key": "log" }, el("h2", {}, "Runner log"), el("pre", { id: "log" }, ((log && log.lines) || []).join("\n")));
+  const showSetup = d.managed || !(d.setup && d.setup.spec_ready);
+  const createSec = d.create && d.create.state !== "done"
+    ? el("section", { "data-key": "create" }, el("h2", {}, `Creation: ${d.create.state}`), d.create.error ? el("p", { class: "reason" }, d.create.error) : null,
+      el("pre", {}, d.create.lines.join("\n"))) : null;
+  const content = el("div", { class: "content" }, ...[statusSection(d), createSec,
+    d.managed ? planSection(d) : null,
+    roundsSection(d),
+    showSetup ? setupSection(d) : null,
+    envSection(name),
+    el("div", { class: "grid2" }, stepsSection(d), metricsSection(d)), logSec,
+    el("div", { class: "grid2" }, att, progressSection(d)),
+    el("section", { "data-key": "viewer" }, keep(viewerTitle, "viewer-title"), keep(viewer, "viewer-pre"))].filter(Boolean));
+  const next = el("div", { class: "layout" }, content, stepBar(d));
+  const live = $("#main").firstElementChild;
+  if (live && live.classList.contains("layout")) hands.render.patch(live, next);
+  else $("#main").replaceChildren(next);
 }
 
 function until(ts) {
@@ -1086,7 +1120,7 @@ async function loadUsage() {
   try {
     const u = await api("/api/usage");
     const old = !u.at || (u.now || Date.now() / 1000) - u.at > 3 * 3600;
-    const btn = el("button", { class: "linkbtn", title: "Refresh usage (one tiny Haiku reply)", on: { click: () => refreshUsage(btn) } },
+    const btn = el("button", { class: "linkbtn", title: "Refresh usage (one tiny Haiku reply)", "data-act": "usage-refresh" },
       u.refreshing ? "…" : "↻");
     const note = u.stale && u.at ? `stale · as of ${new Date(u.at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
       : u.at ? `as of ${new Date(u.at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "no usage data yet";
@@ -1150,6 +1184,7 @@ function initShell() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   initShell();
+  document.addEventListener("click", dispatch);
   let saved = null;
   try { saved = localStorage.getItem("hands.project"); } catch (e) { saved = null; }
   current = saved;

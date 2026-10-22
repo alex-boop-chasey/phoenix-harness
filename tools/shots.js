@@ -370,6 +370,29 @@ async function capture(context, name, width, theme) {
       await waitBuilder(page);
       await page.locator('#tabs .tab[aria-selected="true"] .x').click();
       await page.locator("dialog.dialog[open]").waitFor({ timeout: 5000 });
+    } else if (name === "scroll-keep") {
+      // 0.6: a scrolled panel stays where the user left it across refreshes (the page is patched in place)
+      await selectProject(page, "landing");                 // plan ready: the step table is tall enough to scroll
+      await page.locator('#main section[data-key="plan"] .scroll').waitFor({ timeout: 10000 });
+      const picked = await page.evaluate(() => {
+        // make every panel short so each one scrolls (a constructed sheet: the CSP allows no style attributes)
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync("#main .scroll, #main pre { max-height: 60px !important; }");
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+        const all = [...document.querySelectorAll("#main .scroll, #main pre")];
+        const idx = all.findIndex((b) => b.scrollHeight > b.clientHeight + 100);
+        if (idx < 0) return null;
+        all[idx].scrollTop = 100;
+        return { idx, top: all[idx].scrollTop };
+      });
+      if (!picked || picked.top < 80) throw new Error(`scroll-keep: no panel tall enough to scroll (got ${JSON.stringify(picked)})`);
+      const before = picked.top;
+      await page.evaluate(async () => { await refresh(false); await refresh(false); });   // two updates, as the live page gets
+      await page.waitForTimeout(300);
+      const after = await page.evaluate((i) => { const b = document.querySelectorAll("#main .scroll, #main pre")[i]; return b ? b.scrollTop : -1; }, picked.idx);
+      if (after !== before) throw new Error(`scroll-keep: Steps panel scrollTop ${before} -> ${after} after a refresh`);
+      const out = await page.locator("#action-out").count();
+      if (out !== 1) throw new Error(`scroll-keep: expected one #action-out, found ${out}`);
     } else if (name === "merge" || name === "discard") {
       // 0.5.8: the sha-pinned Merge / Discard confirmation on a round whose steps all passed (florist)
       await selectProject(page, "florist");

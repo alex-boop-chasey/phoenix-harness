@@ -165,3 +165,47 @@ class TestEvents(DashProject):
         self.socks.append(s)
         s.sendall(f"GET /api/p/t/events HTTP/1.1\r\nHost: 127.0.0.1:{self.d.port}\r\n\r\n".encode())
         self.assertIn(b" 401 ", self.read_until(s, b"\r\n\r\n"))
+
+
+STATIC = ROOT / "hands" / "static"
+
+
+def builders_js() -> str:
+    """app.js between statusSection and tick, minus the two components that own local form state
+    (envEditor, showNew): every other builder renders into #main and must use delegated data-act handlers,
+    never closures (a morph keeps old nodes, so a closure would keep old data)."""
+    app = (STATIC / "app.js").read_text()
+    body = app[app.index("function statusSection"):app.index("function tick()")]
+    for start, end in (("function envEditor", "const envPanels"), ("function showNew", "let creatingEnvError")):
+        body = body[:body.index(start)] + body[body.index(end):]
+    return body
+
+
+class TestMorphRendering(unittest.TestCase):
+    """Task 4: the builder page is patched in place (morphdom) and its controls dispatch through data-act."""
+
+    def test_app_js_has_no_inline_click_in_main_builders(self):
+        body = builders_js()
+        self.assertNotIn("on: {", body)
+        self.assertNotIn("addEventListener(\"click\"", body)
+        self.assertIn("data-act", body)
+
+    def test_render_patch_is_wired(self):
+        app = (STATIC / "app.js").read_text()
+        self.assertIn("hands.render.patch(", app)
+        render = (STATIC / "render.js").read_text()
+        self.assertIn("morphdom(", render)
+        self.assertIn("data-self-managed", render)
+
+    def test_morphdom_vendored_and_served(self):
+        html = (STATIC / "index.html").read_text()
+        self.assertLess(html.index("/vendor/morphdom-2.7.4.min.js"), html.index("/render.js"))
+        self.assertLess(html.index("/render.js"), html.index("/app.js"))
+        d = Dash()
+        try:
+            self.assertEqual(d.req("GET", "/vendor/morphdom-2.7.4.min.js")[0], 200)
+            self.assertEqual(d.req("GET", "/render.js")[0], 200)
+        finally:
+            d.close()
+        design = (ROOT / "docs" / "design.md").read_text()
+        self.assertIn("7de128d61778142f65dcd7ee02d6f2a2a2dfa086bf508d3083de4b42ebe464cc", design)

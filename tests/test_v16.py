@@ -123,7 +123,9 @@ class TestOtherFixes(unittest.TestCase):
     def test_vendored_xterm_pinned(self):
         pins = {"xterm.min.js": "4196e242ef1cf4c2adead8d97f4a772a69576076f70b095e004b4abbb049e7bf",
                 "addon-fit.min.js": "a6a7bbb33569f16aa3e18d71425e34d035fc89a0b7e8cba084f8855f91aa38f1",
-                "xterm.min.css": "f7f724aea2bb620a6482bfb8e4bdecfae1152b0c7facef55fbda61f3b6cfedb2"}
+                "xterm.min.css": "f7f724aea2bb620a6482bfb8e4bdecfae1152b0c7facef55fbda61f3b6cfedb2",
+                # morphdom 2.7.4 dist/morphdom-umd.min.js (MIT): in-place patching of the builder page (0.6)
+                "morphdom-2.7.4.min.js": "7de128d61778142f65dcd7ee02d6f2a2a2dfa086bf508d3083de4b42ebe464cc"}
         vend = ROOT / "hands" / "static" / "vendor"
         for name, sha in pins.items():
             self.assertEqual(hashlib.sha256((vend / name).read_bytes()).hexdigest(), sha, name)

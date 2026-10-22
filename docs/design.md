@@ -18,6 +18,16 @@ adopted by the document (CSSOM, not governed by `style-src`). Browsers without c
 stylesheets (Safari < 16.4) get a readable but uncoloured terminal and a note in the footer.
 Truecolor cells would need style attributes, so the session environment never sets `COLORTERM`.
 
+## Rendering (0.6)
+
+The Project builder page is patched in place: `hands/static/render.js` morphs each new tree (built with
+`el()` as before) into the live DOM with the vendored `hands/static/vendor/morphdom-2.7.4.min.js`
+(morphdom 2.7.4, MIT, `dist/morphdom-umd.min.js` from the npm tarball, sha256
+`7de128d61778142f65dcd7ee02d6f2a2a2dfa086bf508d3083de4b42ebe464cc`). Rules for builders: every section
+and list row carries a stable `data-key`; nodes that own their state (`data-self-managed`) are never
+touched by a patch; controls carry `data-act` (+ `data-arg`, `data-label`, …) and are handled by one
+delegated click listener on `#main` that reads the current snapshot, never by closures on the nodes.
+
 ## Direction: "Workbench"
 
 Quiet, warm-neutral surfaces, a single blue accent for selection and primary actions, semantic
