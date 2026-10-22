@@ -224,6 +224,22 @@ Missing log → `{"lines": []}`.
            "2026-10-16T08:10:15Z DONE: all steps passed"]}
 ```
 
+### GET /api/p/NAME/events  (since 0.6.0, Server-Sent Events)
+
+Change feed for one project. `200 text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`,
+`Connection: close`. The body starts with `retry: 5000`, then every time the project's **version** moves
+(checked every `SSE_POLL` = 1 s) an `event: change` with `data: {"version": "<v>"}`; a comment line `: ping`
+after `SSE_PING` = 15 s of silence; the stream ends after `SSE_LIFE` = 10 min (EventSource reconnects and
+the client resyncs). Carries no project data: the client fetches `/api/p/NAME` and `/log` with
+`If-None-Match`. At most `SSE_MAX` = 8 streams at once, all projects together; the 9th gets
+`503 {"error": "too many streams …"}` and the page falls back to polling. Same Host/login rules as every GET.
+
+**Version stamps (since 0.6.0):** `GET /api/p/NAME` and `/api/p/NAME/log` answer with `ETag: "<version>"`
+and a `version` field; `If-None-Match` equal to the current stamp → `304` with no body. The stamp is the
+newest mtime over the runner's state files (`state.json`, `activity.json`, `runner.log`, `metrics.jsonl`,
+`progress.jsonl`, `round.log`, `plan/*.json`, `plan/plan.log`) and the spec clone's `.git/HEAD`, plus the
+size of `runner.log`.
+
 ### GET /api/p/NAME/attempts
 
 Attempt directories (newest first, max 150), with servable files only:
@@ -480,7 +496,7 @@ lock `~/.config/hands/dashboard.lock`). The watchdog cron keeps it running via
 ## Route inventory (for the coverage check)
 
 `/` `/app.js` `/sessions.js` `/app.css` `/vendor/xterm.min.js` `/vendor/addon-fit.min.js` `/vendor/xterm.min.css` `/login` ·
-GET `/api/projects` `/api/usage` `/api/creating/<slug>` `/api/p/<name>` `/api/p/<name>/log`
+GET `/api/projects` `/api/usage` `/api/creating/<slug>` `/api/p/<name>` `/api/p/<name>/log` `/api/p/<name>/events`
 `/api/p/<name>/attempts` `/api/p/<name>/attempts/<attempt>/<file>` `/api/p/<name>/planfile`
 `/api/p/<name>/env` `/api/sessions` `/api/sessions/defaults` ·
 POST `/api/usage/refresh` `/api/new` `/api/p/<name>/action/<action>` (stop, start, ack,

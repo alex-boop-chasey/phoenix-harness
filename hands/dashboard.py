@@ -72,6 +72,10 @@ SESSION_TTL = 12 * 3600
 LOGIN_TTL = 300
 MAX_CONN = 32
 KEEPALIVE_IDLE = 120        # seconds a kept-alive connection may wait for its next request (step 17)
+SSE_MAX = 8                 # concurrent /api/p/<name>/events streams (one per open browser tab); MAX_CONN is 32
+SSE_POLL = 1.0              # seconds between version checks inside a stream
+SSE_PING = 15.0             # seconds of silence before a comment line keeps proxies and the browser awake
+SSE_LIFE = 600.0            # a stream ends after this; EventSource reconnects and resyncs
 LOG_MAX = 2_000_000         # dashboard.log is rotated to dashboard.log.1 at this size
 MAX_FILE = 2_000_000
 MAX_LOG_BYTES = 1_000_000
@@ -1080,6 +1084,8 @@ class Handler(BaseHTTPRequestHandler):
             name, rest = parts[2], parts[3:]
             if rest == ["env"]:
                 return self._json(200, env_listing(name))
+            if rest == ["events"]:
+                return self._events(name)
             if rest == [] or rest == ["log"]:
                 return self._versioned(name, lambda: detail(name) if rest == []
                                        else log_tail(name, int((q.get("lines") or ["300"])[0] or 300)))
@@ -1160,6 +1166,45 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, sessions.delete(sid))
         raise LookupError(path)
 
+    # -- change feed (0.6): Server-Sent Events. Host/login checked in _dispatch like every GET. The stream
+    # carries no project data, only "something changed" with the new version; the client then fetches
+    # with If-None-Match. One thread per stream, bounded by SSE_MAX; no body ever reads agent text.
+    def _events(self, name: str) -> None:
+        cfg = load_cfg(name)                                   # 404 for an unknown project before any header
+        if not self.server.acquire_sse():
+            return self._json(503, {"error": f"too many streams ({SSE_MAX} max); the page falls back to polling"})
+        try:
+            self.send_response(200)
+            for k, v in SECURITY_HEADERS.items():
+                self.send_header(k, v)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.connection.settimeout(None)
+            last = version(cfg)
+            self.wfile.write(b"retry: 5000\n\n")
+            self.wfile.flush()
+            t0 = quiet = time.monotonic()
+            while time.monotonic() - t0 < SSE_LIFE:
+                time.sleep(SSE_POLL)
+                now = version(cfg)
+                if now != last:
+                    last = now
+                    self.wfile.write(f"event: change\ndata: {json.dumps({'version': now})}\n\n".encode())
+                    self.wfile.flush()
+                    quiet = time.monotonic()
+                elif time.monotonic() - quiet >= SSE_PING:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    quiet = time.monotonic()
+        except (OSError, ValueError):                         # the browser went away: nothing to log
+            pass
+        finally:
+            self.server.release_sse()
+            self.close_connection = True
+
     # -- terminal WebSocket: every check runs before the 101 (Host and login already did in _dispatch)
     def _terminal(self, sid: str, ticket: str) -> None:
         if not self._same_origin():
@@ -1199,6 +1244,7 @@ class Server(ThreadingHTTPServer):
         self._lock = threading.Lock()
         self._slots = threading.BoundedSemaphore(MAX_CONN)
         self._terminals = 0
+        self._sse = 0
         self.public = publicaccess.Settings(log=log_line)      # ~/.config/hands/public.json, re-read on change
         self.keys = publicaccess.KeyCache()                     # Cloudflare Access signing keys (JWKS)
         super().__init__(("127.0.0.1", port), Handler)
@@ -1238,6 +1284,18 @@ class Server(ThreadingHTTPServer):
     def release_terminal(self) -> None:
         with self._lock:
             self._terminals = max(0, self._terminals - 1)
+
+    # -- SSE slots (SSE_MAX open change feeds, all projects together)
+    def acquire_sse(self) -> bool:
+        with self._lock:
+            if self._sse >= SSE_MAX:
+                return False
+            self._sse += 1
+            return True
+
+    def release_sse(self) -> None:
+        with self._lock:
+            self._sse = max(0, self._sse - 1)
 
     def terminals_open(self) -> int:
         with self._lock:
