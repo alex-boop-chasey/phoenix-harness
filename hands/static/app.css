@@ -204,6 +204,8 @@ tr.new td { background: var(--accent-soft); }
 .files button:hover { text-decoration: underline; }
 .attempt { border-bottom: 1px solid var(--line); padding: 8px 0; }
 .attempt:last-child { border-bottom: 0; }
+.attempt .tool-usage { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; margin: 2px 0; }
+.attempt .tool-usage-part { font-family: var(--mono); }
 details summary { cursor: pointer; margin: 8px 0; color: var(--ink-2); }
 
 /* ---------------------------------------------------------------- forms */

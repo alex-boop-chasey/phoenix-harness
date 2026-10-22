@@ -65,8 +65,10 @@ NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$")
 ATTEMPT = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,40}-\d{1,4}(?:\.\d{1,12})?$")
 ATTEMPT_FILE = re.compile(
     r"^(?:prompt\.md|eval-prompt\.md|reasons\.txt|verdict\.json|changes\.txt|diff\.patch|acceptance-files\.txt"
-    r"|accept-\d{1,3}\.log|coder\.stderr|export\.stderr|eval-\d\.stderr|spec-problem\.txt)$")
+    r"|accept-\d{1,3}\.log|coder\.stderr|export\.stderr|eval-\d\.stderr|spec-problem\.txt"
+    r"|tools\.json|eval-\d-tools\.json)$")
 # coder.json / eval-N.json are full session streams (every tool result, possibly secrets): not served.
+# tools.json / eval-N-tools.json (hands.toolusage) hold only tool, skill, plugin and MCP server names.
 # Everything served from attempts/ and runner.log is passed through the project's Redactor again at read
 # time (redactor_for), because the runner redacts attempt files only after each session ends.
 LOCAL_HOST = re.compile(r"^127\.0\.0\.1(?::\d{1,5})?$")
@@ -758,9 +760,21 @@ def attempts(name: str) -> list[dict]:
                 pass
         verdict = read_json(d / "verdict.json", None) if (d / "verdict.json").is_file() else None
         rows.append({"name": d.name, "mtime": int(d.stat().st_mtime), "files": files, "reason": reasons,
-                     "verdict_pass": verdict.get("pass") if isinstance(verdict, dict) else None})
+                     "verdict_pass": verdict.get("pass") if isinstance(verdict, dict) else None,
+                     "tool_usage": tool_usage(d / "tools.json", red)})
     rows.sort(key=lambda r: r["mtime"], reverse=True)
     return rows[:150]
+
+
+def tool_usage(path: Path, red) -> dict | None:
+    """The coder session's tools.json (hands.toolusage) for the attempt view, or None when absent/unreadable."""
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        t = json.loads(red.text(read_file(path, 200_000)[0]))
+    except (OSError, ValueError):
+        return None
+    return t if isinstance(t, dict) else None
 
 
 def attempt_file(name: str, attempt: str, fname: str) -> tuple[str, bool]:

@@ -448,8 +448,23 @@ function attemptsSection(name, rows) {
       el("div", { class: "row" }, el("strong", {}, a.name), el("span", { class: "muted" }, when(a.mtime)),
         a.verdict_pass === true ? badge("passed") : a.verdict_pass === false ? badge("failed") : null),
       a.reason ? el("div", { class: "reason" }, a.reason) : null,
+      toolUsageLine(a.tool_usage),
       el("div", { class: "files" }, a.files.map((f) =>
         el("button", { "data-act": "attempt-file", "data-att": a.name, "data-file": f.name }, f.name)))))));
+}
+
+// Skills, tools and MCP servers the coder session used (tools.json, written by hands.toolusage after the
+// session) plus a warning badge for required skills it skipped. All names are agent text: plain textContent.
+const counts = (o) => Object.entries(o && typeof o === "object" ? o : {}).map(([k, v]) => `${k}×${v}`).join(", ");
+function toolUsageLine(t) {
+  if (!t || typeof t !== "object") return null;
+  const skills = Array.isArray(t.skills) ? t.skills.join(", ") : "";
+  const missing = Array.isArray(t.missing) ? t.missing : [];
+  const parts = [["Skills", skills], ["Tools", counts(t.tools)], ["MCP", counts(t.mcp)]].filter(([, v]) => v);
+  if (!parts.length && !missing.length) return null;
+  return el("div", { class: "tool-usage small", "data-testid": "tool-usage" },
+    parts.map(([k, v]) => el("span", { class: "tool-usage-part" }, el("span", { class: "muted" }, `${k}: `), v)),
+    missing.length ? el("span", { class: "badge s-failed", title: "required skills not used" }, `missing: ${missing.join(", ")}`) : null);
 }
 
 // ---- environment variables editor (step 07). Used by the New project form (rows kept locally until

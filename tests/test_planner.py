@@ -178,6 +178,12 @@ class TestPlanner(tn.Base):
         self.assertIn("CLAUDE_CODE_DISABLE_WEB_FETCH=1", planner_run)
         self.assertTrue(any("dst=/home/node/.claude/skills" in a and a.endswith(",readonly") for a in planner_run))
         self.assertFalse(any("project.env" in x for x in planner_run))
+        # tools.json (hands.toolusage) sits next to the planner transcript
+        tools = json.loads((planner.pdir(self.cfg()) / "session-1-tools.json").read_text())
+        self.assertEqual(tools["role"], "planner")
+        self.assertEqual(tools["missing"], ["brainstorming", "writing-plans"])
+        self.assertIn("planner: required skills not used: brainstorming, writing-plans",
+                      (planner.pdir(self.cfg()) / "plan.log").read_text())
         # approve merges exactly that head, refreshes the spec, starts the build
         self.assertEqual(planner.approve(self.cfg()), 0)
         self.assertEqual(planner.read_state(self.cfg())["state"], "approved")

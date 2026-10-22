@@ -14,7 +14,7 @@ import signal
 import time
 from pathlib import Path
 
-from . import accview, activity, claude, docker, gitops, hooks, merge, projectenv, prompts, rounds, usage, workspace
+from . import accview, activity, claude, docker, gitops, hooks, merge, projectenv, prompts, rounds, toolusage, usage, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -226,6 +226,16 @@ class Runner:
         })
         self.log(f"{role} {step}#{attempt}: kind={res.kind} rc={res.rc} turns={res.turns} cost={res.cost:.3f} "
                  f"models={','.join(res.models)} dur={dur:.0f}s")
+
+    def record_tools(self, transcript: Path, role: str, dest: Path) -> None:
+        """tools.json (skills, plugins, tools, MCP, subagents + missing required skills) next to a transcript."""
+        try:
+            t = toolusage.write_tools_json(transcript, role, dest)
+        except OSError as e:
+            self.log(f"{role}: could not write {dest.name}: {e}")
+            return
+        if t["missing"]:
+            self.log(f"{role}: required skills not used: {', '.join(t['missing'])}")
 
     def free_gb(self) -> float:
         return shutil.disk_usage(self.cfg.state_dir).free / 1e9
@@ -562,6 +572,7 @@ class Runner:
         self.redact_files(adir / "coder.json", adir / "coder.stderr")     # before anything parses or serves them
         res = claude.parse(adir / "coder.json", rc, adir / "coder.stderr")
         self.record_session("coder", step.id, attempt, res, time.time() - t0)
+        self.record_tools(adir / "coder.json", "coder", adir / "tools.json")
 
         if res.kind in INFRA:
             workspace.rmtree(work)
@@ -756,6 +767,7 @@ class Runner:
             self.redact_files(adir / f"eval-{n}.json", adir / f"eval-{n}.stderr")
             res = claude.parse(adir / f"eval-{n}.json", rc, adir / f"eval-{n}.stderr")
             self.record_session("eval", step.id, attempt, res, time.time() - t0)
+            self.record_tools(adir / f"eval-{n}.json", "evaluator", adir / f"eval-{n}-tools.json")
             if res.kind in INFRA:
                 self.count_uncounted(step.id, res)
                 self.handle_infra(res)      # waits / switches model; does not use up a try

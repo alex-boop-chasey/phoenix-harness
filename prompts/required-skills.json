@@ -1,0 +1,14 @@
+{
+ "coder": [
+  "test-driven-development",
+  "verification-before-completion"
+ ],
+ "evaluator": [
+  "verification-before-completion"
+ ],
+ "planner": [
+  "brainstorming",
+  "writing-plans"
+ ],
+ "analyst": []
+}

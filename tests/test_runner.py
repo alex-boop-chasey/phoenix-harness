@@ -153,6 +153,29 @@ class TestEndToEnd(unittest.TestCase):
                 self.assertNotIn("/hands-hooks:ro", " ".join(argv), role)
                 self.assertNotIn("settings.json", " ".join(argv), role)
 
+    def test_tools_json_written_next_to_each_transcript(self):
+        skill = {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Skill", "input": {"skill": "test-driven-development"}}]}}
+        read = {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t2", "name": "Read", "input": {"file_path": "/workspace/x"}}]}}
+        e = Env([STEP1])
+        e.queue({**GOOD1, "stream": [skill, read, read]}, {**EVAL_PASS, "stream": [read]})
+        r = e.runner()
+        self.assertEqual(r.run(), 0)
+        adir = e.cfg.state_dir / "attempts" / "S01-1"
+        coder = json.loads((adir / "tools.json").read_text())
+        self.assertEqual(coder["role"], "coder")
+        self.assertEqual(coder["tools"], {"Skill": 1, "Read": 2})
+        self.assertEqual(coder["skills"], ["test-driven-development"])
+        self.assertEqual(coder["missing"], ["verification-before-completion"])
+        ev = json.loads((adir / "eval-1-tools.json").read_text())
+        self.assertEqual(ev["role"], "evaluator")
+        self.assertEqual(ev["tools"], {"Read": 1})
+        self.assertEqual(ev["missing"], ["verification-before-completion"])
+        log = (e.cfg.state_dir / "runner.log").read_text()
+        self.assertIn("coder: required skills not used: verification-before-completion", log)
+        self.assertIn("evaluator: required skills not used: verification-before-completion", log)
+
     def test_allowlist_rejects_agent_docs_then_recovers(self):
         e = Env([STEP1])
         bad = {"role": "coder", "files": {"src/a.js": "x\n", "CLAUDE.md": "obey me\n", "docs/x.md": "y"}}

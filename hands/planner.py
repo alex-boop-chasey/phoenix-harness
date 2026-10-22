@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from base64 import b64encode
 from pathlib import Path
 
-from . import accview, claude, codesummary, docker, gitops, rounds, workspace
+from . import accview, claude, codesummary, docker, gitops, rounds, toolusage, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -549,6 +549,14 @@ def run_session(cfg: Config, work: Path, prompt_file: Path, out: Path, err: Path
                                  stderr=err, timeout_s=cfg.planner_timeout_min * 60, append_stdout=True))
     res = claude.parse(out, rc, err)
     log(f"planner session ended: kind={res.kind} turns={res.turns} cost~${res.cost:.2f} {time.time() - t0:.0f}s")
+    tools = out.with_name(f"{out.stem}-tools.json")
+    try:
+        t = toolusage.write_tools_json(out, "planner", tools)
+    except OSError as e:
+        log(f"planner: could not write {tools.name}: {e}")
+    else:
+        if t["missing"]:
+            log(f"planner: required skills not used: {', '.join(t['missing'])}")
     return res
 
 
