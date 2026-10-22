@@ -200,7 +200,7 @@ class PlanAnalyst(TmpDirs):
 
     def test_plan_analyst_env_file_has_only_the_analyst_key(self):
         cap, out, env_dir = self.mkdir("cap"), self.mkdir("out"), self.mkdir("env")
-        secrets = self.write_secrets("ANTHROPIC_API_KEY=k0\n  ANALYST_ANTHROPIC_API_KEY=k1=x\n# c\nGITHUB_TOKEN=ghp_x\n")
+        secrets = self.write_secrets("ANTHROPIC_API_KEY=sk-main-0\n  ANALYST_ANTHROPIC_API_KEY=k1=x\n# c\nGITHUB_TOKEN=ghp_x\n")
         req = stylerefs.plan_analyst(cap, out, secrets, env_dir, REPO / "prompts" / "analyst.md")
         self.assertEqual(req.role, "analyst")
         self.assertEqual(req.network, "firewalled")
@@ -217,13 +217,13 @@ class PlanAnalyst(TmpDirs):
         self.assertEqual(d["command"][:2], ["claude", "-p"])
         self.assertEqual(d["image"], "hands")
         text = json.dumps(d)
-        for forbidden in ["k0", "ghp_x", "project.env", "/run/hands"]:
+        for forbidden in ["sk-main-0", "ghp_x", "project.env", "/run/hands"]:
             self.assertNotIn(forbidden, text)
         self.assertEqual(json.loads(json.dumps(d)), d)
 
     def test_plan_analyst_without_key_raises(self):
         cap, out, env_dir = self.mkdir("cap"), self.mkdir("out"), self.mkdir("env")
-        for text in ["ANTHROPIC_API_KEY=k0\n", "ANALYST_ANTHROPIC_API_KEY=\n", ""]:
+        for text in ["ANTHROPIC_API_KEY=sk-main-0\n", "ANALYST_ANTHROPIC_API_KEY=\n", ""]:
             with self.subTest(text=text):
                 with self.assertRaisesRegex(AnalystTokenMissing, "analyst token missing"):
                     stylerefs.plan_analyst(cap, out, self.write_secrets(text), env_dir, REPO / "prompts" / "analyst.md")
@@ -395,7 +395,7 @@ class Cli(TmpDirs):
         req = json.loads(r.stdout)
         self.assertEqual(req["role"], "analyst")
         self.assertEqual(Path(req["env_file"]).read_text(), "ANTHROPIC_API_KEY=k1\n")
-        secrets.write_text("ANTHROPIC_API_KEY=k0\n")
+        secrets.write_text("ANTHROPIC_API_KEY=sk-main-0\n")
         r = self.run_cli("plan-analyst", "--capture-dir", str(self.tmp), "--out", str(self.tmp), "--secrets", str(secrets),
                          "--env-dir", str(env_dir), "--prompt", "prompts/analyst.md", "--json")
         self.assertEqual(r.returncode, 4)

@@ -70,3 +70,57 @@ test("mockFromQuery reads refs and setup from the query string", () => {
   assert.equal(mockFromQuery("").setup.label, "None");
   assert.deepEqual(mockFromQuery("?refs=bogus,frozen&setup=bogus").style_refs.map((r) => r.status), ["frozen"]);
 });
+
+test("planChatLabel: Plan with Claude without a session, Resume afterwards", () => {
+  assert.equal(nf.planChatLabel("none"), "Plan with Claude");
+  assert.equal(nf.planChatLabel(undefined), "Plan with Claude");
+  for (const s of ["open", "brief_ready", "approved"]) assert.equal(nf.planChatLabel(s), "Resume planning chat");
+});
+
+test("planStatus needs a session id and a known status", () => {
+  assert.equal(nf.planStatus(null), "none");
+  assert.equal(nf.planStatus({ session_id: null, status: "open" }), "none");
+  assert.equal(nf.planStatus({ session_id: "x", status: "brief_ready" }), "brief_ready");
+  assert.equal(nf.planStatus({ session_id: "x", status: "bogus" }), "none");
+});
+
+test("shortSha is the first 12 hex chars of a sha256, empty otherwise", () => {
+  const sha = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+  assert.equal(nf.shortSha(sha), "9f86d081884c");
+  assert.equal(nf.shortSha(` ${sha.toUpperCase()} `), "9f86d081884c");
+  assert.equal(nf.shortSha("abc"), "");
+  assert.equal(nf.shortSha(null), "");
+});
+
+test("mockFromQuery maps state to plan_session", () => {
+  assert.equal(nf.planStatus(mockFromQuery("?state=none").plan_session), "none");
+  assert.equal(nf.planStatus(mockFromQuery("?state=open").plan_session), "open");
+  assert.equal(mockFromQuery("?state=open").plan_session.brief_sha256, null);
+  assert.equal(nf.shortSha(mockFromQuery("?state=brief_ready").plan_session.brief_sha256).length, 12);
+  assert.equal(nf.planStatus(mockFromQuery("?state=approved").plan_session), "approved");
+  assert.equal(nf.planStatus(mockFromQuery("?state=bogus").plan_session), "none");
+});
+
+test("toolUsageParts lists skills, tools with counts, MCP and plugins; null when empty", () => {
+  const u = nf.toolUsageParts({ skills: ["test-driven-development"], tools: { Read: 12, Edit: 4 }, mcp: { github: 2 }, plugins: ["superpowers"], missing: [] });
+  assert.deepEqual(u.parts, [["Skills", "test-driven-development"], ["Tools", "Read×12, Edit×4"], ["MCP", "github×2"], ["Plugins", "superpowers"]]);
+  assert.deepEqual(u.missing, []);
+  assert.deepEqual(nf.toolUsageParts({ missing: ["verification-before-completion"] }).missing, ["verification-before-completion"]);
+  assert.equal(nf.toolUsageParts({ skills: [], tools: {} }), null);
+  assert.equal(nf.toolUsageParts(null), null);
+});
+
+test("mockToolUsage: fixed data, missing=1 adds verification-before-completion", () => {
+  assert.deepEqual(nf.mockToolUsage("").missing, []);
+  assert.deepEqual(nf.mockToolUsage("?missing=1").missing, ["verification-before-completion"]);
+  assert.deepEqual(nf.mockToolUsage("").tools, { Read: 12, Edit: 4 });
+});
+
+test("visibleSessions hides hidden sessions unless show all is on or the row is selected", () => {
+  const rows = nf.mockSessions();
+  assert.deepEqual(nf.visibleSessions(rows, false).map((r) => r.title), ["shell"]);
+  assert.equal(nf.visibleSessions(rows, true).length, 2);
+  assert.equal(nf.visibleSessions(rows, false, rows[1].id).length, 2);
+  assert.deepEqual(nf.visibleSessions(null, true), []);
+  assert.equal(rows[1].project, "demo");
+});

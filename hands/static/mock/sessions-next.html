@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session manager · Phoenix Harness (mock)</title>
+<link rel="stylesheet" href="../app.css">
+<script src="../vendor/morphdom-2.7.4.min.js" defer></script>
+<script src="../render.js" defer></script>
+<script src="../nextform.js" defer></script>
+<script src="sessions-next.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <div class="content">
+    <main class="page" aria-label="Session manager">
+      <div class="page-head"><h1>Session manager</h1><span class="muted">Persistent Claude terminals on this VPS</span></div>
+      <div class="sessions">
+        <section class="card" aria-labelledby="s-list-h">
+          <div class="card-head"><h2 id="s-list-h">Sessions</h2><span id="s-count" class="muted small"></span>
+            <label class="check small" for="s-show-all"><input type="checkbox" id="s-show-all" data-testid="show-all-sessions"><span>Show all</span></label></div>
+          <div id="slist" class="slist" role="list" aria-label="Sessions"><p class="muted small">Loading…</p></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>

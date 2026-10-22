@@ -356,6 +356,7 @@ function dispatch(ev) {
   else if (a.act === "style-ref-remove" && d) removeRef(d.name, a.arg);
   else if (a.act === "setup-retry" && d) refAction(d.name, "/setup/retry", "POST", "Retrying setup…");
   else if (a.act === "plan-chat") planChat(a.arg, t);
+  else if (a.act === "brief-approve" && d) approveBrief(d.name, a.arg, t);
 }
 function openPanel(key) {
   const p = document.querySelector(`details.panel[data-panel="${key}"]`);
@@ -422,6 +423,26 @@ async function planChat(name, btn) {
     location.hash = `#/sessions/${encodeURIComponent(r.session_id)}`;
   } catch (e) { toast(`Planning chat refused: ${e.message}`, true); }
   if (btn) btn.disabled = false;
+}
+function planChatHint(ps) {
+  const s = hands.nextform.planStatus(ps);
+  return s === "none" ? "" : s === "brief_ready" ? "brief ready" : s;
+}
+// Hash-pinned approval: the button carries the hash the page shows; the server refuses any other brief.
+async function approveBrief(name, sha, btn) {
+  const short = hands.nextform.shortSha(sha);
+  if (!short) { toast("No brief hash to approve; refresh the page.", true); return; }
+  if (!(await confirmDialog({ title: `Approve brief ${short} for ${name}?`,
+    body: "Copies exactly this brief and its coverage table into the spec repo. Planning starts only when you press Start.",
+    ok: "Approve brief", okClass: "btn primary" }))) return;
+  if (btn) btn.disabled = true;
+  try {
+    await api(`/api/projects/${encodeURIComponent(name)}/plan-chat/approve`, { method: "POST",
+      headers: { "X-Hands": "1", "Content-Type": "application/json" }, body: JSON.stringify({ sha256: sha }) });
+    toast(`Brief ${short} approved.`);
+  } catch (e) { toast(`Approval refused: ${e.message}`, true); }
+  if (btn) btn.disabled = false;
+  refresh(false);
 }
 
 const PHASES = { coder: "coding", check: "checking changes", acceptance: "running checks", evaluator: "independent review" };
@@ -513,23 +534,9 @@ function attemptsSection(name, rows) {
       el("div", { class: "row" }, el("strong", {}, a.name), el("span", { class: "muted" }, when(a.mtime)),
         a.verdict_pass === true ? badge("passed") : a.verdict_pass === false ? badge("failed") : null),
       a.reason ? el("div", { class: "reason" }, a.reason) : null,
-      toolUsageLine(a.tool_usage),
+      hands.nextform.toolUsage(document, a.tool_usage),
       el("div", { class: "files" }, a.files.map((f) =>
         el("button", { "data-act": "attempt-file", "data-att": a.name, "data-file": f.name }, f.name)))))));
-}
-
-// Skills, tools and MCP servers the coder session used (tools.json, written by hands.toolusage after the
-// session) plus a warning badge for required skills it skipped. All names are agent text: plain textContent.
-const counts = (o) => Object.entries(o && typeof o === "object" ? o : {}).map(([k, v]) => `${k}×${v}`).join(", ");
-function toolUsageLine(t) {
-  if (!t || typeof t !== "object") return null;
-  const skills = Array.isArray(t.skills) ? t.skills.join(", ") : "";
-  const missing = Array.isArray(t.missing) ? t.missing : [];
-  const parts = [["Skills", skills], ["Tools", counts(t.tools)], ["MCP", counts(t.mcp)]].filter(([, v]) => v);
-  if (!parts.length && !missing.length) return null;
-  return el("div", { class: "tool-usage small", "data-testid": "tool-usage" },
-    parts.map(([k, v]) => el("span", { class: "tool-usage-part" }, el("span", { class: "muted" }, `${k}: `), v)),
-    missing.length ? el("span", { class: "badge s-failed", title: "required skills not used" }, `missing: ${missing.join(", ")}`) : null);
 }
 
 // ---- environment variables editor (step 07). Used by the New project form (rows kept locally until
@@ -1171,6 +1178,7 @@ const PANEL_DEFAULTS = {
   setup: (d) => !(d.setup && d.setup.spec_ready),
   env: () => false, steps: () => true, metrics: () => false, log: (d) => !!d.alive, attempts: () => false,
   progress: () => false, viewer: () => false, create: () => true,
+  planchat: (d) => !!(d.next && d.next.plan_session && ["open", "brief_ready"].includes(d.next.plan_session.status)),
   stylerefs: (d) => !!(d.next && ((d.next.style_refs || []).some((r) => r.status !== "frozen") || (d.next.setup && d.next.setup.status === "failed"))),
 };
 function panelsSaved(name) {
@@ -1212,6 +1220,8 @@ function render(name, d, log) {
     panel(name, "create", "Creation", d, createSec),
     d.managed ? panel(name, "plan", "Plan", d, planSection(d), p.running ? "planning…" : p.state && p.state !== "none" ? p.state : "") : null,
     panel(name, "rounds", "Change rounds", d, roundsSection(d)),
+    d.next && !d.next.error ? panel(name, "planchat", "Plan with Claude", d, hands.nextform.planChatPanel(document, name, d.next.plan_session),
+      planChatHint(d.next.plan_session)) : null,
     d.next && !d.next.error ? panel(name, "stylerefs", "Style refs & setup", d, hands.nextform.styleRefsPanel(document, d.next, addRefsNode(name)),
       styleRefsHint(d.next)) : null,
     showSetup ? panel(name, "setup", "Setup", d, setupSection(d)) : null,

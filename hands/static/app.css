@@ -435,3 +435,9 @@ select.input { width: auto; max-width: 100%; }
 .s-queued { color: var(--ink-2); }
 .s-capturing, .s-analysing { color: var(--accent); } .badge.s-capturing, .badge.s-analysing { background: var(--accent-soft); }
 .s-frozen { color: var(--ok); } .badge.s-frozen { background: var(--ok-soft); }
+.planchat { display: grid; gap: var(--sp-2); }
+.planchat p { margin: 0; }
+.briefline { align-items: center; }
+.s-project { color: var(--accent); } .badge.s-project { background: var(--accent-soft); }
+.badge.s-project::before { display: none; }
+.sitem .sname .badge.s-project { font-family: var(--mono); }

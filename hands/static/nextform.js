@@ -1,5 +1,6 @@
 // Style references and project setup (Phase 2): the new-project form fields (style URL list, framework select,
-// library checkboxes) and the project page's style-refs panel. Pure helpers plus DOM builders that take the
+// library checkboxes), the project page's style-refs panel, the planning chat panel (Plan with Claude, brief hash
+// and approval), an attempt's tool usage and the Session manager rows. Pure helpers plus DOM builders that take the
 // document, so the dashboard (app.js) and the static mock pages build the same nodes. Every URL, status and
 // reason is set with textContent. Controls on the project page carry data-act for app.js's delegated
 // dispatcher; the form fields own their own listeners (the form is rendered once, never patched).
@@ -54,8 +55,33 @@
   const reasonText = (reason) => REASONS[reason] || REASONS.invalid;
   const frameworkLabel = (n) => FRAMEWORK_LABELS[Number(n) - 1] || "";
 
-  // Static data for mock/project-next.html: ?refs=<comma statuses>&setup=<status>[&framework=<1-5>]. Unknown
-  // statuses are dropped; other parameters (state, missing: rendered by later pages) are ignored here.
+  // ---- planning chat: plan_session {session_id, status: none|open|brief_ready|approved, brief_sha256}
+  const PLAN_STATUSES = ["none", "open", "brief_ready", "approved"];
+  const SHA_RE = /^[0-9a-f]{64}$/;
+  const planStatus = (ps) => (ps && ps.session_id && PLAN_STATUSES.includes(ps.status) ? ps.status : "none");
+  const planChatLabel = (status) => (!status || status === "none" ? "Plan with Claude" : "Resume planning chat");
+  const fullSha = (sha) => { const s = typeof sha === "string" ? sha.trim().toLowerCase() : ""; return SHA_RE.test(s) ? s : ""; };
+  const shortSha = (sha) => fullSha(sha).slice(0, 12);
+
+  // ---- tool usage (tools.json from hands.toolusage): {parts: [[label, text]], missing} or null when empty
+  const counts = (o) => Object.entries(o && typeof o === "object" ? o : {}).map(([k, v]) => `${k}×${v}`).join(", ");
+  const names = (a) => (Array.isArray(a) ? a.filter((x) => typeof x === "string") : []);
+  function toolUsageParts(t) {
+    if (!t || typeof t !== "object") return null;
+    const parts = [["Skills", names(t.skills).join(", ")], ["Tools", counts(t.tools)], ["MCP", counts(t.mcp)],
+      ["Plugins", names(t.plugins).join(", ")]].filter(([, v]) => v);
+    const missing = names(t.missing);
+    return parts.length || missing.length ? { parts, missing } : null;
+  }
+
+  // ---- Session manager: hidden sessions (project planning chats) are listed only with "show all" on, or while
+  // they are the selected session (the project page links straight to its chat).
+  const visibleSessions = (rows, showAll, keepId) =>
+    (Array.isArray(rows) ? rows : []).filter((r) => r && (showAll || r.hidden !== true || (!!keepId && r.id === keepId)));
+
+  // Static data for mock/project-next.html: ?refs=<comma statuses>&setup=<status>[&framework=<1-5>]
+  // [&state=<plan_session status>]. Unknown statuses are dropped.
+  const MOCK_SHA = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
   function mockFromQuery(search) {
     const q = new URLSearchParams(search || "");
     const statuses = (q.get("refs") || "").split(",").map((x) => x.trim()).filter((x) => REF_STATUSES.includes(x));
@@ -65,7 +91,25 @@
     }));
     const status = SETUP_STATUSES.includes(q.get("setup")) ? q.get("setup") : "none";
     const fw = Number(q.get("framework")) || (status === "none" ? 1 : 2);
-    return { style_refs, setup: { framework: fw, libs: [], status, label: frameworkLabel(fw) }, plan_session: null, gate: [] };
+    const ps = PLAN_STATUSES.includes(q.get("state")) ? q.get("state") : "none";
+    const plan_session = ps === "none" ? { session_id: null, status: "none", brief_sha256: null, updated: null }
+      : { session_id: "4b1f2c3d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", status: ps, brief_sha256: ps === "open" ? null : MOCK_SHA,
+        updated: "2026-01-01T00:00:00Z" };
+    return { style_refs, setup: { framework: fw, libs: [], status, label: frameworkLabel(fw) }, plan_session, gate: [] };
+  }
+  // The mock attempt's fixed tool usage; ?missing=1 adds a skipped required skill.
+  function mockToolUsage(search) {
+    const q = new URLSearchParams(search || "");
+    return { skills: ["test-driven-development"], tools: { Read: 12, Edit: 4 }, mcp: {}, plugins: [],
+      missing: q.get("missing") === "1" ? ["verification-before-completion"] : [] };
+  }
+  // mock/sessions-next.html: one plain session and one hidden planning chat of project `demo`.
+  function mockSessions() {
+    return [
+      { id: "0f3c1a2b-0000-4000-8000-000000000001", title: "shell", cwd: "~/work", live: true, hidden: false, project: "", role: "" },
+      { id: "4b1f2c3d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", title: "Planning chat", cwd: "~/.local/state/hands/demo/plan-chat/brief",
+        live: false, hidden: true, project: "demo", role: "plan-chat" },
+    ];
   }
 
   // ---- DOM builders
@@ -177,8 +221,67 @@
         status === "failed" ? btn("Retry setup", "setup-retry", "", "setup-retry") : null));
   }
 
-  const api = { FRAMEWORK_LABELS, LIBS, MAX_STYLE_URLS, MAX_URL, REF_STATUSES, SETUP_STATUSES,
-    validateStyleUrl, styleUrlsFromForm, reasonText, frameworkLabel, mockFromQuery, styleUrlList, setupFields, styleRefsPanel };
+  // The project page's planning chat panel: the plan-chat button (data-act plan-chat); with a ready brief its short
+  // hash and the approve button, which carries the full hash behind the short one it shows (data-act brief-approve);
+  // once approved a badge instead of the button.
+  function planChatPanel(doc, slug, ps) {
+    const status = planStatus(ps);
+    const sha = fullSha(ps && ps.brief_sha256);
+    const short = sha.slice(0, 12);
+    let brief = null;
+    if (status === "brief_ready") {
+      brief = sha
+        ? h(doc, "div", { class: "row briefline", "data-key": "brief-line" },
+          h(doc, "span", {}, "Brief ready · ", h(doc, "code", { class: "mono", "data-testid": "brief-sha", title: sha }, short)),
+          h(doc, "button", { class: "btn sm primary", type: "button", "data-act": "brief-approve", "data-arg": sha,
+            "data-testid": "brief-approve" }, "Approve brief"))
+        : h(doc, "p", { class: "muted small" }, "The brief is written but its hash could not be read; refresh the page.");
+    } else if (status === "approved") {
+      brief = h(doc, "div", { class: "row briefline", "data-key": "brief-line" },
+        h(doc, "span", { class: "badge s-done", "data-testid": "brief-approved", title: sha }, short ? `brief approved · ${short}` : "brief approved"));
+    }
+    const hint = {
+      none: "Talk the idea through with Claude: it asks one question at a time and writes the brief.",
+      open: "The chat is open. When Claude has written brief.md and coverage.md, the brief shows up here for approval.",
+      brief_ready: "Read the brief in the chat, then approve exactly this version (the hash below) into the spec repo.",
+      approved: "The brief is in the spec repo. Resume the chat for a change round; press Start to plan as usual.",
+    }[status];
+    return h(doc, "section", { class: "planchat", "data-key": "plan-chat", "data-testid": "plan-chat-panel" },
+      h(doc, "p", { class: "muted" }, hint),
+      h(doc, "div", { class: "row" }, h(doc, "button", { class: "btn sm", type: "button", "data-act": "plan-chat", "data-arg": slug,
+        "data-testid": "plan-chat-button" }, planChatLabel(status))),
+      brief);
+  }
+
+  // An attempt's tool usage line (Skills, Tools, MCP, Plugins) and a warning badge naming the required skills the
+  // session did not use. Null when tools.json is absent or empty. All names are agent text: textContent only.
+  function toolUsage(doc, t) {
+    const u = toolUsageParts(t);
+    if (!u) return null;
+    return h(doc, "div", { class: "tool-usage small", "data-testid": "tool-usage" },
+      u.parts.map(([k, v]) => h(doc, "span", { class: "tool-usage-part" }, h(doc, "span", { class: "muted" }, `${k}: `), v)),
+      u.missing.length ? h(doc, "span", { class: "badge s-failed", title: "required skills not used", "data-testid": "missing-skills" },
+        `missing: ${u.missing.join(", ")}`) : null);
+  }
+
+  // One Session manager list row. opts: {meta, when, current, onClick}; project-linked rows name the project.
+  function sessionItem(doc, r, opts) {
+    const o = opts || {};
+    const name = r.title || "New session";
+    return h(doc, "button", { class: "sitem", type: "button", role: "listitem", "data-id": r.id, "data-testid": "session-row",
+      title: `${name} · ${r.cwd || ""}`, "aria-current": String(!!o.current), ...(o.onClick ? { on: { click: o.onClick } } : {}) },
+      h(doc, "span", { class: "dot" + (r.live ? " live" : ""), "aria-hidden": "true" }),
+      h(doc, "span", { class: "smain" }, h(doc, "span", { class: "sname" }, name,
+        r.project ? h(doc, "span", { class: "badge s-project", "data-testid": "session-project", title: `planning chat of ${r.project}` }, r.project) : null,
+        r.telegram ? h(doc, "span", { class: "badge s-telegram" }, "Telegram") : null),
+      h(doc, "span", { class: "smeta" }, o.meta || "")),
+      h(doc, "span", { class: "when" + (r.live ? " live" : "") }, o.when || ""));
+  }
+
+  const api = { FRAMEWORK_LABELS, LIBS, MAX_STYLE_URLS, MAX_URL, REF_STATUSES, SETUP_STATUSES, PLAN_STATUSES,
+    validateStyleUrl, styleUrlsFromForm, reasonText, frameworkLabel, mockFromQuery, mockToolUsage, mockSessions,
+    planStatus, planChatLabel, shortSha, toolUsageParts, visibleSessions,
+    styleUrlList, setupFields, styleRefsPanel, planChatPanel, toolUsage, sessionItem };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root && root.document) {
     root.hands = root.hands || {};

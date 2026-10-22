@@ -137,24 +137,23 @@ const Sessions = (() => {
   }
 
   // ---- list
+  // Hidden sessions (project planning chats, opened from the project page) are listed only with "Show all" on.
   function renderList() {
     const list = q("slist");
     const live = S.rows.filter((r) => r.live).length;
     const onTg = S.rows.find((r) => r.live && r.telegram);
-    q("s-count").textContent = S.rows.length ? `${live} running · ${S.rows.length - live} stopped${onTg ? " · 1 on Telegram" : ""}` : "";
-    if (!S.rows.length) {
+    const shown = hands.nextform.visibleSessions(S.rows, q("s-show-all").checked, S.selected);
+    const hidden = S.rows.length - shown.length;
+    q("s-count").textContent = S.rows.length ? `${live} running · ${S.rows.length - live} stopped${onTg ? " · 1 on Telegram" : ""}${hidden ? ` · ${hidden} hidden` : ""}` : "";
+    if (!shown.length) {
       list.replaceChildren(el("div", { class: "empty" }, el("span", { class: "glyph" }, "▣"), el("strong", {}, "No sessions yet"),
         el("span", { class: "small" }, "Start a persistent Claude terminal in a folder under your home. It keeps running when you close the browser."),
         el("button", { class: "btn primary sm", type: "button", on: { click: newSession } }, "New session")));
       return;
     }
-    list.replaceChildren(...S.rows.map((r) => el("button", {
-      class: "sitem", type: "button", role: "listitem", "data-id": r.id, title: `${title(r)} · ${r.cwd}`,
-      "aria-current": String(r.id === S.selected), on: { click: () => select(r.id) } },
-      el("span", { class: "dot" + (r.live ? " live" : ""), "aria-hidden": "true" }),
-      el("span", { class: "smain" }, el("span", { class: "sname" }, title(r), r.telegram ? el("span", { class: "badge s-telegram" }, "Telegram") : null),
-        el("span", { class: "smeta" }, `${shortCwd(r.cwd)}${r.live ? "" : " · stopped"}${r.viewers ? ` · ${r.viewers} viewer${r.viewers > 1 ? "s" : ""}` : ""}`)),
-      el("span", { class: "when" + (r.live ? " live" : "") }, r.live ? "live" : agoTs(r.last_active)))));
+    list.replaceChildren(...shown.map((r) => hands.nextform.sessionItem(document, r, {
+      meta: `${shortCwd(r.cwd)}${r.live ? "" : " · stopped"}${r.viewers ? ` · ${r.viewers} viewer${r.viewers > 1 ? "s" : ""}` : ""}`,
+      when: r.live ? "live" : agoTs(r.last_active), current: r.id === S.selected, onClick: () => select(r.id) })));
   }
   let loading = null;
   function load() { return loading || (loading = loadNow().finally(() => { loading = null; })); }
@@ -391,6 +390,7 @@ const Sessions = (() => {
     q("s-stop").addEventListener("click", stop);
     q("s-telegram").addEventListener("click", toggleTelegram);
     q("s-delete").addEventListener("click", del);
+    q("s-show-all").addEventListener("change", renderList);
     api("/api/sessions/defaults").then((d) => { S.defaults = d; renderList(); renderHead(); }).catch(() => {});
   }
   async function show(id) {
