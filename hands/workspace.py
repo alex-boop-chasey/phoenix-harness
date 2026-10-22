@@ -5,6 +5,7 @@ import os
 import posixpath
 import shutil
 import stat
+import sys
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,7 +64,10 @@ def rmtree(p: Path) -> None:
             pass
         func(path)
 
-    shutil.rmtree(p, onexc=onexc)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(p, onexc=onexc)
+    else:  # 3.11: onerror gets (func, path, exc_info); the handler ignores the third argument
+        shutil.rmtree(p, onerror=onexc)
 
 
 def make_work(app_dir: Path, dest: Path) -> None:

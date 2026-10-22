@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+capture/node_modules/
+.venv/
