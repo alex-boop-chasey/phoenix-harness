@@ -4,7 +4,7 @@ Python 3.12 stdlib only (no pip deps). Dashboard UI: hands/static/{index.html,ap
 Runner loop: hands/loop.py; planner: hands/planner.py; projects: hands/newproject.py; CLI: hands/__main__.py.
 
 ## Workflow
-- Make small changes; run `python3 -m unittest discover -s tests` (all must pass) and `node --check hands/static/app.js` after JS edits.
+- Make small changes; run `python3 -m unittest discover -s tests` (all must pass) and `bash tools/js-test.sh` after JS edits (node --check on every served script plus the `hands/static/*.test.mjs` unit tests, run with the node inside the agent image; the host has no node).
 - Commit every change with git (clear message).
 - Install only when the user says so AND no build is running (`hands <project> status` -> runner alive: False):
   `bash install.sh` (copies to ~/.local/share/hands/runner, restarts the dashboard: users must log in again via `hands-dash url`).

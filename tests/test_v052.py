@@ -19,7 +19,7 @@ os.environ["HANDS_NO_NOTIFY"] = "1"
 from hands import dashboard, sessions, usage  # noqa: E402
 from test_v04 import Dash  # noqa: E402
 
-JS = [ROOT / "hands" / "static" / n for n in ("app.js", "sessions.js")]
+JS = [ROOT / "hands" / "static" / n for n in ("app.js", "sessions.js", "store.js")]
 
 
 class TestKeepAlive(unittest.TestCase):

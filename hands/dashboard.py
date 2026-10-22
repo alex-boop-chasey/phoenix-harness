@@ -81,6 +81,7 @@ MAX_FILE = 2_000_000
 MAX_LOG_BYTES = 1_000_000
 STATIC_FILES = {"/": ("index.html", "text/html; charset=utf-8"),
                 "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                "/store.js": ("store.js", "text/javascript; charset=utf-8"),
                 "/sessions.js": ("sessions.js", "text/javascript; charset=utf-8"),
                 "/app.css": ("app.css", "text/css; charset=utf-8"),
                 # xterm.js 5.5.0 + fit addon, vendored (no CDN; CSP is script-src 'self')
