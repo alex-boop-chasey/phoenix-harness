@@ -38,6 +38,12 @@ while i < len(argv):
             if "readonly" in argv[i + 1].split(","):
                 readonly.add(kv["dst"])
         i += 2
+    elif a == "-v":
+        src, dst, *opts = argv[i + 1].split(":")
+        mounts[dst] = src
+        if "ro" in opts:
+            readonly.add(dst)
+        i += 2
     elif a == "-e":
         k, _, v = argv[i + 1].partition("=")
         env[k] = v

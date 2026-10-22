@@ -14,7 +14,7 @@ import signal
 import time
 from pathlib import Path
 
-from . import accview, activity, claude, docker, gitops, merge, projectenv, prompts, rounds, usage, workspace
+from . import accview, activity, claude, docker, gitops, hooks, merge, projectenv, prompts, rounds, usage, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -184,6 +184,19 @@ class Runner:
         if self.cfg.project_env and self.cfg.project_env.is_file():       # coder, acceptance, evaluator
             m.append(Mount(self.cfg.project_env, projectenv.CONTAINER_ENV_PATH))
         return m
+
+    def hook_args(self, role: str) -> list[str]:
+        """Read-only mounts for the role's Claude Code hooks: the harness hooks/ directory and a settings
+        file written into project state (the agent cannot change hook config). [] for roles without hooks,
+        and, with a warning, when the installed runner has no hooks/ directory."""
+        if not hooks.settings_for(role):
+            return []
+        hooks_dir = hooks.hooks_dir()
+        if not hooks_dir.is_dir():
+            self.log(f"{role} runs without the format hook: {hooks_dir} is missing")
+            return []
+        settings = hooks.write_settings(role, self.cfg.state_dir / hooks.SETTINGS_FILE_NAME)
+        return hooks.mount_args(role, hooks_dir, settings)
 
     def env_files(self, *, claude_token: bool) -> list[Path]:
         files = [self.cfg.claude_env] if claude_token else []
@@ -543,7 +556,7 @@ class Runner:
             rc = docker.run(c, Run(
                 name=docker.unique_name(c, "coder", f"{step.id}-{attempt}"), role="coder", cmd=cmd,
                 mounts=self.mounts(work, store=c.pnpm_volume, with_skills=True), env=self.common_env("coder"),
-                env_files=self.env_files(claude_token=True),
+                env_files=self.env_files(claude_token=True), extra_args=self.hook_args("coder"),
                 stdin=adir / "prompt.md", stdout=adir / "coder.json", stderr=adir / "coder.stderr",
                 timeout_s=c.session_timeout_min * 60, append_stdout=True))
         self.redact_files(adir / "coder.json", adir / "coder.stderr")     # before anything parses or serves them

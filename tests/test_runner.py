@@ -15,7 +15,7 @@ import tmpdirs  # noqa: E402,F401  (removes every mkdtemp dir after each test)
 os.environ["HANDS_NO_NOTIFY"] = "1"
 os.environ["HANDS_TEST_ALLOW_ROOT"] = "1"
 
-from hands import claude, spec as specmod, workspace  # noqa: E402
+from hands import claude, hooks, spec as specmod, workspace  # noqa: E402
 from hands.config import Config  # noqa: E402
 from hands.loop import Runner  # noqa: E402
 
@@ -131,6 +131,27 @@ class TestEndToEnd(unittest.TestCase):
         # commit trailers
         body = git(e.tmp / "app.git", "log", "-1", "--format=%B", "main")
         self.assertIn("Spec-Commit:", body)
+
+    def test_coder_gets_the_format_hook_only(self):
+        e = Env([STEP1])
+        e.queue(GOOD1, EVAL_PASS)
+        r = e.runner()
+        self.assertEqual(r.run(), 0)
+        settings = e.cfg.state_dir / "settings-coder.json"
+        self.assertEqual(json.loads(settings.read_text()), hooks.coder_settings())
+        runs = [json.loads(x) for x in (e.tmp / "docker.jsonl").read_text().splitlines()]
+        by_role = {}
+        for argv in runs:
+            if argv[:1] == ["run"]:
+                role = [a for a in argv if a.startswith("HANDS_ROLE=")][0].split("=", 1)[1]
+                by_role.setdefault(role, argv)
+        coder = by_role["coder"]
+        self.assertIn(f"{hooks.hooks_dir()}:/hands-hooks:ro", coder)
+        self.assertIn(f"{settings}:/home/node/.claude/settings.json:ro", coder)
+        for role, argv in by_role.items():
+            if role != "coder":
+                self.assertNotIn("/hands-hooks:ro", " ".join(argv), role)
+                self.assertNotIn("settings.json", " ".join(argv), role)
 
     def test_allowlist_rejects_agent_docs_then_recovers(self):
         e = Env([STEP1])

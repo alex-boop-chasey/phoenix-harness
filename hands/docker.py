@@ -46,6 +46,7 @@ class Run:
     stderr: Path | None = None
     timeout_s: int = 3600
     append_stdout: bool = False             # stdout (and stderr if the same file) appended, not truncated
+    extra_args: list[str] = field(default_factory=list)  # more `docker run` flags (e.g. hands.hooks.mount_args)
 
 
 def base_mounts(cfg: Config, spec_root: Path) -> list[Mount]:
@@ -83,6 +84,7 @@ def build_argv(cfg: Config, r: Run) -> list[str]:
         argv += ["--env-file", str(f)]
     for m in r.mounts:
         argv += ["--mount", m.arg()]
+    argv += r.extra_args
     argv += [cfg.image, *r.cmd]
     return argv
 
