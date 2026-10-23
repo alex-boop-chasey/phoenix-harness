@@ -8,11 +8,12 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import types
 import unittest
 from pathlib import Path
 
 from hands import config as cfgmod
-from hands import docker, nextproject, nextstate, sessions, setup, stylerefs
+from hands import docker, nextproject, nextstate, planchat, sessions, setup, stylerefs
 from hands.config import Config
 from hands.state import Lock, State
 
@@ -317,6 +318,41 @@ class PlanChat(PlanChatBase):
                 self.assertEqual(nextproject.token_file(self.cfg), self.penv)
         self.penv.write_text("OTHER=1\n")
         self.assertEqual(nextproject.token_file(self.cfg), self.claude_env)
+
+    def test_the_chat_mounts_the_planner_skills_so_brainstorming_is_available(self):
+        """The primer tells the chat to use the brainstorming skill; image/skills does not carry it, the
+        planner's skill set does (hands.planner mounts the same folder)."""
+        skills = REPO / "planner-skills"
+        self.assertTrue((skills / "brainstorming").is_dir(), "planner-skills/brainstorming is the mounted folder")
+        nextproject.plan_chat_start(self.cfg)
+        argv = self.launched[0][3]
+        mount = f"{skills}:/home/node/.claude/skills:ro"
+        self.assertIn(mount, argv)
+        self.assertEqual(argv[argv.index(mount) - 1], "-v")
+        self.assertEqual(nextproject.chat_skills_dir(self.cfg), skills)
+
+    def test_the_primer_names_the_mounted_skill_folder(self):
+        folders = {d.name for d in nextproject.chat_skills_dir(self.cfg).iterdir() if d.is_dir()}
+        text = planchat.primer(nextproject.plan_context(self.cfg, nextproject.ensure(self.cfg)))
+        self.assertIn("brainstorming", folders)
+        self.assertIn("brainstorming skill", text)
+
+    def _stub(self, runner_home: Path, skills_dir: Path | None):
+        return types.SimpleNamespace(runner_home=runner_home, skills_dir=skills_dir, state_dir=self.cfg.state_dir)
+
+    def test_the_chat_falls_back_to_the_project_skills_dir_without_planner_skills(self):
+        bare = self.tmp / "bare-runner"
+        bare.mkdir()
+        self.cfg.skills_dir.mkdir()
+        self.assertEqual(nextproject.chat_skills_dir(self._stub(bare, self.cfg.skills_dir)), self.cfg.skills_dir)
+
+    def test_the_chat_mounts_an_empty_folder_when_no_skills_exist(self):
+        bare = self.tmp / "bare-runner"
+        bare.mkdir()
+        for skills_dir in (None, self.tmp / "missing-skills"):
+            with self.subTest(skills_dir=skills_dir):
+                self.assertEqual(nextproject.chat_skills_dir(self._stub(bare, skills_dir)),
+                                 self.cfg.state_dir / "plan-chat" / "no-skills")
 
     def test_brief_ready_and_hash_pinned_approve(self):
         nextproject.plan_chat_start(self.cfg)

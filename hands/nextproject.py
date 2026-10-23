@@ -152,6 +152,18 @@ def brief_dir(cfg) -> Path:
     return chat_dir(cfg) / "brief"
 
 
+def chat_skills_dir(cfg) -> Path:
+    """The skills mounted read-only in the planning chat. The planner's set (brainstorming, writing-plans) when
+    the runner ships it -- the primer tells the chat to use the brainstorming skill, and hands.planner mounts the
+    same folder -- else the project's skills_dir, else an empty folder (the mount is always present)."""
+    planner_skills = Path(cfg.runner_home) / "planner-skills"
+    if planner_skills.is_dir():
+        return planner_skills
+    if cfg.skills_dir and Path(cfg.skills_dir).is_dir():
+        return Path(cfg.skills_dir)
+    return chat_dir(cfg) / "no-skills"
+
+
 def _brief_sha(cfg) -> str | None:
     from . import planchat
     try:
@@ -235,7 +247,7 @@ def plan_chat_start(cfg) -> dict:
     if ps.session_id and sessions.BACKEND.alive(ps.session_id):
         return {"session_id": ps.session_id, "status": plan_session_view(cfg)["status"], "live": True}
     d = chat_dir(cfg)
-    skills = cfg.skills_dir if cfg.skills_dir and Path(cfg.skills_dir).is_dir() else d / "no-skills"
+    skills = chat_skills_dir(cfg)
     for p in (brief_dir(cfg), d / "home", d / "env", skills):
         Path(p).mkdir(parents=True, exist_ok=True)
     ctx = plan_context(cfg, state)
