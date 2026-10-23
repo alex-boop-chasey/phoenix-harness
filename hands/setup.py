@@ -55,6 +55,8 @@ VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]{1,64})?$")
 GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 REPO_URL_RE = re.compile(r"^(?:https?://[A-Za-z0-9.\-]+(?::\d+)?/[A-Za-z0-9._/\-~]+|[A-Za-z0-9._\-]+@[A-Za-z0-9.\-]+:[A-Za-z0-9._/\-~]+)$")
 
+TS_BASE_URL = "."
+TS_PATHS = {"@/*": ["./src/*"]}      # the import alias shadcn init requires (create-next-app writes its own)
 GITIGNORE_LINES = ("node_modules/", ".pnpm-store/", "/acceptance/", ".env", ".env.*", "!.env.example", "dist/", ".next/")
 ASTRO_PRETTIER_IGNORE = ("node_modules", "dist", ".astro", "pnpm-lock.yaml")
 NEXT_PRETTIER_IGNORE = ("node_modules", ".next", "pnpm-lock.yaml")
@@ -238,6 +240,21 @@ def _ensure_scripts(scripts: dict[str, str]) -> str:
         'fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\\n");')
 
 
+def _ensure_ts_paths() -> str:
+    """Merge the `@/*` import alias into tsconfig.json, keeping whatever is already there (`astro add react`
+    writes compilerOptions.jsx into the same file). shadcn init refuses a project without such an alias, and
+    create-astro's minimal template defines none; the Next.js scaffold gets its own from --import-alias."""
+    want = json.dumps(TS_PATHS, separators=(",", ":"))
+    return _node_edit(
+        'const fs=require("fs");const want=' + want + ';'
+        'const c=fs.existsSync("tsconfig.json")?JSON.parse(fs.readFileSync("tsconfig.json","utf8")):{};'
+        'const o=c.compilerOptions=c.compilerOptions||{};'
+        f'if(!o.baseUrl)o.baseUrl={json.dumps(TS_BASE_URL)};'
+        'o.paths=o.paths||{};'
+        'for(const k of Object.keys(want)){if(!o.paths[k])o.paths[k]=want[k];}'
+        'fs.writeFileSync("tsconfig.json",JSON.stringify(c,null,2)+"\\n");')
+
+
 def _ensure_gitignore() -> str:
     need = json.dumps(list(GITIGNORE_LINES), separators=(",", ":"))
     return _node_edit(
@@ -392,6 +409,7 @@ def plan(opts: SetupOptions, versions: dict[str, str], ai_kit: AiKit | None) -> 
     if "shadcn" in opts.libs:
         if opts.framework in ASTRO_FRAMEWORKS:
             cmds.append("pnpm astro add react --yes")          # shadcn components are React components
+            cmds.append(_ensure_ts_paths())                    # shadcn init refuses a project with no @/* alias
         cmds.append(f"pnpm dlx {pin('shadcn')} init --yes --defaults")
     if "gsap" in opts.libs:
         cmds.append("pnpm add " + (pin("gsap", "@gsap/react") if opts.framework in NEXT_FRAMEWORKS else pin("gsap")))

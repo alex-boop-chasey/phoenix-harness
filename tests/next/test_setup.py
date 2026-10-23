@@ -117,6 +117,23 @@ class Plan(unittest.TestCase):
         self.assertFalse(any("next/font" in c for c in p.commands))
         self.assertIn("pnpm run typecheck", p.commands[-1])
 
+    def test_plan_astro_with_shadcn_writes_tsconfig_paths_before_init(self):
+        """shadcn init needs an @/* alias; create-astro's minimal tsconfig has none, so the plan adds it."""
+        for framework in (2, 3):
+            with self.subTest(framework=framework):
+                cmds = plan(SetupOptions(framework, ["shadcn"]), VERSIONS, KIT).commands
+                react = next(i for i, c in enumerate(cmds) if c == "pnpm astro add react --yes")
+                paths = next(i for i, c in enumerate(cmds) if "compilerOptions" in c and "@/*" in c)
+                init = next(i for i, c in enumerate(cmds) if "shadcn@9.9.9" in c and "init" in c)
+                self.assertLess(react, paths)
+                self.assertLess(paths, init)
+
+    def test_plan_without_shadcn_leaves_tsconfig_alone(self):
+        for opts in (SetupOptions(2, ["gsap"]), SetupOptions(4, ["shadcn"])):
+            with self.subTest(framework=opts.framework, libs=opts.libs):
+                cmds = plan(opts, VERSIONS, None).commands
+                self.assertFalse(any("compilerOptions" in c and "@/*" in c for c in cmds))
+
     def test_plan_ai_kit_required(self):
         with self.assertRaises(AiKitNotConfigured):
             plan(SetupOptions(3, []), VERSIONS, None)
@@ -149,6 +166,53 @@ class Plan(unittest.TestCase):
     def test_plan_rejects_bad_versions(self):
         with self.assertRaises(InvalidOptions):
             plan(SetupOptions(2, []), {**VERSIONS, "astro": "9.9.9; echo"}, None)
+
+
+class EnsureTsPaths(unittest.TestCase):
+    """The tsconfig step runs for real: it must add the alias without clobbering what `astro add react` wrote."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="hands-tsconfig-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _run(self, tsconfig: str | None) -> dict:
+        if tsconfig is not None:
+            (self.tmp / "tsconfig.json").write_text(tsconfig)
+        cmd = next(c for c in plan(SetupOptions(2, ["shadcn"]), VERSIONS, None).commands
+                   if "compilerOptions" in c and "@/*" in c)
+        r = subprocess.run(["bash", "-c", cmd], cwd=self.tmp, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads((self.tmp / "tsconfig.json").read_text())
+
+    @unittest.skipUnless(shutil.which("node"), "node is not on PATH")
+    def test_merges_into_the_compiler_options_astro_add_react_wrote(self):
+        conf = self._run(json.dumps({
+            "extends": "astro/tsconfigs/strict",
+            "include": [".astro/types.d.ts", "**/*"],
+            "exclude": ["dist"],
+            "compilerOptions": {"jsx": "react-jsx", "jsxImportSource": "react"}}, indent=2) + "\n")
+        self.assertEqual(conf["compilerOptions"]["jsx"], "react-jsx")
+        self.assertEqual(conf["compilerOptions"]["jsxImportSource"], "react")
+        self.assertEqual(conf["compilerOptions"]["baseUrl"], ".")
+        self.assertEqual(conf["compilerOptions"]["paths"], {"@/*": ["./src/*"]})
+        self.assertEqual(conf["extends"], "astro/tsconfigs/strict")
+        self.assertEqual(conf["include"], [".astro/types.d.ts", "**/*"])
+        self.assertEqual(conf["exclude"], ["dist"])
+
+    @unittest.skipUnless(shutil.which("node"), "node is not on PATH")
+    def test_adds_compiler_options_when_the_tsconfig_has_none(self):
+        conf = self._run('{"extends": "astro/tsconfigs/strict"}\n')
+        self.assertEqual(conf["compilerOptions"], {"baseUrl": ".", "paths": {"@/*": ["./src/*"]}})
+
+    @unittest.skipUnless(shutil.which("node"), "node is not on PATH")
+    def test_keeps_an_alias_the_template_already_defined(self):
+        conf = self._run(json.dumps({"compilerOptions": {"baseUrl": "./src", "paths": {"@/*": ["./*"]}}}) + "\n")
+        self.assertEqual(conf["compilerOptions"], {"baseUrl": "./src", "paths": {"@/*": ["./*"]}})
+
+    @unittest.skipUnless(shutil.which("node"), "node is not on PATH")
+    def test_writes_a_tsconfig_when_there_is_none(self):
+        conf = self._run(None)
+        self.assertEqual(conf, {"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["./src/*"]}}})
 
 
 class Verify(unittest.TestCase):
