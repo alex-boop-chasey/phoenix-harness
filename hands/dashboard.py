@@ -30,7 +30,7 @@ Security model (the dashboard can start builds, so it is treated as a control pl
   `hands <p> refs add|retry|remove` / `hands <p> setup` subprocesses; DELETE has the same origin rules as POST
 - it never holds the GitHub token and mounts nothing itself, with one exception: a project's planning chat
   (POST /api/projects/<p>/plan-chat, hands.nextproject) is a Session manager terminal running the
-  hands.planchat container (firewalled, one ANTHROPIC_API_KEY env file, spec/app read-only); its
+  hands.planchat container (firewalled, a one-variable build-token env file, spec/app read-only); its
   plan_session lives in the project's next.json, and plan-chat/approve commits the hash-pinned brief
 """
 from __future__ import annotations

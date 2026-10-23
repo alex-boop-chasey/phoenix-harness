@@ -166,6 +166,58 @@ class LaunchSpec(TmpDirs):
         with self.assertRaises(TokenMissing):
             planchat.launch_spec(PlanContext.from_json(CTX_NEW), PlanSession(None, "none", None), p, [])
 
+    def test_launch_spec_accepts_the_build_wide_oauth_token(self):
+        """claude.env holds CLAUDE_CODE_OAUTH_TOKEN on this host; the chat must start from that too."""
+        p = self.paths("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\nGITHUB_TOKEN=ghp_x\n")
+        spec = planchat.launch_spec(PlanContext.from_json(CTX_NEW), PlanSession(None, "none", None), p, [])
+        argv = spec["argv"]
+        env_file = Path(argv[argv.index("--env-file") + 1])
+        self.assertEqual(env_file.read_text(), "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n")
+        self.assertEqual(os.stat(env_file).st_mode & 0o777, 0o600)
+        self.assertEqual(env_file.parent, p.env_dir)
+        self.assertNotIn("ghp_x", json.dumps(spec))
+        self.assertEqual(argv.count("--env-file"), 1)
+
+    def test_launch_spec_prefers_the_api_key_when_both_are_present(self):
+        p = self.paths("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\nANTHROPIC_API_KEY=abc\n")
+        spec = planchat.launch_spec(PlanContext.from_json(CTX_NEW), PlanSession(None, "none", None), p, [])
+        argv = spec["argv"]
+        env_file = Path(argv[argv.index("--env-file") + 1])
+        self.assertEqual(env_file.read_text(), "ANTHROPIC_API_KEY=abc\n")
+
+    def test_token_missing_names_both_keys(self):
+        p = self.paths("GITHUB_TOKEN=ghp_x\n")
+        with self.assertRaisesRegex(TokenMissing, "CLAUDE_CODE_OAUTH_TOKEN"):
+            planchat.launch_spec(PlanContext.from_json(CTX_NEW), PlanSession(None, "none", None), p, [])
+        self.assertEqual(os.listdir(p.env_dir), [])
+
+    def test_build_token_refuses_blank_nul_and_unknown_keys(self):
+        p = self.paths()
+        for text in ["", "GITHUB_TOKEN=ghp_x\n", "ANTHROPIC_API_KEY=\n", "ANTHROPIC_API_KEY=   \n",
+                     "CLAUDE_CODE_OAUTH_TOKEN=\n", "CLAUDE_CODE_OAUTH_TOKEN=  \n",
+                     "ANTHROPIC_API_KEY=a\0b\n", "CLAUDE_CODE_OAUTH_TOKEN=a\0b\n",
+                     "ANTHROPIC_API_KEY=\0\n"]:
+            with self.subTest(text=text):
+                p.secrets_file.write_text(text)
+                with self.assertRaises(TokenMissing):
+                    planchat.build_token(p.secrets_file)
+
+    def test_build_token_returns_the_key_it_found(self):
+        p = self.paths()
+        for text, want in [("ANTHROPIC_API_KEY= abc \n", ("ANTHROPIC_API_KEY", "abc")),
+                           ("CLAUDE_CODE_OAUTH_TOKEN=tok\n", ("CLAUDE_CODE_OAUTH_TOKEN", "tok"))]:
+            with self.subTest(text=text):
+                p.secrets_file.write_text(text)
+                self.assertEqual(planchat.build_token(p.secrets_file), want)
+
+    def test_a_trailing_junk_line_does_not_extend_the_token(self):
+        """read_secrets takes KEY=value lines only, so the env file stays a single variable."""
+        p = self.paths("ANTHROPIC_API_KEY=abc\nnot-a-key-line\n")
+        spec = planchat.launch_spec(PlanContext.from_json(CTX_NEW), PlanSession(None, "none", None), p, [])
+        argv = spec["argv"]
+        env_file = Path(argv[argv.index("--env-file") + 1])
+        self.assertEqual(env_file.read_text(), "ANTHROPIC_API_KEY=abc\n")
+
     def test_launch_spec_new_project_has_no_app_mount(self):
         p = Paths(spec_dir=None, app_dir=None, brief_dir=self.mkdir("brief"), home_dir=self.mkdir("home"),
                   skills_dir=self.mkdir("skills"), env_dir=self.mkdir("env"), secrets_file=self.tmp / "s.env")

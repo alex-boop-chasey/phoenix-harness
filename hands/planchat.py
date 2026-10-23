@@ -4,8 +4,9 @@ The chat is an interactive `claude` session in the Session manager terminal, san
 the hands image, the firewalled network profile the caller passes in verbatim, the spec repo and the app code
 mounted read-only, one read-write `brief` directory the session writes `brief.md` and `coverage.md` into, a
 per-project `~/.claude` home (so the conversation persists and `--resume` works) and the skills read-only.
-Its env file holds exactly one variable, ANTHROPIC_API_KEY (the project's build token); nothing else from the
-secrets file reaches the container, and neither project.env nor any git credential is mounted.
+Its env file holds exactly one variable, ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN (whichever the project's
+build token file carries); nothing else from the secrets file reaches the container, and neither project.env nor
+any git credential is mounted.
 
 `primer` is the first user message (the planning-interviewer job, the context, the read-only rules and the
 brief format); `launch_spec` returns the `docker run` argv plus the session record as data (only the existing
@@ -14,8 +15,8 @@ brief into the spec repo and commits it. The session uuid is created once per pr
 stored by the caller in the project's `plan_session` state.
 
 CLI: python3 -m hands.planchat <primer|launch-spec|hash|status|approve>
-Exit codes: 0 ok, 1 invalid input (unreadable JSON, missing brief, git failure), 4 ANTHROPIC_API_KEY missing
-from the secrets file, 5 approve refused (`hash mismatch` / `coverage.md missing`).
+Exit codes: 0 ok, 1 invalid input (unreadable JSON, missing brief, git failure), 4 neither ANTHROPIC_API_KEY nor
+CLAUDE_CODE_OAUTH_TOKEN in the secrets file, 5 approve refused (`hash mismatch` / `coverage.md missing`).
 """
 from __future__ import annotations
 
@@ -40,6 +41,8 @@ ROLE = "plan-chat"
 KINDS = ("new", "existing")
 STATUSES = ("none", "open", "brief_ready", "approved")
 CONTAINER_KEY = "ANTHROPIC_API_KEY"
+OAUTH_KEY = "CLAUDE_CODE_OAUTH_TOKEN"
+TOKEN_KEYS = (CONTAINER_KEY, OAUTH_KEY)   # either unlocks the chat; whichever is found is the one passed
 SPEC_MOUNT = "/spec"
 APP_MOUNT = "/app"
 BRIEF_MOUNT = "/brief"
@@ -63,7 +66,7 @@ class BriefIncomplete(Exception):
 
 
 class TokenMissing(Exception):
-    def __init__(self, message: str = f"{CONTAINER_KEY} missing from the secrets file"):
+    def __init__(self, message: str = f"{' or '.join(TOKEN_KEYS)} missing from the secrets file"):
         super().__init__(message)
 
 
@@ -264,21 +267,35 @@ def read_secrets(path: Path) -> dict[str, str]:
     return values
 
 
-def build_token(secrets_file: Path) -> str:
-    token = read_secrets(secrets_file).get(CONTAINER_KEY, "").strip()
-    if not token or "\n" in token or "\0" in token:
+def token_in(secrets_file: Path) -> tuple[str, str] | None:
+    """The first usable (key, token) pair from the secrets file, or None when neither key carries one.
+    ANTHROPIC_API_KEY wins over CLAUDE_CODE_OAUTH_TOKEN when the file holds both."""
+    values = read_secrets(secrets_file)
+    for key in TOKEN_KEYS:
+        token = values.get(key, "").strip()
+        if token and "\n" not in token and "\0" not in token:
+            return key, token
+    return None
+
+
+def build_token(secrets_file: Path) -> tuple[str, str]:
+    """(key, token) for the container's one env var; TokenMissing when the file carries neither key."""
+    found = token_in(secrets_file)
+    if found is None:
         raise TokenMissing()
-    return token
+    return found
 
 
-def write_env_file(env_dir: Path, token: str, slug: str) -> Path:
-    """A private file under env_dir holding exactly ANTHROPIC_API_KEY=<token>; the caller deletes it."""
+def write_env_file(env_dir: Path, token: str, slug: str, key: str = CONTAINER_KEY) -> Path:
+    """A private file under env_dir holding exactly <key>=<token> and nothing else; the caller deletes it."""
+    if key not in TOKEN_KEYS:
+        raise ValueError(f"env key must be one of {TOKEN_KEYS}")
     env_dir = Path(env_dir)
     env_dir.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f"planchat-{slug}-", suffix=".env", dir=env_dir)
     try:
         os.fchmod(fd, 0o600)
-        os.write(fd, f"{CONTAINER_KEY}={token}\n".encode("utf-8"))
+        os.write(fd, f"{key}={token}\n".encode("utf-8"))
     finally:
         os.close(fd)
     return Path(name)
@@ -297,7 +314,7 @@ def launch_spec(ctx: PlanContext, state: PlanSession, paths: Paths, network_args
     session_id = state.session_id
     if session_id is not None and not UUID_RE.match(session_id):
         raise ValueError("stored session_id is not a uuid")
-    token = build_token(paths.secrets_file)
+    token_key, token = build_token(paths.secrets_file)
     mounts = []
     if paths.spec_dir and ctx.spec_dir:
         mounts.append(f"{_host_path(paths.spec_dir)}:{SPEC_MOUNT}:ro")
@@ -306,7 +323,7 @@ def launch_spec(ctx: PlanContext, state: PlanSession, paths: Paths, network_args
     mounts += [f"{_host_path(paths.brief_dir)}:{BRIEF_MOUNT}:rw",
                f"{_host_path(paths.home_dir)}:{HOME_MOUNT}:rw",
                f"{_host_path(paths.skills_dir)}:{SKILLS_MOUNT}:ro"]
-    env_file = write_env_file(paths.env_dir, token, ctx.slug)
+    env_file = write_env_file(paths.env_dir, token, ctx.slug, token_key)
     argv = ["docker", "run", "--rm", "-it", "--init",
             "--name", f"hands-{ctx.slug}-{ROLE}",
             "--label", f"hands.project={ctx.slug}", "--label", f"hands.role={ROLE}",

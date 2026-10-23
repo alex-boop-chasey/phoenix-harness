@@ -290,11 +290,33 @@ class PlanChat(PlanChatBase):
         self.assertEqual(argv2[argv2.index("--resume") + 1], sid)
         self.launched[1][4]()
 
-    def test_token_missing(self):
-        self.claude_env.write_text("CLAUDE_CODE_OAUTH_TOKEN=x\n")
-        with self.assertRaises(ValueError):
+    def test_the_build_wide_oauth_token_starts_the_chat(self):
+        """claude.env holds CLAUDE_CODE_OAUTH_TOKEN on this host, not ANTHROPIC_API_KEY."""
+        self.claude_env.write_text("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n")
+        nextproject.plan_chat_start(self.cfg)
+        argv = self.launched[0][3]
+        env_file = Path(argv[argv.index("--env-file") + 1])
+        self.assertEqual(env_file.read_text(), "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n")
+        self.assertEqual(os.stat(env_file).st_mode & 0o777, 0o600)
+        self.launched[0][4]()
+        self.assertFalse(env_file.exists(), "the env file goes when the terminal ends")
+
+    def test_token_missing_names_both_keys(self):
+        self.claude_env.write_text("GH_TOKEN=x\n")
+        self.penv.write_text("ANALYST_ANTHROPIC_API_KEY=k1\nOTHER=1\n")
+        with self.assertRaisesRegex(ValueError, "CLAUDE_CODE_OAUTH_TOKEN") as cm:
             nextproject.plan_chat_start(self.cfg)
+        self.assertIn("ANTHROPIC_API_KEY", str(cm.exception))
         self.assertEqual(self.launched, [])
+
+    def test_token_file_finds_either_key_in_the_project_variables(self):
+        self.claude_env.write_text("GH_TOKEN=x\n")
+        for text in ("ANTHROPIC_API_KEY=abc\n", "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n"):
+            with self.subTest(text=text):
+                self.penv.write_text(text)
+                self.assertEqual(nextproject.token_file(self.cfg), self.penv)
+        self.penv.write_text("OTHER=1\n")
+        self.assertEqual(nextproject.token_file(self.cfg), self.claude_env)
 
     def test_brief_ready_and_hash_pinned_approve(self):
         nextproject.plan_chat_start(self.cfg)

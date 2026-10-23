@@ -208,10 +208,11 @@ def plan_context(cfg, state: dict):
 
 
 def token_file(cfg) -> Path:
-    """The file holding the project's ANTHROPIC_API_KEY: the build token file, else the project's variables."""
+    """The file holding the project's build token (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN): the build
+    token file, else the project's variables."""
     from . import planchat
     for f in (cfg.claude_env, cfg.project_env):
-        if f and planchat.read_secrets(Path(f)).get(planchat.CONTAINER_KEY, "").strip():
+        if f and planchat.token_in(Path(f)) is not None:
             return Path(f)
     return Path(cfg.claude_env)
 
@@ -244,7 +245,8 @@ def plan_chat_start(cfg) -> dict:
     try:
         spec = planchat.launch_spec(ctx, ps, paths, docker.firewall_args(cfg), image=cfg.image)
     except planchat.TokenMissing:
-        raise ValueError("ANTHROPIC_API_KEY missing (the build token file or the project's variables)")
+        raise ValueError(f"no build token: {' or '.join(planchat.TOKEN_KEYS)} in the build token file or the "
+                         "project's variables")
     argv = [cfg.docker_bin, *spec["argv"][1:]]
     env_file = Path(argv[argv.index("--env-file") + 1])
     name = argv[argv.index("--name") + 1]
