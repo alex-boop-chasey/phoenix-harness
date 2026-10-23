@@ -229,10 +229,12 @@ def token_file(cfg) -> Path:
     return Path(cfg.claude_env)
 
 
-def _cleanup(docker_bin: str, name: str, env_file: Path):
-    """After the chat's terminal ends: the one-variable env file goes, and so does a container left behind."""
+def _cleanup(docker_bin: str, name: str, temp_files: list[Path]):
+    """After the chat's terminal ends: the per-run files (the one-variable env file and the allowed-domains
+    file) go, and so does a container left behind."""
     def run() -> None:
-        env_file.unlink(missing_ok=True)
+        for f in temp_files:
+            f.unlink(missing_ok=True)
         subprocess.run([docker_bin, "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return run
 
@@ -260,13 +262,15 @@ def plan_chat_start(cfg) -> dict:
         raise ValueError(f"no build token: {' or '.join(planchat.TOKEN_KEYS)} in the build token file or the "
                          "project's variables")
     argv = [cfg.docker_bin, *spec["argv"][1:]]
-    env_file = Path(argv[argv.index("--env-file") + 1])
+    temp_files = [Path(f) for f in spec["temp_files"]]
     name = argv[argv.index("--name") + 1]
     sid = spec["session_id"]
     try:
-        sessions.start_plan_chat(sid, cfg.name, brief_dir(cfg), argv, on_exit=_cleanup(cfg.docker_bin, name, env_file))
+        sessions.start_plan_chat(sid, cfg.name, brief_dir(cfg), argv,
+                                 on_exit=_cleanup(cfg.docker_bin, name, temp_files))
     except BaseException:
-        env_file.unlink(missing_ok=True)
+        for f in temp_files:
+            f.unlink(missing_ok=True)
         raise
     status = ps.status if ps.status != "none" else "open"
     nextstate.set_plan_session(file(cfg), status, session_id=sid)

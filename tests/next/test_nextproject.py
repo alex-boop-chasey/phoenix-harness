@@ -291,6 +291,19 @@ class PlanChat(PlanChatBase):
         self.assertEqual(argv2[argv2.index("--resume") + 1], sid)
         self.launched[1][4]()
 
+    def test_the_chat_mounts_its_own_allowed_domains_file_and_deletes_it_on_exit(self):
+        nextproject.init(self.cfg, [], 1, [])
+        nextproject.plan_chat_start(self.cfg)
+        argv, on_exit = self.launched[0][3], self.launched[0][4]
+        mounts = [a for a in argv if a.endswith(f":{planchat.DOMAINS_MOUNT}:ro")]
+        self.assertEqual(len(mounts), 1, argv)
+        domains_file = Path(mounts[0].split(":")[0])
+        self.assertEqual(domains_file.read_text(), "platform.claude.com\n")
+        env_file = Path(argv[argv.index("--env-file") + 1])
+        on_exit()
+        self.assertFalse(domains_file.exists(), "the allowed-domains file goes when the terminal ends")
+        self.assertFalse(env_file.exists())
+
     def test_the_build_wide_oauth_token_starts_the_chat(self):
         """claude.env holds CLAUDE_CODE_OAUTH_TOKEN on this host, not ANTHROPIC_API_KEY."""
         self.claude_env.write_text("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-x\n")

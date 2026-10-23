@@ -4,6 +4,9 @@ The chat is an interactive `claude` session in the Session manager terminal, san
 the hands image, the firewalled network profile the caller passes in verbatim, the spec repo and the app code
 mounted read-only, one read-write `brief` directory the session writes `brief.md` and `coverage.md` into, a
 per-project `~/.claude` home (so the conversation persists and `--resume` works) and the skills read-only.
+Its own one-line `allowed-domains` file is mounted read-only at /etc/hands/allowed-domains (the firewall's
+built-in allowlist has no platform.claude.com, which interactive Claude Code needs: its first-run setup check
+probes api.anthropic.com and platform.claude.com, and OAuth token exchange and refresh go to that host too).
 Its env file holds exactly one variable, ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN (whichever the project's
 build token file carries); nothing else from the secrets file reaches the container, and neither project.env nor
 any git credential is mounted.
@@ -47,6 +50,8 @@ SPEC_MOUNT = "/spec"
 APP_MOUNT = "/app"
 BRIEF_MOUNT = "/brief"
 HOME_MOUNT = "/home/node/.claude"
+DOMAINS_MOUNT = "/etc/hands/allowed-domains"
+CHAT_DOMAINS = ("platform.claude.com",)   # the chat's whole per-run egress list, on top of the image allowlist
 SKILLS_MOUNT = "/home/node/.claude/skills"
 BRIEF_FILE = "brief.md"
 COVERAGE_FILE = "coverage.md"
@@ -301,13 +306,29 @@ def write_env_file(env_dir: Path, token: str, slug: str, key: str = CONTAINER_KE
     return Path(name)
 
 
+def write_domains_file(env_dir: Path, slug: str, domains: tuple[str, ...] = CHAT_DOMAINS) -> Path:
+    """A file under env_dir holding the chat's extra egress hosts, one per line, for the firewall to read
+    (mounted at DOMAINS_MOUNT, as hands.setup does for the setup containers); the caller deletes it."""
+    env_dir = Path(env_dir)
+    env_dir.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f"planchat-{slug}-", suffix=".domains", dir=env_dir)
+    try:
+        os.fchmod(fd, 0o644)
+        os.write(fd, "".join(f"{h}\n" for h in domains).encode("utf-8"))
+    finally:
+        os.close(fd)
+    return Path(name)
+
+
 def new_session_id() -> str:
     return str(uuid.uuid4())
 
 
 def launch_spec(ctx: PlanContext, state: PlanSession, paths: Paths, network_args: list[str],
                 image: str = "hands") -> dict:
-    """`docker run` argv for the planning chat plus its session record: {argv, session, session_id}.
+    """`docker run` argv for the planning chat plus its session record: {argv, session, session_id, temp_files}.
+    `temp_files` are the per-run files the argv points at (the token env file and the allowed-domains file);
+    the caller deletes them when the terminal ends.
     First start: `claude --session-id <uuid4> <primer>`; afterwards `claude --resume <uuid>`."""
     if not isinstance(network_args, list) or not all(isinstance(a, str) for a in network_args):
         raise ValueError("network_args must be a list of strings")
@@ -324,6 +345,8 @@ def launch_spec(ctx: PlanContext, state: PlanSession, paths: Paths, network_args
                f"{_host_path(paths.home_dir)}:{HOME_MOUNT}:rw",
                f"{_host_path(paths.skills_dir)}:{SKILLS_MOUNT}:ro"]
     env_file = write_env_file(paths.env_dir, token, ctx.slug, token_key)
+    domains_file = write_domains_file(paths.env_dir, ctx.slug)
+    mounts.append(f"{_host_path(domains_file)}:{DOMAINS_MOUNT}:ro")
     argv = ["docker", "run", "--rm", "-it", "--init",
             "--name", f"hands-{ctx.slug}-{ROLE}",
             "--label", f"hands.project={ctx.slug}", "--label", f"hands.role={ROLE}",
@@ -340,7 +363,8 @@ def launch_spec(ctx: PlanContext, state: PlanSession, paths: Paths, network_args
         argv += ["claude", "--session-id", session_id, primer(ctx)]
     else:
         argv += ["claude", "--resume", session_id]
-    return {"argv": argv, "session": {"project": ctx.slug, "role": ROLE, "hidden": True}, "session_id": session_id}
+    return {"argv": argv, "session": {"project": ctx.slug, "role": ROLE, "hidden": True}, "session_id": session_id,
+            "temp_files": [str(env_file), str(domains_file)]}
 
 
 # ------------------------------------------------------------------------------------ brief state

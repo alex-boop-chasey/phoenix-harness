@@ -129,6 +129,27 @@ class LaunchSpec(TmpDirs):
         self.assertEqual(spec["session"], {"project": "demo", "role": "plan-chat", "hidden": True})
         self.assertEqual(json.loads(text), spec)
 
+    def test_launch_spec_mounts_a_one_host_allowed_domains_file(self):
+        """The firewall's built-in allowlist has no platform.claude.com, which interactive Claude Code needs
+        (first-run setup check, OAuth token exchange and refresh). The chat gets it and nothing else."""
+        p = self.paths()
+        spec = planchat.launch_spec(PlanContext.from_json(CTX_NEW), PlanSession(None, "none", None), p, [])
+        argv = spec["argv"]
+        mounts = [a for a in argv if a.endswith(f":{planchat.DOMAINS_MOUNT}:ro")]
+        self.assertEqual(len(mounts), 1, argv)
+        self.assertEqual(argv[argv.index(mounts[0]) - 1], "-v")
+        domains_file = Path(mounts[0].split(":")[0])
+        self.assertEqual(domains_file.parent, p.env_dir)
+        self.assertEqual(domains_file.read_text(), "platform.claude.com\n")
+        self.assertEqual(planchat.CHAT_DOMAINS, ("platform.claude.com",))
+        self.assertEqual(spec["temp_files"], [str(Path(argv[argv.index("--env-file") + 1])), str(domains_file)])
+
+    def test_no_domains_file_is_written_without_a_token(self):
+        p = self.paths("GITHUB_TOKEN=ghp_x\n")
+        with self.assertRaises(TokenMissing):
+            planchat.launch_spec(PlanContext.from_json(CTX_NEW), PlanSession(None, "none", None), p, [])
+        self.assertEqual(os.listdir(p.env_dir), [])
+
     def test_first_start_uses_session_id_and_resume_after(self):
         p = self.paths()
         ctx = PlanContext.from_json(CTX_NEW)
