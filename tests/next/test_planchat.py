@@ -150,6 +150,14 @@ class LaunchSpec(TmpDirs):
             planchat.launch_spec(PlanContext.from_json(CTX_NEW), PlanSession(None, "none", None), p, [])
         self.assertEqual(os.listdir(p.env_dir), [])
 
+    def transcript(self, home: Path, sid: str, cwd: str = "-brief") -> Path:
+        """What Claude Code leaves behind in its home once the conversation exists."""
+        d = home / planchat.PROJECTS_DIR / cwd
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"{sid}.jsonl"
+        f.write_text('{"type":"user"}\n')
+        return f
+
     def test_first_start_uses_session_id_and_resume_after(self):
         p = self.paths()
         ctx = PlanContext.from_json(CTX_NEW)
@@ -160,15 +168,50 @@ class LaunchSpec(TmpDirs):
         self.assertRegex(argv[c + 2], UUID4_RE)
         self.assertEqual(first["session_id"], argv[c + 2])
         self.assertEqual(argv[-1], planchat.primer(ctx))
+        self.assertFalse(first["resumed"])
         self.assertNotIn(f"{p.app_dir}:/app:ro", argv)
 
         sid = "7d7e5f1a-1234-4abc-9def-0123456789ab"
+        self.transcript(p.home_dir, sid)
         again = planchat.launch_spec(ctx, PlanSession(sid, "open", None), p, ["--network", "hands-fw"])
         argv = again["argv"]
         c = argv.index("claude")
         self.assertEqual(argv[c:], ["claude", "--resume", sid])
         self.assertNotIn("--session-id", argv)
         self.assertEqual(again["session_id"], sid)
+        self.assertTrue(again["resumed"])
+
+    def test_a_stored_id_without_a_transcript_starts_primed_again(self):
+        """The first launch can die before Claude writes anything (the connect check, no token): resuming
+        that id would open an empty chat with no job, so the primer goes again under the same id."""
+        p = self.paths()
+        ctx = PlanContext.from_json(CTX_NEW)
+        sid = "7d7e5f1a-1234-4abc-9def-0123456789ab"
+        spec = planchat.launch_spec(ctx, PlanSession(sid, "open", None), p, [])
+        argv = spec["argv"]
+        c = argv.index("claude")
+        self.assertEqual(argv[c:c + 3], ["claude", "--session-id", sid])
+        self.assertEqual(argv[-1], planchat.primer(ctx))
+        self.assertNotIn("--resume", argv)
+        self.assertEqual(spec["session_id"], sid)
+        self.assertFalse(spec["resumed"])
+
+    def test_has_transcript_globs_the_cwd_folder_and_checks_the_id(self):
+        home = self.mkdir("home2")
+        sid = "7d7e5f1a-1234-4abc-9def-0123456789ab"
+        other = "8d7e5f1a-1234-4abc-9def-0123456789ab"
+        self.assertFalse(planchat.has_transcript(home, sid))
+        self.assertFalse(planchat.has_transcript(home, None))
+        self.assertFalse(planchat.has_transcript(home / "nope", sid))
+        self.transcript(home, other)
+        self.assertFalse(planchat.has_transcript(home, sid), "another session's transcript is not this one")
+        f = self.transcript(home, sid, "-some-other-cwd")
+        self.assertTrue(planchat.has_transcript(home, sid), "the cwd folder name is globbed")
+        self.assertEqual(planchat.transcript_files(home, sid), [f])
+        self.assertFalse(planchat.has_transcript(home, "../x"))
+        f.unlink()
+        (f.parent / f"{sid}.jsonl").mkdir()
+        self.assertFalse(planchat.has_transcript(home, sid), "a directory is not a transcript")
 
     def test_launch_spec_rejects_a_bad_stored_session_id(self):
         p = self.paths()

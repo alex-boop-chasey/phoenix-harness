@@ -538,7 +538,9 @@ def run_create(slug: str, description: str, from_repo: str = "", branch: str = "
 
 
 # ---------------------------------------------------------------- destroy
-def destroy(slug: str, confirm: str) -> int:
+def destroy(slug: str, confirm: str, keep_log: bool = False) -> int:
+    """keep_log (hands.reset): leave the create status file and the create log in place, because the reset
+    that called this writes its own progress into them and the dashboard reads them while it runs."""
     from . import docker
     from .state import Lock
     validate_slug(slug)
@@ -615,7 +617,8 @@ def destroy(slug: str, confirm: str) -> int:
         from .workspace import rmtree
         rmtree(sec)
         say(f"[ok] removed {sec} (deploy keys and project.env)")
-    for p in (cfg_path, status_path(slug), creating_dir() / f"{slug}.log"):
+    gone = (cfg_path,) if keep_log else (cfg_path, status_path(slug), creating_dir() / f"{slug}.log")
+    for p in gone:
         if p.exists():
             p.unlink()
     say(f"DONE: {slug} destroyed")

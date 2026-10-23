@@ -277,6 +277,40 @@ def plan_chat_start(cfg) -> dict:
     return {"session_id": sid, "status": refresh_plan_session(cfg)["status"], "live": True}
 
 
+def plan_chat_reset(cfg) -> dict:
+    """Throw the project's planning chat away: the container and its PTY are stopped, the Session manager row
+    and the chat's state directory (session id, brief draft, coverage table, env dir, the chat's own ~/.claude)
+    are deleted and `plan_session` goes back to `none`. The spec repo is never touched: a brief that was
+    already approved stays where it is, and so do the style refs and the setup record.
+    Raises OSError when the state directory cannot be removed (nothing is forgotten in that case)."""
+    from . import planchat, sessions
+    from .workspace import rmtree
+    state = ensure(cfg)
+    sid = state["plan_session"].get("session_id") or ""
+    st = State(cfg.state_dir)
+    live = bool(sid) and sessions.BACKEND.alive(sid)
+    row = False
+    if sid:
+        try:
+            sessions.delete(sid)                 # stops the PTY first, then drops the hidden session row
+            row = True
+        except LookupError:
+            pass
+    # the PTY's own cleanup removes the container when `docker run` exits; this catches one left behind by a
+    # dashboard restart (the process is gone, the container is not)
+    rm = subprocess.run([cfg.docker_bin, "rm", "-f", planchat.container_name(cfg.name)], capture_output=True, text=True)
+    d = chat_dir(cfg)
+    had_dir = d.is_dir() and not d.is_symlink()
+    if had_dir:
+        rmtree(d)
+    nextstate.clear_plan_session(file(cfg))
+    st.log(f"plan-chat reset: session {sid[:8] or 'none'}{' (was running)' if live else ''}; "
+           f"container {'removed' if rm.returncode == 0 else 'not running'}; "
+           f"session row {'deleted' if row else 'none'}; {d} {'removed' if had_dir else 'absent'}")
+    return {"ok": True, "session_id": sid or None, "was_live": live, "container_removed": rm.returncode == 0,
+            "session_deleted": row, "status": "none"}
+
+
 def change_round(cfg) -> int | None:
     """None for the first brief; afterwards the next change number (briefs/change-<n>.md)."""
     spec = Path(cfg.spec_dir)

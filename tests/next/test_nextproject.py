@@ -261,10 +261,10 @@ class PlanChatBase(Project):
     def setUp(self):
         super().setUp()
         self.launched = []
-        orig = sessions.start_plan_chat
+        self.orig_start = sessions.start_plan_chat
         sessions.start_plan_chat = lambda sid, project, cwd, argv, on_exit=None: self.launched.append(
             (sid, project, cwd, argv, on_exit)) or {"id": sid}
-        self.addCleanup(setattr, sessions, "start_plan_chat", orig)
+        self.addCleanup(setattr, sessions, "start_plan_chat", self.orig_start)
 
 
 class PlanChat(PlanChatBase):
@@ -286,10 +286,19 @@ class PlanChat(PlanChatBase):
         self.assertFalse(env_file.exists(), "the env file goes when the terminal ends")
         p = nextstate.load(nextproject.file(self.cfg))["plan_session"]
         self.assertEqual((p["session_id"], p["status"]), (sid, "open"))
-        nextproject.plan_chat_start(self.cfg)
+        nextproject.plan_chat_start(self.cfg)            # no transcript yet: primed again under the same id
         argv2 = self.launched[1][3]
-        self.assertEqual(argv2[argv2.index("--resume") + 1], sid)
+        self.assertEqual(argv2[argv2.index("--session-id") + 1], sid)
+        self.assertNotIn("--resume", argv2)
         self.launched[1][4]()
+        d = nextproject.chat_dir(self.cfg) / "home" / planchat.PROJECTS_DIR / "-brief"
+        d.mkdir(parents=True)
+        (d / f"{sid}.jsonl").write_text('{"type":"user"}\n')
+        nextproject.plan_chat_start(self.cfg)            # the conversation exists now: resume it
+        argv3 = self.launched[2][3]
+        self.assertEqual(argv3[argv3.index("--resume") + 1], sid)
+        self.assertNotIn("--session-id", argv3)
+        self.launched[2][4]()
 
     def test_the_chat_mounts_its_own_allowed_domains_file_and_deletes_it_on_exit(self):
         nextproject.init(self.cfg, [], 1, [])
@@ -469,11 +478,132 @@ class Http(PlanChatBase):
         self.assertEqual(r["next"]["gate"], ["style ref 01 queued"])
         self.assertEqual(r["next"]["plan_session"]["status"], "open")
 
+    def test_reset_routes(self):
+        """Both reset taps: same Host/login/Origin/X-Hands checks, the project reset runs detached."""
+        nextproject.init(self.cfg, [], 1, [])
+        base = "/api/projects/proj"
+        for path, body in ((f"{base}/plan-chat/reset", None), (f"{base}/reset", {"confirm": "proj"})):
+            with self.subTest(path=path):
+                self.assertEqual(self.call("POST", path, body, xh=False)[0], 403)
+                self.assertEqual(self.call("POST", path, body, auth=False)[0], 401)
+        self.assertEqual(self.call("POST", "/api/projects/nope/reset", {"confirm": "nope"})[0], 404)
+        self.assertEqual(self.call("POST", f"{base}/reset", {"confirm": "wrong"})[0], 400)
+        self.assertEqual(self.call("POST", f"{base}/reset", {})[0], 400)
+        self.assertEqual(self.spawned, [])
+        with contextlib.redirect_stdout(io.StringIO()):          # the project log line goes to stdout too
+            st, r = self.call("POST", f"{base}/plan-chat/reset")
+        self.assertEqual((st, r["status"]), (200, "none"))
+        st, r = self.call("POST", f"{base}/reset", {"confirm": "proj"})
+        self.assertEqual((st, r["slug"], r["wipe_env"]), (200, "proj", False))
+        self.assertEqual(self.spawned[-1], ["proj", "reset", "--confirm", "proj"])
+        st, r = self.call("POST", f"{base}/reset", {"confirm": "proj", "wipe_env": True})
+        self.assertEqual((st, r["wipe_env"]), (200, True))
+        self.assertEqual(self.spawned[-1], ["proj", "reset", "--confirm", "proj", "--wipe-env"])
+        with Lock(self.cfg.state_dir / "runner.lock"):
+            st, r = self.call("POST", f"{base}/reset", {"confirm": "proj"})
+            self.assertEqual(st, 400)
+            self.assertIn("running", r["error"])
+        toml = cfgmod.CONFIG_HOME / "projects" / "proj.toml"
+        for line, word in (("imported = true\n", "imported"), ("self = true\n", "Phoenix")):
+            with self.subTest(line=line):
+                text = toml.read_text()
+                toml.write_text(text + line)
+                st, r = self.call("POST", f"{base}/reset", {"confirm": "proj"})
+                self.assertEqual((st, word in r["error"]), (400, True), r)
+                toml.write_text(text)
+        self.assertEqual(len(self.spawned), 2)
+        st, r = self.call("GET", "/api/p/proj")
+        self.assertEqual((r["managed"], r["imported"], r["is_self"]), (True, False, False))
+
     def test_create_and_amend_pass_the_choices_to_the_cli(self):
         self.assertEqual(self.dashboard.next_flags({"style_refs": [], "framework": 2}), ["--framework", "2"])
         self.assertEqual(self.call("POST", "/api/new", {"slug": "other", "description": "x", "style_refs": ["ftp://x"]})[0], 400)
         self.assertEqual(self.call("POST", "/api/p/proj/action/amend", {"feedback": "more", "libs": ["jquery"]})[0], 400)
         self.assertEqual(self.spawned, [])
+
+
+class PlanChatReset(PlanChatBase):
+    """`hands <p> plan-chat reset` / the Reset planning chat tap: the chat is thrown away, the spec repo is not."""
+
+    def setUp(self):
+        super().setUp()
+        orig = cfgmod.CONFIG_HOME                    # Session manager records live under it
+        cfgmod.CONFIG_HOME = self.tmp / "cfg"
+        self.addCleanup(setattr, cfgmod, "CONFIG_HOME", orig)
+        self.docker_log = self.tmp / "docker.log"
+        fake = self.tmp / "fakedocker"
+        fake.write_text(f'#!/bin/sh\necho "$@" >> {self.docker_log}\n')
+        fake.chmod(0o755)
+        self.cfg.docker_bin = str(fake)
+        quiet_out = contextlib.redirect_stdout(io.StringIO())      # State.log prints every line it writes
+        quiet_out.__enter__()
+        self.addCleanup(quiet_out.__exit__, None, None, None)
+
+    def start_chat(self) -> str:
+        nextproject.init(self.cfg, [], 1, [])
+        sid = nextproject.plan_chat_start(self.cfg)["session_id"]
+        self.launched[0][4]()                        # the terminal ended (the env file goes with it)
+        d = nextproject.brief_dir(self.cfg)
+        (d / "brief.md").write_text("# Brief: proj\n")
+        (d / "coverage.md").write_text("| Requirement | Where |\n")
+        home = nextproject.chat_dir(self.cfg) / "home" / planchat.PROJECTS_DIR / "-brief"
+        home.mkdir(parents=True)
+        (home / f"{sid}.jsonl").write_text('{"type":"user"}\n')
+        return sid
+
+    def test_reset_a_stopped_chat_forgets_it_and_keeps_the_spec_repo(self):
+        sid = self.start_chat()
+        sessions.Store().create_plan_chat(sid, "proj", nextproject.brief_dir(self.cfg))
+        (Path(self.cfg.spec_dir) / "brief.md").write_text("approved brief\n")
+        self.assertEqual(nextproject.plan_session_view(self.cfg)["status"], "brief_ready")
+        out = nextproject.plan_chat_reset(self.cfg)
+        self.assertEqual((out["was_live"], out["session_deleted"], out["status"], out["session_id"]),
+                         (False, True, "none", sid))
+        self.assertFalse(nextproject.chat_dir(self.cfg).exists(), "brief draft, coverage, env dir and home go")
+        self.assertIn(f"rm -f {planchat.container_name('proj')}", self.docker_log.read_text())
+        p = nextstate.load(nextproject.file(self.cfg))["plan_session"]
+        self.assertEqual((p["session_id"], p["status"], p["brief_sha256"]), (None, "none", None))
+        self.assertEqual(nextproject.plan_session_view(self.cfg)["status"], "none")
+        with self.assertRaises(LookupError):
+            sessions.Store().get(sid)
+        self.assertTrue((Path(self.cfg.spec_dir) / "brief.md").is_file(), "an approved brief is not touched")
+        self.assertIn("plan-chat reset", (Path(self.cfg.state_dir) / "runner.log").read_text())
+
+    def test_the_next_chat_after_a_reset_starts_fresh_with_the_primer(self):
+        sid = self.start_chat()
+        nextproject.plan_chat_reset(self.cfg)
+        res = nextproject.plan_chat_start(self.cfg)
+        sid2, argv = self.launched[1][0], self.launched[1][3]
+        self.assertNotEqual(sid2, sid)
+        self.assertEqual(res["session_id"], sid2)
+        self.assertEqual(argv[argv.index("--session-id") + 1], sid2)
+        self.assertEqual(argv[-1], planchat.primer(nextproject.plan_context(self.cfg, nextstate.load(nextproject.file(self.cfg)))))
+        self.launched[1][4]()
+
+    def test_reset_stops_a_running_chat_and_its_pty(self):
+        sid = self.start_chat()
+        self.orig_start(sid, "proj", nextproject.brief_dir(self.cfg), ["/bin/sh", "-c", "sleep 30"])
+        self.assertTrue(sessions.BACKEND.alive(sid))
+        out = nextproject.plan_chat_reset(self.cfg)
+        self.assertTrue(out["was_live"])
+        self.assertFalse(sessions.BACKEND.alive(sid))
+        self.assertFalse(nextproject.chat_dir(self.cfg).exists())
+        with self.assertRaises(LookupError):
+            sessions.Store().get(sid)
+
+    def test_reset_without_a_chat_is_harmless(self):
+        nextproject.init(self.cfg, [], 1, [])
+        out = nextproject.plan_chat_reset(self.cfg)
+        self.assertEqual((out["session_id"], out["session_deleted"], out["status"]), (None, False, "none"))
+        self.assertEqual(nextstate.load(nextproject.file(self.cfg))["plan_session"]["status"], "none")
+
+    def test_the_cli_verb(self):
+        from hands.__main__ import plan_chat_cmd
+        sid = self.start_chat()
+        rc, out = quiet(plan_chat_cmd, self.cfg, "reset")
+        self.assertEqual(rc, 0)
+        self.assertIn(sid, out)
+        self.assertEqual(quiet(plan_chat_cmd, self.cfg, "nonsense")[0], 2)
 
 
 class SessionManagerRefusesPlanChat(unittest.TestCase):

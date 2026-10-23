@@ -17,6 +17,11 @@ launcher executes containers); `brief_hash`/`status` read the brief directory; `
 brief into the spec repo and commits it. The session uuid is created once per project (first start) and
 stored by the caller in the project's `plan_session` state.
 
+A stored session id alone does not mean there is a conversation to resume: a first launch that died before
+Claude wrote its transcript (the connect check, a missing token) leaves the id behind. `launch_spec` therefore
+asks the chat's home for the transcript (`has_transcript`) and sends the primer again when there is none,
+instead of resuming an empty session.
+
 CLI: python3 -m hands.planchat <primer|launch-spec|hash|status|approve>
 Exit codes: 0 ok, 1 invalid input (unreadable JSON, missing brief, git failure), 4 neither ANTHROPIC_API_KEY nor
 CLAUDE_CODE_OAUTH_TOKEN in the secrets file, 5 approve refused (`hash mismatch` / `coverage.md missing`).
@@ -51,6 +56,7 @@ APP_MOUNT = "/app"
 BRIEF_MOUNT = "/brief"
 HOME_MOUNT = "/home/node/.claude"
 SKILLS_MOUNT = "/home/node/.claude/skills"
+PROJECTS_DIR = "projects"   # Claude Code keeps transcripts in <its home>/projects/<escaped cwd>/<session>.jsonl
 DOMAINS_MOUNT = "/etc/hands/allowed-domains"
 CHAT_DOMAINS = ("platform.claude.com",)   # the chat's whole per-run egress list, on top of the image allowlist
 BRIEF_FILE = "brief.md"
@@ -320,8 +326,30 @@ def write_domains_file(env_dir: Path, slug: str, domains: tuple[str, ...] = CHAT
     return Path(name)
 
 
+def container_name(slug: str) -> str:
+    """The chat's container name: one per project, so a reset knows what to remove."""
+    return f"hands-{slug}-{ROLE}"
+
+
 def new_session_id() -> str:
     return str(uuid.uuid4())
+
+
+def transcript_files(home_dir: Path | str, session_id: str | None) -> list[Path]:
+    """The chat's transcripts for `session_id` inside its own `~/.claude` (the home_dir mount): Claude Code
+    writes <home>/projects/<cwd with separators replaced>/<session id>.jsonl. The cwd folder is globbed, so
+    this does not depend on how Claude escapes the working directory."""
+    if not session_id or not UUID_RE.match(session_id):
+        return []
+    try:
+        return sorted(p for p in (Path(home_dir) / PROJECTS_DIR).glob(f"*/{session_id}.jsonl") if p.is_file())
+    except OSError:
+        return []
+
+
+def has_transcript(home_dir: Path | str, session_id: str | None) -> bool:
+    """True when `claude --resume <session_id>` would find a conversation in this home."""
+    return bool(transcript_files(home_dir, session_id))
 
 
 def launch_spec(ctx: PlanContext, state: PlanSession, paths: Paths, network_args: list[str],
@@ -329,7 +357,8 @@ def launch_spec(ctx: PlanContext, state: PlanSession, paths: Paths, network_args
     """`docker run` argv for the planning chat plus its session record: {argv, session, session_id, temp_files}.
     `temp_files` are the per-run files the argv points at (the token env file and the allowed-domains file);
     the caller deletes them when the terminal ends.
-    First start: `claude --session-id <uuid4> <primer>`; afterwards `claude --resume <uuid>`."""
+    First start (and any later start with no transcript for the stored id): `claude --session-id <uuid4>
+    <primer>`; once the chat has a transcript: `claude --resume <uuid>`."""
     if not isinstance(network_args, list) or not all(isinstance(a, str) for a in network_args):
         raise ValueError("network_args must be a list of strings")
     session_id = state.session_id
@@ -348,7 +377,7 @@ def launch_spec(ctx: PlanContext, state: PlanSession, paths: Paths, network_args
     domains_file = write_domains_file(paths.env_dir, ctx.slug)
     mounts.append(f"{_host_path(domains_file)}:{DOMAINS_MOUNT}:ro")
     argv = ["docker", "run", "--rm", "-it", "--init",
-            "--name", f"hands-{ctx.slug}-{ROLE}",
+            "--name", container_name(ctx.slug),
             "--label", f"hands.project={ctx.slug}", "--label", f"hands.role={ROLE}",
             *network_args,
             "--security-opt", "no-new-privileges",
@@ -360,11 +389,13 @@ def launch_spec(ctx: PlanContext, state: PlanSession, paths: Paths, network_args
     argv += ["-w", BRIEF_MOUNT, image]
     if session_id is None:
         session_id = new_session_id()
-        argv += ["claude", "--session-id", session_id, primer(ctx)]
-    else:
+    resumed = has_transcript(paths.home_dir, session_id)
+    if resumed:
         argv += ["claude", "--resume", session_id]
+    else:                                       # no conversation on disk: start this id with the primer
+        argv += ["claude", "--session-id", session_id, primer(ctx)]
     return {"argv": argv, "session": {"project": ctx.slug, "role": ROLE, "hidden": True}, "session_id": session_id,
-            "temp_files": [str(env_file), str(domains_file)]}
+            "resumed": resumed, "temp_files": [str(env_file), str(domains_file)]}
 
 
 # ------------------------------------------------------------------------------------ brief state

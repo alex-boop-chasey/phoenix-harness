@@ -331,6 +331,7 @@ ol.phases li.done { color: var(--ok); }
 .term-foot .conn.bad { color: var(--bad); } .term-foot .conn.ok { color: var(--ok); } .term-foot .conn.warn { color: var(--warn); }
 .kbd { font: 11px var(--mono); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; color: var(--ink-2); background: var(--surface); }
 dialog.dialog .field { display: grid; gap: 4px; margin-bottom: var(--sp-2); }
+dialog.dialog .check { margin-bottom: var(--sp-2); }
 dialog.dialog .field label { margin: 0; }
 .check { display: flex; gap: 8px; align-items: flex-start; font-size: var(--fs-1); cursor: pointer; }
 .check input { margin: 3px 0 0; accent-color: var(--accent); flex: none; }

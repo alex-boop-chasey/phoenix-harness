@@ -228,7 +228,8 @@
 
   // The project page's planning chat panel: the plan-chat button (data-act plan-chat); with a ready brief its short
   // hash and the approve button, which carries the full hash behind the short one it shows (data-act brief-approve);
-  // once approved a badge instead of the button.
+  // once approved a badge instead of the button. Once there is a chat, "Reset planning chat" (data-act
+  // plan-chat-reset) throws it away and starts the next one from the primer.
   function planChatPanel(doc, slug, ps) {
     const status = planStatus(ps);
     const sha = fullSha(ps && ps.brief_sha256);
@@ -254,7 +255,9 @@
     return h(doc, "section", { class: "planchat", "data-key": "plan-chat", "data-testid": "plan-chat-panel" },
       h(doc, "p", { class: "muted" }, hint),
       h(doc, "div", { class: "row" }, h(doc, "button", { class: "btn sm", type: "button", "data-act": "plan-chat", "data-arg": slug,
-        "data-testid": "plan-chat-button" }, planChatLabel(status))),
+        "data-testid": "plan-chat-button" }, planChatLabel(status)),
+        status === "none" ? null : h(doc, "button", { class: "btn sm danger", type: "button", "data-act": "plan-chat-reset",
+          "data-arg": slug, "data-testid": "plan-chat-reset" }, "Reset planning chat")),
       brief);
   }
 

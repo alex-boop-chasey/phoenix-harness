@@ -32,6 +32,9 @@ Security model (the dashboard can start builds, so it is treated as a control pl
   (POST /api/projects/<p>/plan-chat, hands.nextproject) is a Session manager terminal running the
   hands.planchat container (firewalled, a one-variable build-token env file, spec/app read-only); its
   plan_session lives in the project's next.json, and plan-chat/approve commits the hash-pinned brief
+- the two resets: POST /api/projects/<p>/plan-chat/reset throws the chat away in-process (hands.nextproject),
+  POST /api/projects/<p>/reset runs `hands <p> reset --confirm <p>` detached (hands.reset: destroy, then
+  create again with the saved settings) and reports through the create status file and log
 """
 from __future__ import annotations
 
@@ -423,7 +426,8 @@ def detail(name: str) -> dict:
                           "attempts": x.get("attempts", 0), "commit": x.get("commit", ""),
                           "reasons": (x.get("reasons") or [])[:12]})
     out.update({"steps": steps, "spec_error": spec_err, "spec_commit": spec_commit,
-                "managed": cfg.managed, "setup": setup_info(cfg), "create": create_info(name), "plan": plan_info(cfg),
+                "managed": cfg.managed, "imported": cfg.imported, "is_self": cfg.is_self,
+                "setup": setup_info(cfg), "create": create_info(name), "plan": plan_info(cfg),
                 "round": round_info(cfg, st, [s["id"] for s in steps] if not spec_err else None),
                 "next": next_info(cfg)})
     return out
@@ -644,8 +648,9 @@ def create_info(slug: str) -> dict | None:
     st = read_json(newproject.status_path(slug), None)
     if not isinstance(st, dict):
         return None
+    from . import reset as resetmod
     if (st.get("state") == "running" and not Lock.held(newproject.lock_path(slug))
-            and time.time() - int(st.get("at") or 0) > 20):
+            and not resetmod.running(slug) and time.time() - int(st.get("at") or 0) > 20):
         st = {**st, "state": "failed", "error": "the create process ended unexpectedly; see the log"}
     try:
         text, _ = read_file(newproject.creating_dir() / f"{slug}.log", 200_000, tail=True)
@@ -979,6 +984,41 @@ def plan_chat_resume(rec: dict, telegram=None) -> dict:
         raise ValueError("a planning chat cannot run on Telegram")
     plan_chat(str(rec.get("project") or ""))
     return sessions.Store().row(sessions.Store().get(rec["id"]))
+
+
+def plan_chat_reset(name: str) -> dict:
+    """POST /api/projects/NAME/plan-chat/reset: stop the chat, delete its session row, brief draft and state
+    directory, status back to none. The spec repo (an approved brief) is not touched."""
+    from . import nextproject
+    cfg = load_cfg(name)
+    with _CREATE_MUTEX:
+        try:
+            res = nextproject.plan_chat_reset(cfg)
+        except OSError as e:
+            raise ValueError(f"the chat was stopped but its folder could not be removed: {str(e)[:200]}")
+    log_line(f"plan-chat reset {name} (session {res['session_id'] or 'none'})")
+    return res
+
+
+def reset_project(name: str, req: dict) -> dict:
+    """POST /api/projects/NAME/reset {"confirm": "<slug>", "wipe_env": bool}: `hands NAME reset` detached
+    (destroy + create with the saved settings). The log is the create log the Creation panel already shows."""
+    from . import newproject, reset as resetmod
+    cfg = load_cfg(name)
+    if str(req.get("confirm", "")) != name:
+        raise ValueError(f"type {name} to confirm")
+    wipe = req.get("wipe_env") is True
+    with _CREATE_MUTEX:
+        why = resetmod.refusal(cfg)
+        if why:
+            raise ValueError(why)
+        if resetmod.running(name):
+            raise ValueError(f"{name} is already being reset")
+        log = newproject.creating_dir() / f"{name}.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        spawn_cli(log, [name, "reset", "--confirm", name] + (["--wipe-env"] if wipe else []))
+    log_line(f"reset {name} started (variables {'wiped' if wipe else 'kept'})")
+    return {"ok": True, "slug": name, "wipe_env": wipe}
 
 
 def plan_chat_approve(name: str, req: dict) -> dict:
@@ -1343,6 +1383,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, plan_chat(name))
             if rest == ["plan-chat", "approve"]:
                 return self._json(200, plan_chat_approve(name, _json_body(body)))
+            if rest == ["plan-chat", "reset"]:
+                return self._json(200, plan_chat_reset(name))
+            if rest == ["reset"]:
+                return self._json(200, reset_project(name, _json_body(body)))
         if parts == ["api", "sessions", "new"]:
             try:
                 req = json.loads(body or b"{}")

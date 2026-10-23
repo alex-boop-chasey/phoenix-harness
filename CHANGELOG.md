@@ -4,6 +4,21 @@
 
 From `main` 0301dd6 (0.5.8). Session manager untouched.
 
+- Reset controls. `hands <p> plan-chat reset` and "Reset planning chat" on the project panel stop the chat
+  container and its PTY, delete the hidden Session manager row and the whole `plan-chat` state directory
+  (session id, brief draft, coverage table, env dir, the chat's own `~/.claude`) and put `plan_session` back
+  to `none`; the spec repo, an approved brief, the style refs and the setup record are untouched.
+  `hands <p> reset --confirm <p> [--wipe-env]` and "Reset project" (type the slug to confirm) destroy what
+  `create` recorded and create the project again with its saved settings (description, framework, libraries,
+  style ref URLs; the project's variables are kept unless the box is ticked). Imported and self projects are
+  refused, and so is a reset while the runner, the scaffold, the planner, a style-ref run or a create is
+  going; the settings are staged under `~/.config/hands/creating/<slug>.reset/` before anything is deleted,
+  so a reset that fails halfway says what exists and finishes when it is run again. Telegram notice on start,
+  success and failure.
+- The planning chat no longer resumes an empty session: `launch_spec` looks for the session's transcript in
+  the chat's own home and sends the primer again (same session id) when there is none, so a chat whose first
+  launch died at the connect check opens as a fresh primed chat instead of a blank one.
+
 - Project payloads carry a change stamp: `GET /api/p/<name>` and `/log` answer with `ETag` + `version`
   (newest mtime over the runner's state files and the spec clone's HEAD, plus runner.log's size);
   `If-None-Match` → `304`. New `GET /api/p/<name>/events`: Server-Sent Events change feed (`event: change`

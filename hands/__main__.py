@@ -23,6 +23,11 @@
                          runs next (state: <state_dir>/next.json); planning waits for both (the gate)
   destroy --confirm P    delete a hands-created project: GitHub repos, keys, folders, config
                          (an imported repo is never deleted: only its hands deploy key is removed)
+  reset --confirm P      destroy and create the same project again with its saved settings (description,
+                         framework, libs, style ref URLs; its variables are kept unless --wipe-env).
+                         Refused for imported and self projects and while anything is running
+  plan-chat reset        throw the project's planning chat away (container, session, brief draft) and
+                         start again from the primer; an approved brief in the spec repo is untouched
   plan                   run the planner (feedback on stdin): idea -> spec -> PR hands/plan
                          (--amend with --style-ref/--framework/--libs: a change request; new refs are processed
                          first). Refused while the gate is blocked (style refs not frozen, setup not done)
@@ -64,8 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="hands", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("project")
     ap.add_argument("command", choices=["run", "start", "status", "check", "validate", "prompt", "stop", "ack",
-                                        "mark-done", "reset-step", "watchdog", "create", "destroy", "plan", "approve", "usage",
-                                        "merge", "discard", "setup", "refs"])
+                                        "mark-done", "reset-step", "watchdog", "create", "destroy", "reset", "plan",
+                                        "approve", "usage", "merge", "discard", "setup", "refs", "plan-chat"])
     ap.add_argument("arg", nargs="?")
     ap.add_argument("args", nargs="*", help="refs add|retry|remove: the URLs or ref indexes")
     ap.add_argument("--steps", type=int)
@@ -79,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--from-repo", default="", metavar="OWNER/REPO")
     ap.add_argument("--branch", default="")
     ap.add_argument("--ruleset", action="store_true")
+    ap.add_argument("--wipe-env", action="store_true", help="reset: start with no environment variables "
+                                                            "(default: the project's variables are kept)")
     ap.add_argument("--branch-sha", default="", help="merge/discard: the change/C<n> head the page showed")
     ap.add_argument("--main-sha", default="", help="merge: the main head the page showed")
     ap.add_argument("--framework", type=int, help="setup: 1 None, 2 Astro+Tailwind, 3 +AI kit, 4 Next.js+Tailwind, 5 +AI kit")
@@ -95,9 +102,12 @@ def main(argv: list[str] | None = None) -> int:
             print("'all' is only valid with watchdog or usage")
             return 2
         return watchdog_all()
-    if a.command in ("create", "destroy"):
+    if a.command in ("create", "destroy", "reset"):
         from . import newproject
         try:
+            if a.command == "reset":
+                from . import reset as resetmod
+                return resetmod.reset(a.project, a.confirm, wipe_env=a.wipe_env)
             if a.command == "create":
                 from . import nextstate
                 try:                                   # refuse bad choices before any repo exists
@@ -137,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
         return setup.run(cfg, framework=a.framework, libs=libs)
     if a.command == "refs":
         return refs_cmd(cfg, a.arg or "", a.args)
+    if a.command == "plan-chat":
+        return plan_chat_cmd(cfg, a.arg or "")
     r = Runner(cfg)
     st = r.state
     cmd = a.command
@@ -410,6 +422,25 @@ def refs_cmd(cfg, verb: str, args: list[str]) -> int:
         print(f"FAILED: {e}")
         return 1
     return 1 if _process(cfg, indexes) else 0
+
+
+def plan_chat_cmd(cfg, verb: str) -> int:
+    """`plan-chat reset`: stop the chat and delete its session, brief draft and state (the spec repo keeps an
+    approved brief). The chat starts from the primer again the next time it is opened."""
+    from . import nextproject
+    if verb != "reset":
+        print(f"usage: hands {cfg.name} plan-chat reset")
+        return 2
+    try:
+        res = nextproject.plan_chat_reset(cfg)
+    except OSError as e:
+        print(f"FAILED: the planning chat was stopped but {nextproject.chat_dir(cfg)} could not be removed ({e}); "
+              f"nothing was forgotten. Fix that, then run this again.")
+        return 1
+    sid = res["session_id"] or "none"
+    print(f"planning chat reset (session {sid}{', was running' if res['was_live'] else ''}). "
+          f"{nextproject.chat_dir(cfg)} removed; status none.")
+    return 0
 
 
 def round_cmd(cfg, cmd: str, branch_sha: str, main_sha: str) -> int:

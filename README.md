@@ -23,6 +23,8 @@ hands <project> watchdog         # restarts the loop if it crashed (not after es
 hands all watchdog               # cron (installed every 10 min): every project's watchdog + keeps dashboard up
 hands <slug> create [--from-repo O/R [--branch B] [--ruleset]]   # new project (description on stdin)
 hands <slug> destroy --confirm <slug>                             # remove what create made
+hands <slug> reset --confirm <slug> [--wipe-env]                  # destroy + create again, same settings
+hands <project> plan-chat reset   # throw the planning chat away (next one starts from the primer)
 hands-dash url                   # single-use login link for the app (5 min)
 hands-dash start | stop          # dashboard in tmux session hands_dashboard, 127.0.0.1:8090
 hands-dash public set|show|test|off   # reach the app through Cloudflare Access (docs/public-access.md)
@@ -56,6 +58,21 @@ and the runner config. All project secrets live under ~/.config/hands (dirs 0700
 Defaults (org, code owner, image, models): ~/.config/hands/new-project.toml.
 Remove a hands-created project (CLI only): `hands <slug> destroy --confirm <slug>`; it deletes only the repos
 recorded in created.json and only if their GitHub id still matches.
+
+Start a project over (dashboard: the "Reset project" panel, type the slug; or `hands <slug> reset --confirm
+<slug> [--wipe-env]`): the same destroy, then `create` again with the settings the form asked for
+(description, framework, libraries, style ref URLs; the project's variables are kept unless `--wipe-env`).
+Imported and self projects are refused, and so is a reset while the runner, the scaffold, the planner, a
+style-ref run or a create is going. The settings are staged in `~/.config/hands/creating/<slug>.reset/`
+before anything is deleted, so a reset that stops halfway says what exists and finishes when it is run
+again. `<slug>.toml` is written fresh by create: keys you set there by hand are named in the log, not
+replayed. The spec repo, the app code, the plan and the build history are gone -- a reset is a new project
+under the same name, and the planner is not started.
+
+Throw a project's planning chat away (dashboard: "Reset planning chat"; or `hands <p> plan-chat reset`):
+the chat container and its terminal are stopped, the hidden session row and the whole `plan-chat` state
+directory (session id, draft brief, coverage table, the chat's own `~/.claude`) are deleted and the next
+chat starts from the primer. A brief that was already approved stays in the spec repo.
 
 ### Start from an existing repo (0.5)
 Tick "Start from an existing repo" in the form (owner/repo, optional branch, optional ruleset), or on the VPS:

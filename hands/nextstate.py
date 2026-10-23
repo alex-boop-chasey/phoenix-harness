@@ -261,6 +261,15 @@ def set_plan_session(path: Path, status: str, session_id: str | None = None, sha
     return p
 
 
+def clear_plan_session(path: Path) -> dict:
+    """Forget the planning chat entirely (`plan-chat reset`): no session id, no brief hash, status `none`.
+    Style refs and the setup record are left alone, and so is an approved brief in the spec repo."""
+    state = load(path)
+    state["plan_session"] = dict(empty()["plan_session"], updated=now_iso())
+    save(path, state)
+    return state["plan_session"]
+
+
 # --------------------------------------------------------------------------------------------- gate
 
 def gate(state: dict) -> list[str]:
@@ -333,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--status", required=True, help=" | ".join(SETUP_STATUSES))
     p.add_argument("--record", help="JSON file with the setup record (refs/setup.json)")
     p = cmd("set-plan-session", "set the planning chat state")
-    p.add_argument("--status", required=True, help=" | ".join(PLAN_STATUSES))
+    p.add_argument("--status", required=True, help=" | ".join(PLAN_STATUSES) + " | clear (forget the chat)")
     p.add_argument("--session-id")
     p.add_argument("--sha")
     cmd("gate", "exit 1 and print the reasons when planning may not start")
@@ -355,7 +364,10 @@ def main(argv: list[str] | None = None) -> int:
         elif a.cmd == "set-setup":
             set_setup(f, a.status, _record(a.record))
         elif a.cmd == "set-plan-session":
-            set_plan_session(f, a.status, a.session_id, a.sha)
+            if a.status == "clear":
+                clear_plan_session(f)
+            else:
+                set_plan_session(f, a.status, a.session_id, a.sha)
         elif a.cmd == "gate":
             reasons = gate(load(f))
             for r in reasons:

@@ -138,3 +138,32 @@ test("shouldOpenPlanChat: once, and only once the project exists", () => {
   assert.equal(nf.shouldOpenPlanChat(null), false);
   assert.equal(nf.shouldOpenPlanChat({}), false);
 });
+
+// A minimal stand-in for `document`: nextform's h() only needs createElement, className/setAttribute and append.
+function fakeDoc() {
+  const make = (tag) => ({
+    tag, attrs: {}, kids: [], className: "",
+    setAttribute(k, v) { this.attrs[k] = v; },
+    addEventListener() {},
+    append(...k) { this.kids.push(...k); },
+  });
+  return { createElement: make };
+}
+function acts(node, out = []) {
+  if (!node || typeof node !== "object") return out;
+  if (node.attrs && node.attrs["data-act"]) out.push(node.attrs["data-act"]);
+  for (const k of node.kids || []) acts(k, out);
+  return out;
+}
+
+test("planChatPanel offers Reset planning chat only once there is a chat", () => {
+  const sid = "4b1f2c3d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+  const sha = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+  const panel = (ps) => acts(nf.planChatPanel(fakeDoc(), "demo", ps));
+  assert.deepEqual(panel(null), ["plan-chat"], "no chat yet: nothing to reset");
+  assert.deepEqual(panel({ session_id: null, status: "none", brief_sha256: null }), ["plan-chat"]);
+  assert.deepEqual(panel({ session_id: sid, status: "open", brief_sha256: null }), ["plan-chat", "plan-chat-reset"]);
+  assert.deepEqual(panel({ session_id: sid, status: "brief_ready", brief_sha256: sha }),
+    ["plan-chat", "plan-chat-reset", "brief-approve"]);
+  assert.deepEqual(panel({ session_id: sid, status: "approved", brief_sha256: sha }), ["plan-chat", "plan-chat-reset"]);
+});

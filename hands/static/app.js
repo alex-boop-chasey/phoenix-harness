@@ -303,20 +303,36 @@ function menuKey(ev) {
 }
 
 // ---- confirmation dialog (<dialog>; non-modal fallback where showModal is missing; never a browser dialog)
-function confirmDialog({ title, body, warn, ok, okClass }) {
+// requireText: the OK button stays disabled until exactly that text is typed (used for a reset).
+// checkbox: a tick box with that label; the promise then resolves {ok: true, checked} instead of true.
+function confirmDialog({ title, body, warn, ok, okClass, requireText, checkbox }) {
   return new Promise((resolve) => {
     let done = false;
-    const finish = (v) => { if (done) return; done = true; resolve(v); if (typeof dlg.close === "function") dlg.close(); dlg.remove(); };
+    const box = checkbox ? el("input", { type: "checkbox", id: "dlg-check" }) : null;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      resolve(v === true && box ? { ok: true, checked: box.checked } : v);
+      if (typeof dlg.close === "function") dlg.close();
+      dlg.remove();
+    };
     const cancel = el("button", { class: "btn", type: "button", on: { click: () => finish(false) } }, "Cancel");
-    const okBtn = el("button", { class: okClass || "btn danger", type: "button", on: { click: () => finish(true) } }, ok || "OK");
+    const okBtn = el("button", { class: okClass || "btn danger", type: "button", ...(requireText ? { disabled: "" } : {}),
+      on: { click: () => { if (!okBtn.disabled) finish(true); } } }, ok || "OK");
+    const field = requireText
+      ? el("input", { type: "text", id: "dlg-text", autocomplete: "off", spellcheck: "false", "data-testid": "dlg-text",
+          on: { input: () => { okBtn.disabled = field.value.trim() !== requireText; } } })
+      : null;
     const dlg = el("dialog", { class: "dialog", "aria-labelledby": "dlg-title", on: { close: () => finish(false) } },
       el("h2", { id: "dlg-title" }, title),
       warn ? el("div", { class: "notice warn" }, warn) : null,
       el("p", { class: "muted" }, body),
+      field ? el("label", { class: "field", for: "dlg-text" }, `Type ${requireText}`, field) : null,
+      box ? el("label", { class: "check", for: "dlg-check" }, box, el("span", {}, checkbox)) : null,
       el("div", { class: "row" }, cancel, okBtn));
     document.body.append(dlg);
     openDialog(dlg);
-    cancel.focus();
+    (field || cancel).focus();
   });
 }
 
@@ -356,6 +372,8 @@ function dispatch(ev) {
   else if (a.act === "style-ref-remove" && d) removeRef(d.name, a.arg);
   else if (a.act === "setup-retry" && d) refAction(d.name, "/setup/retry", "POST", "Retrying setup…");
   else if (a.act === "plan-chat") planChat(a.arg, t);
+  else if (a.act === "plan-chat-reset") planChatReset(a.arg, t);
+  else if (a.act === "project-reset") projectReset(a.arg, t);
   else if (a.act === "brief-approve" && d) approveBrief(d.name, a.arg, t);
 }
 function openPanel(key) {
@@ -423,6 +441,45 @@ async function planChat(name, btn) {
     location.hash = `#/sessions/${encodeURIComponent(r.session_id)}`;
   } catch (e) { toast(`Planning chat refused: ${e.message}`, true); }
   if (btn) btn.disabled = false;
+}
+// Resets. Both taps are POSTs with the same Origin/X-Hands checks as every other action; the chat reset is
+// immediate, the project reset runs detached (its progress is the Creation panel's log).
+async function planChatReset(name, btn) {
+  if (!(await confirmDialog({ title: `Reset the planning chat of ${name}?`,
+    warn: "The conversation and the draft brief (brief.md and coverage.md) are deleted.",
+    body: "A brief you already approved stays in the spec repo, and so do the style refs and the setup. The next chat starts from the beginning.",
+    ok: "Reset planning chat", okClass: "btn danger" }))) return;
+  if (btn) btn.disabled = true;
+  try {
+    await api(`/api/projects/${encodeURIComponent(name)}/plan-chat/reset`, { method: "POST", headers: { "X-Hands": "1" } });
+    toast("Planning chat reset.");
+  } catch (e) { toast(`Reset refused: ${e.message}`, true); }
+  if (btn) btn.disabled = false;
+  refresh(false);
+}
+async function projectReset(name, btn) {
+  const r = await confirmDialog({ title: `Reset ${name}?`,
+    warn: "The GitHub repos, the deploy keys, the plan, the brief and the whole build history are deleted; the project is then created again from its saved settings.",
+    body: "Description, framework, libraries and style ref URLs are replayed. The planner is not started. The project's variables are kept unless you tick the box.",
+    requireText: name, checkbox: "Also wipe the environment variables", ok: "Reset project", okClass: "btn danger" });
+  if (!r) return;
+  if (btn) btn.disabled = true;
+  try {
+    await api(`/api/projects/${encodeURIComponent(name)}/reset`, { method: "POST",
+      headers: { "X-Hands": "1", "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: name, wipe_env: !!r.checked }) });
+    toast(`Resetting ${name}: watch the Creation panel.`);
+  } catch (e) { toast(`Reset refused: ${e.message}`, true); }
+  if (btn) btn.disabled = false;
+  refresh(false);
+}
+function resetSection(d) {
+  if (!d.managed || d.imported || d.is_self) return null;
+  return el("section", { "data-key": "reset" },
+    el("p", { class: "muted" }, "Start this project over: its GitHub repos, deploy keys, clones, plan and build history "
+      + "are deleted, then the project is created again from the same description, framework, libraries and style ref URLs."),
+    el("div", { class: "row" }, el("button", { class: "btn danger", type: "button", "data-act": "project-reset",
+      "data-arg": d.name, "data-testid": "project-reset" }, "Reset project")));
 }
 function planChatHint(ps) {
   const s = hands.nextform.planStatus(ps);
@@ -1186,7 +1243,7 @@ const PANEL_DEFAULTS = {
   rounds: (d) => !!(d.round && d.round.record && d.round.record.status !== "merged"),
   setup: (d) => !(d.setup && d.setup.spec_ready),
   env: () => false, steps: () => true, metrics: () => false, log: (d) => !!d.alive, attempts: () => false,
-  progress: () => false, viewer: () => false, create: () => true,
+  progress: () => false, viewer: () => false, create: () => true, reset: () => false,
   planchat: (d) => !!(d.next && d.next.plan_session && ["open", "brief_ready"].includes(d.next.plan_session.status)),
   stylerefs: (d) => !!(d.next && ((d.next.style_refs || []).some((r) => r.status !== "frozen") || (d.next.setup && d.next.setup.status === "failed"))),
 };
@@ -1240,7 +1297,8 @@ function render(name, d, log) {
     panel(name, "log", "Runner log", d, logSec, d.alive ? "live" : ""),
     panel(name, "attempts", "Attempts", d, att, attemptsCache.name === name ? String(attemptsCache.rows.length) : ""),
     panel(name, "progress", "Progress notes", d, progressSection(d), String((d.progress || []).length)),
-    panel(name, "viewer", "File", d, el("section", { "data-key": "viewer" }, keep(viewerTitle, "viewer-title"), keep(viewer, "viewer-pre")))].filter(Boolean));
+    panel(name, "viewer", "File", d, el("section", { "data-key": "viewer" }, keep(viewerTitle, "viewer-title"), keep(viewer, "viewer-pre"))),
+    panel(name, "reset", "Reset project", d, resetSection(d))].filter(Boolean));
   const next = el("div", { class: "layout" }, content, stepBar(d));
   const live = $("#main").firstElementChild;
   if (live && live.classList.contains("layout")) hands.render.patch(live, next);
