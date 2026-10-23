@@ -52,6 +52,7 @@ const when = (t) => (t ? new Date(t * 1000).toLocaleString() : "");
 const localTs = (iso) => { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleString() : (iso || ""); };
 let mode = "project";        // "project" | "new" | "creating" | "empty" (every project closed)
 let creatingSlug = null;
+let creatingReset = false;   // the "creating" view is following a reset (destroy + create), not a new project
 let projects = [];           // last /api/projects result (open and closed)
 
 async function loadProjects() {
@@ -468,7 +469,10 @@ async function projectReset(name, btn) {
     await api(`/api/projects/${encodeURIComponent(name)}/reset`, { method: "POST",
       headers: { "X-Hands": "1", "Content-Type": "application/json" },
       body: JSON.stringify({ confirm: name, wipe_env: !!r.checked }) });
-    toast(`Resetting ${name}: watch the Creation panel.`);
+    toast(`Resetting ${name}: destroy, then create again.`);
+    // the project disappears from the tab strip while it is destroyed: follow the log instead, as a create does
+    mode = "creating"; creatingSlug = name; creatingChat = false; creatingChatStarted = false;
+    creatingEnvError = ""; creatingReset = true;
   } catch (e) { toast(`Reset refused: ${e.message}`, true); }
   if (btn) btn.disabled = false;
   refresh(false);
@@ -833,7 +837,8 @@ function showNew() {
           headers: { "X-Hands": "1", "Content-Type": "application/json" }, body: JSON.stringify({ set: vars }) });
       } catch (e) { creatingEnvError = `The project is being created, but its variables were not saved (${e.message}). Add them below.`; }
     }
-    mode = "creating"; creatingSlug = slug.value; creatingChat = chat; creatingChatStarted = false; refresh(false);
+    mode = "creating"; creatingSlug = slug.value; creatingChat = chat; creatingChatStarted = false;
+    creatingReset = false; refresh(false);
   } } },
     el("label", { for: "slug" }, "Project slug"), slug,
     el("p", { class: "muted" }, "Lowercase letters, digits and hyphens. Becomes the repo names <slug>-specs and <slug>-app (or just <slug>-specs when starting from an existing repo)."),
@@ -869,14 +874,17 @@ async function refreshCreating() {
     if (mode !== "creating" || slug !== creatingSlug) return;
     const done = c.state === "done" && c.project_exists;
     $("#main").replaceChildren(...[el("section", {},
-      el("div", { class: "row" }, el("h2", {}, `Creating ${slug}`), badge(c.state === "failed" ? "escalation" : c.state)),
+      el("div", { class: "row" }, el("h2", {}, `${creatingReset ? "Resetting" : "Creating"} ${slug}`),
+        badge(c.state === "failed" ? "escalation" : c.state)),
       c.error ? el("p", { class: "reason" }, c.error) : null,
       el("pre", {}, c.lines.join("\n")),
       done ? el("div", { class: "row out" }, el("button", { class: "act", "data-act": "select", "data-arg": slug }, `Open ${slug}`),
         creatingChat ? el("button", { class: "btn primary", "data-act": "plan-chat", "data-arg": slug }, "Plan with Claude") : null) : null,
-      c.state === "failed" ? el("p", { class: "muted" }, c.project_exists
-        ? `Fix the cause, then on the VPS: hands ${slug} destroy --confirm ${slug}   and create it again.`
-        : "Nothing was created. Fix the cause and create it again.") : null),
+      c.state === "failed" ? el("p", { class: "muted" }, creatingReset
+        ? `The log above says what exists. Fix the cause, then on the VPS: hands ${slug} reset --confirm ${slug}`
+        : c.project_exists
+          ? `Fix the cause, then on the VPS: hands ${slug} destroy --confirm ${slug}   and create it again.`
+          : "Nothing was created. Fix the cause and create it again.") : null),
       c.state === "running" ? el("section", { class: "envsec" }, el("h2", {}, "Environment"),
         creatingEnvError ? el("div", { class: "notice bad" }, creatingEnvError) : null,
         envPanel(`creating:${slug}`, slug)) : null].filter(Boolean));
