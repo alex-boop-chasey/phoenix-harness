@@ -878,8 +878,7 @@ async function refreshCreating() {
         badge(c.state === "failed" ? "escalation" : c.state)),
       c.error ? el("p", { class: "reason" }, c.error) : null,
       el("pre", {}, c.lines.join("\n")),
-      done ? el("div", { class: "row out" }, el("button", { class: "act", "data-act": "select", "data-arg": slug }, `Open ${slug}`),
-        creatingChat ? el("button", { class: "btn primary", "data-act": "plan-chat", "data-arg": slug }, "Plan with Claude") : null) : null,
+      done ? el("div", { class: "row out" }, el("button", { class: "act", "data-act": "select", "data-arg": slug }, `Open ${slug}`)) : null,
       c.state === "failed" ? el("p", { class: "muted" }, creatingReset
         ? `The log above says what exists. Fix the cause, then on the VPS: hands ${slug} reset --confirm ${slug}`
         : c.project_exists
@@ -889,7 +888,8 @@ async function refreshCreating() {
         creatingEnvError ? el("div", { class: "notice bad" }, creatingEnvError) : null,
         envPanel(`creating:${slug}`, slug)) : null].filter(Boolean));
     // "Create and plan with Claude": open the chat as soon as the project exists. Once per create, whatever the
-    // poller does; the request is idempotent server-side, and the button above stays for a retry if it is refused.
+    // poller does; the request is idempotent server-side. There is no second button here: the project page's
+    // "Plan with Claude" panel is the one place that opens or resumes the chat.
     if (hands.nextform.shouldOpenPlanChat({ chat: creatingChat, done, started: creatingChatStarted })) {
       creatingChatStarted = true;
       await planChat(slug);

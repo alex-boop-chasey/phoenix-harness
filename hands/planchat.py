@@ -42,7 +42,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .gitops import GitError, git
+from .gitops import IDENT, GitError, git
 from .setup import FRAMEWORK_LABELS
 
 ROLE = "plan-chat"
@@ -436,10 +436,31 @@ def _targets(round: int | None) -> tuple[str, str]:
     return f"briefs/change-{round}.md", f"refs/coverage-change-{round}.md"
 
 
+def _rollback(spec_dir: Path, before: dict[str, bytes | None]) -> None:
+    """Put the spec clone back as it was: index to HEAD for these paths, then the files themselves (a file
+    that did not exist is removed). Called when the approval commit fails, so a retry starts from a clean
+    tree -- an uncommitted brief.md would otherwise make the next approval look like a change round."""
+    try:
+        git(spec_dir, "reset", "-q", "--", *before)
+    except GitError:
+        pass
+    for rel, data in before.items():
+        target = spec_dir / rel
+        try:
+            if data is None:
+                target.unlink(missing_ok=True)
+                if target.parent != spec_dir and target.parent.is_dir() and not any(target.parent.iterdir()):
+                    target.parent.rmdir()
+            else:
+                target.write_bytes(data)
+        except OSError:
+            pass
+
+
 def approve(brief_dir: Path, spec_dir: Path, sha: str, round: int | None = None) -> dict:
     """Copy a hash-pinned brief into the spec repo and commit `brief: approved <sha[:12]>`.
     Raises BriefIncomplete (brief.md / coverage.md missing), HashMismatch (sha differs from the brief on disk),
-    ValueError (bad round) and GitError."""
+    ValueError (bad round) and GitError (the clone is left exactly as it was)."""
     brief_dir, spec_dir = Path(brief_dir), Path(spec_dir)
     brief_rel, coverage_rel = _targets(round)
     if not (brief_dir / BRIEF_FILE).is_file():
@@ -449,15 +470,24 @@ def approve(brief_dir: Path, spec_dir: Path, sha: str, round: int | None = None)
     current = brief_hash(brief_dir)
     if not isinstance(sha, str) or sha.strip().lower() != current:
         raise HashMismatch(f"hash mismatch: brief.md is {current}")
-    for rel, source in ((brief_rel, BRIEF_FILE), (coverage_rel, COVERAGE_FILE)):
-        target = spec_dir / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(brief_dir / source, target)
-    (spec_dir / "brief.sha256").write_text(current + "\n", encoding="utf-8")
     changed = [brief_rel, coverage_rel, "brief.sha256"]
-    git(spec_dir, "add", "-A", "--", *changed)
-    if git(spec_dir, "status", "--porcelain", "--", *changed).strip():
-        git(spec_dir, "commit", "-q", "-m", f"brief: approved {current[:12]}", "--", *changed)
+    before: dict[str, bytes | None] = {}
+    for rel in changed:
+        target = spec_dir / rel
+        before[rel] = target.read_bytes() if target.is_file() else None
+    try:
+        for rel, source in ((brief_rel, BRIEF_FILE), (coverage_rel, COVERAGE_FILE)):
+            target = spec_dir / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(brief_dir / source, target)
+        (spec_dir / "brief.sha256").write_text(current + "\n", encoding="utf-8")
+        git(spec_dir, "add", "-A", "--", *changed)
+        if git(spec_dir, "status", "--porcelain", "--", *changed).strip():
+            # IDENT: the runner's git has no global config, so the commit needs its own author (gitops.IDENT)
+            git(spec_dir, *IDENT, "commit", "-q", "-m", f"brief: approved {current[:12]}", "--", *changed)
+    except (GitError, OSError):
+        _rollback(spec_dir, before)
+        raise
     return {"sha256": current, "round": round, "brief_path": brief_rel, "coverage_path": coverage_rel,
             "commit": git(spec_dir, "rev-parse", "HEAD").strip()}
 

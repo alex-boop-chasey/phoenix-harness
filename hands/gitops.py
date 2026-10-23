@@ -15,6 +15,11 @@ _STRIP = ("GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_ASKPASS", "SSH_A
 ENV = {k: v for k, v in os.environ.items()
        if k not in _STRIP and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
 ENV.update({"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
+# Because the global and system config are off (above), git finds no user.name/user.email in a runner clone
+# and refuses to commit ("Author identity unknown"). Every host commit therefore carries its own identity:
+# pass these flags before the `commit` subcommand (hands.setup, hands.loop and hands.planchat do; hands.merge
+# has its own "hands" identity for merge commits).
+IDENT = ("-c", "user.name=hands-runner", "-c", "user.email=runner@hands.local")
 
 
 class GitError(Exception):

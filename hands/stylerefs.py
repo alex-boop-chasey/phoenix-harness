@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from .gitops import ENV as _GIT_ENV  # git on the host uses only the spec clone's own config
+from .gitops import IDENT as _GIT_IDENT  # ... which is why a commit has to carry its own identity
 
 MAX_URL = 2048
 MAX_STR = 120
@@ -489,7 +490,7 @@ def _git(spec_dir: Path, *args: str) -> str:
 def _commit_dir(spec_dir: Path, rel: str, subject: str) -> None:
     _git(spec_dir, "add", "-A", "--", rel)
     if _git(spec_dir, "status", "--porcelain", "--", rel).strip():
-        _git(spec_dir, "commit", "-q", "-m", subject, "--", rel)
+        _git(spec_dir, *_GIT_IDENT, "commit", "-q", "-m", subject, "--", rel)
 
 
 def ref_dir(spec_dir: Path, index: int) -> Path:

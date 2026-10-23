@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from hands import planchat
+from hands.gitops import GitError
 from hands.planchat import BriefIncomplete, HashMismatch, Paths, PlanContext, PlanSession, TokenMissing
 
 REPO = Path(__file__).resolve().parents[2]
@@ -368,6 +369,63 @@ class Approve(TmpDirs):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):
                     planchat.approve(brief, spec, sha, round=bad)
+
+    def test_approve_commits_without_a_git_identity_in_the_clone(self):
+        """The runner's git ignores the global and system config (gitops.ENV), so a clone with no
+        user.name/user.email of its own must still commit: the identity comes from gitops.IDENT."""
+        spec, brief = self.spec_repo(), self.brief_dir()
+        git(spec, "config", "--unset", "user.email")
+        git(spec, "config", "--unset", "user.name")
+        sha = planchat.brief_hash(brief)
+        result = planchat.approve(brief, spec, sha)
+        self.assertEqual(git(spec, "log", "-1", "--format=%an <%ae>"), "hands-runner <runner@hands.local>")
+        self.assertEqual(git(spec, "log", "-1", "--format=%cn <%ce>"), "hands-runner <runner@hands.local>")
+        self.assertEqual(result["commit"], git(spec, "rev-parse", "HEAD"))
+        self.assertEqual(git(spec, "status", "--porcelain"), "")
+
+    def no_commit(self):
+        """Make the approval commit fail the way a clone without an identity used to; the returned
+        callable puts the real git back."""
+        orig = planchat.git
+
+        def fake(repo, *args, **kw):
+            if "commit" in args:
+                raise GitError("Author identity unknown")
+            return orig(repo, *args, **kw)
+        planchat.git = fake
+        self.addCleanup(setattr, planchat, "git", orig)
+        return lambda: setattr(planchat, "git", orig)
+
+    def test_a_failed_commit_leaves_the_clone_exactly_as_it_was(self):
+        """A half-written approval used to stay in the working tree: brief.md was then on disk but not
+        committed, so the next approval looked like change round 1 instead of the first brief."""
+        spec, brief = self.spec_repo(), self.brief_dir()
+        head, sha = git(spec, "rev-parse", "HEAD"), planchat.brief_hash(brief)
+        restore = self.no_commit()
+        with self.assertRaisesRegex(GitError, "Author identity unknown"):
+            planchat.approve(brief, spec, sha)
+        self.assertEqual(git(spec, "status", "--porcelain", "--untracked-files=all"), "")
+        self.assertEqual(git(spec, "rev-parse", "HEAD"), head)
+        for rel in ("brief.md", "brief.sha256", "refs/coverage.md", "briefs"):
+            self.assertFalse((spec / rel).exists(), rel)
+        restore()
+        result = planchat.approve(brief, spec, sha)         # the retry is still the first brief, not a round
+        self.assertEqual(result["brief_path"], "brief.md")
+        self.assertEqual(git(spec, "status", "--porcelain"), "")
+
+    def test_a_failed_change_round_keeps_the_approved_brief(self):
+        spec, brief = self.spec_repo(), self.brief_dir()
+        first = planchat.approve(brief, spec, planchat.brief_hash(brief))
+        (brief / "brief.md").write_text(BRIEF + "\n## Later\n", encoding="utf-8")
+        self.no_commit()
+        with self.assertRaises(GitError):
+            planchat.approve(brief, spec, planchat.brief_hash(brief), round=1)
+        self.assertEqual(git(spec, "status", "--porcelain", "--untracked-files=all"), "")
+        self.assertEqual(git(spec, "rev-parse", "HEAD"), first["commit"])
+        self.assertEqual((spec / "brief.md").read_text(), BRIEF, "the approved brief is untouched")
+        self.assertEqual((spec / "brief.sha256").read_text(), first["sha256"] + "\n")
+        self.assertFalse((spec / "briefs").exists())
+        self.assertFalse((spec / "refs" / "coverage-change-1.md").exists())
 
     def test_approve_refuses_missing_coverage(self):
         spec, brief = self.spec_repo(), self.brief_dir(coverage=False)

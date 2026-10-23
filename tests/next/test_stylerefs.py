@@ -292,6 +292,17 @@ class FreezeRemove(TmpDirs):
         os.symlink("/etc/hostname", src / "frames" / "link.png")
         return src
 
+    def test_freeze_commits_without_a_git_identity_in_the_clone(self):
+        """Same as the brief approval: the runner's git ignores the global config, so the freeze commit
+        carries gitops.IDENT itself."""
+        spec, src = self.make_spec(), self.make_from()
+        for key in ("user.email", "user.name"):
+            subprocess.run(["git", "-C", str(spec), "config", "--unset", key], check=True)
+        stylerefs.freeze(src, spec, 3, "example.com")
+        author = subprocess.run(["git", "-C", str(spec), "log", "-1", "--format=%an <%ae>"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(author, "hands-runner <runner@hands.local>")
+
     def test_freeze_copies_and_commits(self):
         spec, src = self.make_spec(), self.make_from()
         dest = stylerefs.freeze(src, spec, 2, "example.com")
