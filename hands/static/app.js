@@ -724,7 +724,8 @@ function showNew() {
     placeholder: "One or two sentences: what the app is, who it is for. The planner asks the rest." });
   const out = el("pre", {}, "");
   const submit = el("button", { class: "act", type: "submit" }, "Create project");
-  const withClaude = el("button", { class: "btn primary", type: "submit", value: "chat", "data-testid": "plan-with-claude" }, "Plan with Claude");
+  const withClaude = el("button", { class: "btn primary", type: "submit", value: "chat", "data-testid": "plan-with-claude" },
+    hands.nextform.CREATE_PLAN_LABEL);
   const styleUrls = hands.nextform.styleUrlList(document);
   const setupFields = hands.nextform.setupFields(document);
   const envLocal = envEditor({ local: true });
@@ -775,7 +776,7 @@ function showNew() {
           headers: { "X-Hands": "1", "Content-Type": "application/json" }, body: JSON.stringify({ set: vars }) });
       } catch (e) { creatingEnvError = `The project is being created, but its variables were not saved (${e.message}). Add them below.`; }
     }
-    mode = "creating"; creatingSlug = slug.value; creatingChat = chat; refresh(false);
+    mode = "creating"; creatingSlug = slug.value; creatingChat = chat; creatingChatStarted = false; refresh(false);
   } } },
     el("label", { for: "slug" }, "Project slug"), slug,
     el("p", { class: "muted" }, "Lowercase letters, digits and hyphens. Becomes the repo names <slug>-specs and <slug>-app (or just <slug>-specs when starting from an existing repo)."),
@@ -791,7 +792,8 @@ function showNew() {
     el("p", { class: "muted" }, "Test API keys and service URLs the build containers need. You can also add them later on the project page."),
     envLocal,
     el("div", { class: "row" }, submit, withClaude),
-    el("p", { class: "muted" }, "Create project runs the planner right away. Plan with Claude creates the project and opens a planning chat with Claude instead; you approve the brief it writes."),
+    el("p", { class: "muted" }, `Create project runs the planner right away. ${hands.nextform.CREATE_PLAN_LABEL}: `
+      + `${hands.nextform.CREATE_PLAN_HINT}. Claude interviews you there and writes the brief you approve.`),
     out);
   $("#main").replaceChildren(el("section", {}, el("h2", {}, "New project"),
     el("p", { class: "muted" }, "Creates two private repos with branch protection, read-only/write deploy keys, " +
@@ -801,7 +803,8 @@ function showNew() {
 }
 
 let creatingEnvError = "";
-let creatingChat = false;     // created with "Plan with Claude": offer the planning chat once the project exists
+let creatingChat = false;     // created with "Create and plan with Claude": open the planning chat once it exists
+let creatingChatStarted = false;   // the POST went out for this create; never a second one from the poller
 async function refreshCreating() {
   const slug = creatingSlug;
   try {
@@ -820,6 +823,12 @@ async function refreshCreating() {
       c.state === "running" ? el("section", { class: "envsec" }, el("h2", {}, "Environment"),
         creatingEnvError ? el("div", { class: "notice bad" }, creatingEnvError) : null,
         envPanel(`creating:${slug}`, slug)) : null].filter(Boolean));
+    // "Create and plan with Claude": open the chat as soon as the project exists. Once per create, whatever the
+    // poller does; the request is idempotent server-side, and the button above stays for a retry if it is refused.
+    if (hands.nextform.shouldOpenPlanChat({ chat: creatingChat, done, started: creatingChatStarted })) {
+      creatingChatStarted = true;
+      await planChat(slug);
+    }
   } catch (e) { $("#clock").textContent = `update failed: ${e.message}`; }
 }
 

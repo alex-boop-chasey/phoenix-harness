@@ -60,6 +60,11 @@
   const SHA_RE = /^[0-9a-f]{64}$/;
   const planStatus = (ps) => (ps && ps.session_id && PLAN_STATUSES.includes(ps.status) ? ps.status : "none");
   const planChatLabel = (status) => (!status || status === "none" ? "Plan with Claude" : "Resume planning chat");
+  // The New project form's second submit button: it creates the project and then opens the planning chat.
+  const CREATE_PLAN_LABEL = "Create and plan with Claude";
+  const CREATE_PLAN_HINT = "Creates the project, then opens the planning chat";
+  // Whether that chat should be opened now: once only, and only once the project really exists.
+  const shouldOpenPlanChat = (s) => !!(s && s.chat === true && s.done === true && s.started !== true);
   const fullSha = (sha) => { const s = typeof sha === "string" ? sha.trim().toLowerCase() : ""; return SHA_RE.test(s) ? s : ""; };
   const shortSha = (sha) => fullSha(sha).slice(0, 12);
 
@@ -281,6 +286,7 @@
   const api = { FRAMEWORK_LABELS, LIBS, MAX_STYLE_URLS, MAX_URL, REF_STATUSES, SETUP_STATUSES, PLAN_STATUSES,
     validateStyleUrl, styleUrlsFromForm, reasonText, frameworkLabel, mockFromQuery, mockToolUsage, mockSessions,
     planStatus, planChatLabel, shortSha, toolUsageParts, visibleSessions,
+    CREATE_PLAN_LABEL, CREATE_PLAN_HINT, shouldOpenPlanChat,
     styleUrlList, setupFields, styleRefsPanel, planChatPanel, toolUsage, sessionItem };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root && root.document) {

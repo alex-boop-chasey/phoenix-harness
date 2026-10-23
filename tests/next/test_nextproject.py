@@ -508,7 +508,8 @@ class SessionManagerRefusesPlanChat(unittest.TestCase):
 
 
 class DashboardCreate(unittest.TestCase):
-    """start_create: "Create project" runs the planner after create; "Plan with Claude" (plan_with_claude) does not."""
+    """start_create: "Create project" runs the planner after create; "Create and plan with Claude"
+    (plan_with_claude) does not -- the dashboard opens the planning chat instead."""
 
     def setUp(self):
         from hands import dashboard

@@ -124,3 +124,17 @@ test("visibleSessions hides hidden sessions unless show all is on or the row is 
   assert.deepEqual(nf.visibleSessions(null, true), []);
   assert.equal(rows[1].project, "demo");
 });
+
+test("the create form's chat button is labelled Create and plan with Claude", () => {
+  assert.equal(nf.CREATE_PLAN_LABEL, "Create and plan with Claude");
+  assert.equal(nf.CREATE_PLAN_HINT, "Creates the project, then opens the planning chat");
+});
+
+test("shouldOpenPlanChat: once, and only once the project exists", () => {
+  assert.equal(nf.shouldOpenPlanChat({ chat: true, done: true, started: false }), true);
+  assert.equal(nf.shouldOpenPlanChat({ chat: true, done: true, started: true }), false, "no second start");
+  assert.equal(nf.shouldOpenPlanChat({ chat: true, done: false, started: false }), false, "still creating");
+  assert.equal(nf.shouldOpenPlanChat({ chat: false, done: true, started: false }), false, "Create project only");
+  assert.equal(nf.shouldOpenPlanChat(null), false);
+  assert.equal(nf.shouldOpenPlanChat({}), false);
+});

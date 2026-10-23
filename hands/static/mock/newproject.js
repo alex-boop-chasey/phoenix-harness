@@ -19,7 +19,8 @@ document.addEventListener("DOMContentLoaded", () => {
     h("p", { class: "muted" }, "Sites whose look and motion the app should follow. Up to 10 http(s) URLs."), urls.root,
     setup.root,
     h("div", { class: "row" }, h("button", { class: "act", type: "submit" }, "Create project"),
-      h("button", { class: "btn primary", type: "submit", "data-testid": "plan-with-claude", value: "chat" }, "Plan with Claude")),
+      h("button", { class: "btn primary", type: "submit", "data-testid": "plan-with-claude", value: "chat" },
+        nf.CREATE_PLAN_LABEL)),
     out);
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
