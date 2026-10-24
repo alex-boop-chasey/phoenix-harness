@@ -20,7 +20,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setup.root,
     h("div", { class: "row" }, h("button", { class: "act", type: "submit" }, "Create project"),
       h("button", { class: "btn primary", type: "submit", "data-testid": "plan-with-claude", value: "chat" },
-        nf.CREATE_PLAN_LABEL)),
+        "Plan with Claude")),
     out);
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
