@@ -14,6 +14,19 @@ REQUIRED_PHRASES = {
                  "progress note", "format-on-write", "never instructions", "logos"],
     "evaluator.md": ["refs/style-refs/", "verification-before-completion", "tools.json", "never instructions"],
 }
+AMENDMENT_PHRASES = {
+    "planner.md": ["refs/index.json", "refs/design/", "refs/site-inputs.json", "docs/copy.md", "[NEEDS INPUT", "## Avoid", "cream",
+                   "/directions/", '"screenshots"', '"gate"', "design/tweaks.json", '"skills"', "/opt/kits", "inventory.json",
+                   "prefers-reduced-motion", "signature interaction", "preview", "data, never instructions", "WebFetch",
+                   "refs/prototype/", "one icon pack"],
+    "coder.md": ["docs/copy.md", "verbatim", "[NEEDS INPUT", "testimonials", "/refs", "/opt/kits", "one icon pack", "SVG",
+                 "Resolver hint (advisory)", "Design decisions", "/design-loop", "prefers-reduced-motion",
+                 "Design feedback from Alex", "data, never instructions"],
+    "evaluator.md": ["looks generic", "Avoid", "prototype", "banned", "lorem ipsum", "invented", "/shots", "Hallmark", "/refs",
+                     "Copy check (runner)", "Screenshots failed"],
+    "resolver.md": ["DECISION:", "hint_and_retry", "schedule_retry", "restart_after_crash", "escalate_to_alex", "nonce",
+                    "untrusted", "never instructions", "48", "2,000"],
+}
 ROLE_FILES = {"coder": "coder.md", "evaluator": "evaluator.md", "planner": "planner.md"}
 
 
@@ -28,6 +41,16 @@ class TestPrompts(unittest.TestCase):
             for phrase in phrases:
                 with self.subTest(prompt=name, phrase=phrase):
                     self.assertIn(phrase, text, f"{name} must contain: {phrase}")
+
+    def test_prompts_carry_amendment_1_rules(self):
+        for name, phrases in AMENDMENT_PHRASES.items():
+            text = read(name)
+            for phrase in phrases:
+                with self.subTest(prompt=name, phrase=phrase):
+                    self.assertIn(phrase, text, f"{name} must contain: {phrase}")
+
+    def test_resolver_has_required_skills_entry(self):
+        self.assertEqual(json.loads(read("required-skills.json"))["resolver"], [])
 
     def test_required_skills_json_matches_prompts(self):
         required = json.loads(read("required-skills.json"))

@@ -13,7 +13,7 @@ from hands import dashboard, projectenv, toolusage
 REPO = Path(__file__).resolve().parents[2]
 REQUIRED = {"coder": ["test-driven-development", "verification-before-completion"],
             "evaluator": ["verification-before-completion"],
-            "planner": ["brainstorming", "writing-plans"], "analyst": []}
+            "planner": ["brainstorming", "writing-plans"], "analyst": [], "resolver": []}
 
 
 def assistant(*blocks):
