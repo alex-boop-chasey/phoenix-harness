@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from base64 import b64encode
 from pathlib import Path
 
-from . import accview, claude, codesummary, docker, gitops, planaudit, rounds, specoutbox, toolusage, workspace
+from . import accview, claude, codesummary, docker, gitops, planaudit, rounds, specoutbox, toolusage, vendored, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -514,9 +514,8 @@ def run_session(cfg: Config, work: Path, prompt_file: Path, out: Path, err: Path
            "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0"}
     mounts = [*docker.base_mounts(cfg, cfg.spec_dir), Mount(cfg.runner_home / "prompts", "/opt/hands/prompts"),
               Mount(work, "/workspace", ro=False)]
-    skills = cfg.runner_home / "planner-skills"
-    if skills.is_dir():
-        mounts.append(Mount(skills, "/home/node/.claude/skills"))
+    for v in vendored.mounts(cfg.runner_home, "planner", cfg.state_dir, cfg.runner_home / "planner-skills"):
+        mounts.append(Mount(Path(v["src"]), v["dst"], ro=v["ro"]))
     if app_ro is not None:
         mounts.append(Mount(app_ro, "/app"))                     # ro by default: the planner reads, never writes
     disallowed = "WebFetch" if cfg.planner_web_search else "WebFetch,WebSearch"

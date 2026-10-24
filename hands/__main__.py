@@ -623,6 +623,14 @@ def check(r: Runner) -> int:
         line(False, str(e))
         return 1
     check_env(cfg, line)
+    from . import vendored
+    found = vendored.scan(cfg.runner_home)
+    for kind in ("kits", "skills"):
+        for item in found[kind]:
+            if item["ok"]:
+                line(True, f"vendored {kind[:-1]} {item['name']} {item.get('version', '')}".rstrip())
+            else:
+                print(f"[warn] vendored {kind[:-1]} {item['name']} skipped (never mounted): {'; '.join(item['problems'])}")
     try:
         commit = gitops.refresh_spec(cfg.spec_dir, cfg.spec_branch)
         r.spec = specmod.load(cfg.spec_dir, commit)

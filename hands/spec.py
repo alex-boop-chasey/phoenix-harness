@@ -28,6 +28,9 @@ class Step:
     acceptance_files: list[str] = field(default_factory=list)   # extra files/dirs under acceptance/ this step owns
     max_attempts: int | None = None
     notes: str = ""
+    skills: list[str] = field(default_factory=list)          # vendored/extra skills the coder should use (code steps)
+    screenshots: list[str] = field(default_factory=list)     # routes screenshotted after acceptance passes (code steps)
+    gate: str = ""                                           # directions | tweaks | prototype (human steps)
 
 
 @dataclass
@@ -52,7 +55,10 @@ class Spec:
 
 
 STEP_KEYS = {"id", "title", "goal", "type", "refs", "depends_on", "acceptance", "e2e", "acceptance_files",
-             "max_attempts", "notes"}
+             "max_attempts", "notes", "skills", "screenshots", "gate"}
+SKILL_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+SHOT_ROUTE = re.compile(r"^/[A-Za-z0-9/_.-]{0,100}$")
+GATES = ("directions", "tweaks", "prototype")
 TOP_KEYS = {"version", "project", "allowed_paths", "allow_text_paths", "setup", "regression", "e2e_command", "always_refs",
             "steps", "pins", "tests_changed"}
 TEST_CHANGE = re.compile(r"^acceptance/[A-Za-z0-9._/@+-]+$")
@@ -66,6 +72,13 @@ def _strlist(v, where: str) -> list[str]:
     if not isinstance(v, list) or not all(isinstance(x, str) and x.strip() for x in v):
         raise SpecError(f"{where}: must be a list of non-empty strings")
     return list(v)
+
+
+def _checked_list(v, where: str, pattern: re.Pattern, limit: int, what: str) -> list[str]:
+    out = _strlist(v, where)
+    if len(out) > limit or any(not pattern.match(x) for x in out):
+        raise SpecError(f"{where}: at most {limit} {what}")
+    return out
 
 
 def _pins(v) -> dict:
@@ -155,7 +168,17 @@ def load(root: Path, commit: str = "") -> Spec:
             acceptance_files=_strlist(s.get("acceptance_files"), f"{sid}.acceptance_files"),
             max_attempts=s.get("max_attempts"),
             notes=s.get("notes", "") or "",
+            skills=_checked_list(s.get("skills"), f"{sid}.skills", SKILL_NAME, 8, "skill names like 'hallmark'"),
+            screenshots=_checked_list(s.get("screenshots"), f"{sid}.screenshots", SHOT_ROUTE, 12,
+                                      "routes like '/directions/1'"),
+            gate=s.get("gate", "") or "",
         )
+        if typ != "code" and (st.skills or st.screenshots):
+            raise SpecError(f"{sid}: skills and screenshots are for code steps only")
+        if st.gate and (typ != "human" or st.gate not in GATES):
+            raise SpecError(f"{sid}: gate must be one of {', '.join(GATES)} and is for human steps only")
+        if st.gate and not any(x.screenshots for x in steps):
+            raise SpecError(f"{sid}: a gate step must come after a code step with screenshots")
         if st.max_attempts is not None and (not isinstance(st.max_attempts, int) or not 1 <= st.max_attempts <= 10):
             raise SpecError(f"{sid}: max_attempts must be 1..10")
         if typ == "code" and not st.acceptance and not st.e2e:
@@ -193,6 +216,29 @@ def load(root: Path, commit: str = "") -> Spec:
     from . import accview
     accview.validate(spec)
     return spec
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    import sys
+    ap = argparse.ArgumentParser(prog="python3 -m hands.spec")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("validate", help="load and validate DIR/steps.json (exit 1 with the error)")
+    p.add_argument("dir", type=Path)
+    p.add_argument("--json", action="store_true")
+    a = ap.parse_args(argv)
+    try:
+        spec = load(a.dir)
+    except SpecError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if a.json:
+        print(json.dumps({"ok": True, "steps": [
+            {"id": s.id, "type": s.type, "skills": s.skills, "screenshots": s.screenshots, "gate": s.gate}
+            for s in spec.steps]}))
+    else:
+        print(f"ok: {len(spec.steps)} steps")
+    return 0
 
 
 # ------------------------------------------------------------------ refs
@@ -274,3 +320,8 @@ def glob_to_regex(pat: str) -> re.Pattern:
 
 def path_allowed(path: str, patterns: list[str]) -> bool:
     return any(glob_to_regex(p).match(path) for p in patterns)
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

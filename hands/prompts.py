@@ -65,7 +65,8 @@ def env_section(env_vars: list[tuple[str, bool]] | None, *, for_builder: bool) -
 def coder(spec: Spec, step: Step, *, attempt: int, max_attempts: int, progress: list[dict],
           git_log: str, feedback: list[str], prev_diff: str, acc_files: list[str] | None = None,
           env_vars: list[tuple[str, bool]] | None = None, imported: bool = False,
-          regression_steps: list[Step] = (), round_id: int = 0) -> str:
+          regression_steps: list[Step] = (), round_id: int = 0, state_step: dict | None = None,
+          design_section: str = "") -> str:
     parts = [
         f"# Step {step.id}: {step.title}",
         f"Attempt {attempt} of {max_attempts}. Spec commit {spec.commit[:12]}.",
@@ -93,6 +94,15 @@ def coder(spec: Spec, step: Step, *, attempt: int, max_attempts: int, progress: 
         + ("\nText files allowed only at: " + ", ".join(f"`{p}`" for p in spec.allow_text_paths) if spec.allow_text_paths else "")
     )
     parts.append("## Reference docs\n" + (render_refs(spec, step) or "(none)"))
+    if step.skills:
+        parts.append("## Skills to use in this step\n"
+                     + "\n".join(f"- `{s}`" for s in step.skills)
+                     + "\n\nInvoke each through the Skill tool (if it is pinned and available) and report them in your "
+                       "progress note; the runner records which of them you used.")
+    parts.append("## Design refs\nDesign refs (uploaded files, style packs, site inputs), when the spec has any, are "
+                 "read-only at `/refs`; read `/refs/index.json` first. Never write there.")
+    if design_section:
+        parts.append(design_section)
     parts.append(env_section(env_vars, for_builder=True))
     if progress:
         lines = [f"- {p['step']} {p.get('title','')} @ {p.get('commit','')[:9]}: {p.get('summary','')}" for p in progress]
@@ -151,3 +161,38 @@ def truncate(s: str, limit: int) -> str:
 
 def dumps(o) -> str:
     return json.dumps(o, indent=2, sort_keys=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    import sys
+    from pathlib import Path
+    from . import spec as specmod
+    ap = argparse.ArgumentParser(prog="python3 -m hands.prompts")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("coder", help="print the coder prompt of a step (empty progress and git log)")
+    p.add_argument("--spec", type=Path, required=True)
+    p.add_argument("--step", required=True)
+    p.add_argument("--state-dir", type=Path)
+    a = ap.parse_args(argv)
+    try:
+        sp = specmod.load(a.spec)
+        step = sp.step(a.step)
+    except (specmod.SpecError, KeyError) as e:
+        print(f"{e}", file=sys.stderr)
+        return 1
+    st: dict = {}
+    if a.state_dir and (a.state_dir / "state.json").is_file():
+        try:
+            st = (json.loads((a.state_dir / "state.json").read_text()).get("steps") or {}).get(step.id) or {}
+        except ValueError:
+            st = {}
+    attempt = int(st.get("attempts", 0)) + 1
+    print(coder(sp, step, attempt=attempt, max_attempts=step.max_attempts or 3, progress=[], git_log="",
+                feedback=list(st.get("reasons") or []), prev_diff="", state_step=st or None), end="")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

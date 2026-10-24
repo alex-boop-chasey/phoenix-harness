@@ -14,7 +14,7 @@ Everything here is agent-influenced text (tool names, skill names): the values a
 truncated and stored as plain strings.
 
 CLI: python3 -m hands.toolusage summarize FILE [--json]
-     python3 -m hands.toolusage check FILE --role R [--required FILE] [--json]   (prints {"missing": [...]})
+     python3 -m hands.toolusage check FILE --role R [--required FILE] [--step-skills A B] [--json]   (prints {"missing": [...]})
 Exit codes: 0 ok (missing skills are not an error), 2 unreadable transcript or required-skills file.
 """
 from __future__ import annotations
@@ -148,6 +148,15 @@ def check(summary: dict, role: str, required: dict) -> list[str]:
     return [s for s in wanted if isinstance(s, str) and s not in used]
 
 
+def with_step_skills(required: dict, role: str, extra: list[str] | None) -> dict:
+    """`required` with the step's own skills appended to `role`'s list (no duplicates)."""
+    if not extra:
+        return required
+    merged = dict(required)
+    merged[role] = list(dict.fromkeys([*(required.get(role) or []), *extra]))
+    return merged
+
+
 def load_required(path: Path = REQUIRED_FILE) -> dict:
     """{role: [skill, ...]} from a required-skills JSON file; {} when unreadable or not an object."""
     try:
@@ -159,10 +168,11 @@ def load_required(path: Path = REQUIRED_FILE) -> dict:
     return {str(k): [s for s in v if isinstance(s, str)] for k, v in data.items() if isinstance(v, list)}
 
 
-def write_tools_json(transcript: Path, role: str, dest: Path, required: dict | None = None) -> dict:
+def write_tools_json(transcript: Path, role: str, dest: Path, required: dict | None = None,
+                     step_skills: list[str] | None = None) -> dict:
     """Summarize `transcript` for `role`, write summary + role + missing to `dest` (atomically, 0644) and
     return it. Never raises on a bad transcript; a write failure propagates (the caller owns the directory)."""
-    req = load_required() if required is None else required
+    req = with_step_skills(load_required() if required is None else required, role, step_skills)
     out = summarize_file(Path(transcript))
     out["role"] = role
     out["missing"] = check(out, role, req)
@@ -210,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("file", type=Path)
     p.add_argument("--role", required=True)
     p.add_argument("--required", type=Path, default=REQUIRED_FILE, help="required-skills JSON (default: prompts/)")
+    p.add_argument("--step-skills", nargs="*", default=[], metavar="SKILL", help="extra skills required for this step")
     p.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
 
@@ -227,7 +238,8 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as e:
         print(f"cannot read {a.required}: {e}", file=sys.stderr)
         return 2
-    missing = check(summary, a.role, load_required(a.required) if isinstance(required, dict) else {})
+    req = load_required(a.required) if isinstance(required, dict) else {}
+    missing = check(summary, a.role, with_step_skills(req, a.role, a.step_skills))
     if a.json:
         print(json.dumps({"missing": missing}))
     else:

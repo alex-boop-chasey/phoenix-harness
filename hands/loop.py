@@ -14,7 +14,7 @@ import signal
 import time
 from pathlib import Path
 
-from . import accview, activity, claude, docker, gitops, hooks, merge, projectenv, prompts, rounds, toolusage, usage, workspace
+from . import accview, activity, claude, docker, gitops, hooks, merge, projectenv, prompts, rounds, toolusage, usage, vendored, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -171,7 +171,7 @@ class Runner:
             env["CI"] = "1"           # same package-manager policies in the coder's session as in the checks
         return env
 
-    def mounts(self, work: Path, *, store: str, with_skills: bool = False) -> list[Mount]:
+    def mounts(self, work: Path, *, store: str, with_skills: bool = False, role: str = "coder") -> list[Mount]:
         assert self.spec
         m = docker.base_mounts(self.cfg, self.spec.root)
         m.append(Mount(self.cfg.runner_home / "prompts", "/opt/hands/prompts"))
@@ -179,8 +179,12 @@ class Runner:
         if self.acc_view is not None and self.acc_view.is_dir():
             m.append(Mount(self.acc_view, "/workspace/acceptance"))
         m.append(Mount(store, "/pnpm-store", ro=False))
-        if with_skills and self.cfg.skills_dir and self.cfg.skills_dir.is_dir():
-            m.append(Mount(self.cfg.skills_dir, "/home/node/.claude/skills"))
+        if with_skills:
+            for v in vendored.mounts(self.cfg.runner_home, role, self.cfg.state_dir, self.cfg.skills_dir):
+                m.append(Mount(Path(v["src"]), v["dst"], ro=v["ro"]))
+        refs = self.spec.root / "refs"
+        if with_skills and refs.is_dir():
+            m.append(Mount(refs, "/refs"))
         if self.cfg.project_env and self.cfg.project_env.is_file():       # coder, acceptance, evaluator
             m.append(Mount(self.cfg.project_env, projectenv.CONTAINER_ENV_PATH))
         return m
@@ -213,7 +217,8 @@ class Runner:
             cmd += ["--fallback-model", self.cfg.fallback_model]
         return cmd + extra
 
-    def record_session(self, role: str, step: str, attempt: int, res: claude.Result, dur: float) -> None:
+    def record_session(self, role: str, step: str, attempt: int, res: claude.Result, dur: float,
+                       skills: list[str] | None = None) -> None:
         self.sessions += 1
         self.cost += res.cost
         self.state.data["total_sessions"] = self.state.data.get("total_sessions", 0) + 1
@@ -222,20 +227,21 @@ class Runner:
         self.state.append_jsonl("metrics.jsonl", {
             "role": role, "step": step, "attempt": attempt, "kind": res.kind, "rc": res.rc,
             "turns": res.turns, "cost_usd": res.cost, "models": res.models, "duration_s": round(dur),
-            "spec_commit": self.spec.commit if self.spec else "",
+            "spec_commit": self.spec.commit if self.spec else "", "skills": skills or [],
         })
         self.log(f"{role} {step}#{attempt}: kind={res.kind} rc={res.rc} turns={res.turns} cost={res.cost:.3f} "
                  f"models={','.join(res.models)} dur={dur:.0f}s")
 
-    def record_tools(self, transcript: Path, role: str, dest: Path) -> None:
+    def record_tools(self, transcript: Path, role: str, dest: Path, step_skills: list[str] | None = None) -> list[str]:
         """tools.json (skills, plugins, tools, MCP, subagents + missing required skills) next to a transcript."""
         try:
-            t = toolusage.write_tools_json(transcript, role, dest)
+            t = toolusage.write_tools_json(transcript, role, dest, step_skills=step_skills)
         except OSError as e:
             self.log(f"{role}: could not write {dest.name}: {e}")
-            return
+            return []
         if t["missing"]:
             self.log(f"{role}: required skills not used: {', '.join(t['missing'])}")
+        return list(t["skills"])
 
     def free_gb(self) -> float:
         return shutil.disk_usage(self.cfg.state_dir).free / 1e9
@@ -571,8 +577,8 @@ class Runner:
                 timeout_s=c.session_timeout_min * 60, append_stdout=True))
         self.redact_files(adir / "coder.json", adir / "coder.stderr")     # before anything parses or serves them
         res = claude.parse(adir / "coder.json", rc, adir / "coder.stderr")
-        self.record_session("coder", step.id, attempt, res, time.time() - t0)
-        self.record_tools(adir / "coder.json", "coder", adir / "tools.json")
+        used = self.record_tools(adir / "coder.json", "coder", adir / "tools.json", step_skills=step.skills)
+        self.record_session("coder", step.id, attempt, res, time.time() - t0, skills=used)
 
         if res.kind in INFRA:
             workspace.rmtree(work)
@@ -786,7 +792,8 @@ class Runner:
                 with activity.Tail(adir / f"eval-{n}.json", self.on_activity):
                     rc = docker.run(c, Run(
                         name=docker.unique_name(c, "eval", f"{step.id}-{attempt}-{n}"), role="eval", cmd=cmd,
-                        mounts=self.mounts(verify, store=store), env=self.common_env("eval"),
+                        mounts=self.mounts(verify, store=store, with_skills=True, role="evaluator"),
+                        env=self.common_env("eval"),
                         env_files=self.env_files(claude_token=True), stdin=adir / "eval-prompt.md",
                         stdout=adir / f"eval-{n}.json", stderr=adir / f"eval-{n}.stderr",
                         timeout_s=c.eval_timeout_min * 60, append_stdout=True))
@@ -795,8 +802,8 @@ class Runner:
                 workspace.rmtree(verify)
             self.redact_files(adir / f"eval-{n}.json", adir / f"eval-{n}.stderr")
             res = claude.parse(adir / f"eval-{n}.json", rc, adir / f"eval-{n}.stderr")
-            self.record_session("eval", step.id, attempt, res, time.time() - t0)
-            self.record_tools(adir / f"eval-{n}.json", "evaluator", adir / f"eval-{n}-tools.json")
+            used = self.record_tools(adir / f"eval-{n}.json", "evaluator", adir / f"eval-{n}-tools.json")
+            self.record_session("eval", step.id, attempt, res, time.time() - t0, skills=used)
             if res.kind in INFRA:
                 self.count_uncounted(step.id, res)
                 self.handle_infra(res)      # waits / switches model; does not use up a try
