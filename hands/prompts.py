@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+from . import designloop
 from .spec import Spec, Step, render_refs
 
 
@@ -103,6 +104,8 @@ def coder(spec: Spec, step: Step, *, attempt: int, max_attempts: int, progress: 
                  "read-only at `/refs`; read `/refs/index.json` first. Never write there.")
     if design_section:
         parts.append(design_section)
+    if (state_step or {}).get("design_feedback"):
+        parts.append(designloop.feedback_section(state_step["design_feedback"]))
     parts.append(env_section(env_vars, for_builder=True))
     if progress:
         lines = [f"- {p['step']} {p.get('title','')} @ {p.get('commit','')[:9]}: {p.get('summary','')}" for p in progress]
@@ -141,7 +144,7 @@ def screenshots_section(shots: dict | str) -> str:
 
 def evaluator(spec: Spec, step: Step, *, diff: str, diffstat: str, accept_report: list[dict], coder_summary: str,
               nonce: str, env_vars: list[tuple[str, bool]] | None = None, copy_check: list[dict] | None = None,
-              shots: dict | str | None = None) -> str:
+              shots: dict | str | None = None, design_section: str = "", design_feedback: str = "") -> str:
     acc = "\n".join(f"- exit {r['rc']}: `{r['cmd']}`" for r in accept_report) or "- (none)"
     parts = [
         f"# Review step {step.id}: {step.title}",
@@ -156,6 +159,8 @@ def evaluator(spec: Spec, step: Step, *, diff: str, diffstat: str, accept_report
         "## E2E specs for this step\n" + (_bullets([f"acceptance/{e}" for e in step.e2e]) if step.e2e else "- (none listed; still exercise user-facing behaviour if any)"),
         *([copy_check_section(copy_check)] if copy_check is not None else []),
         *([screenshots_section(shots)] if shots is not None else []),
+        *([design_section] if design_section else []),
+        *([designloop.feedback_section(design_feedback)] if design_feedback else []),
         "## Builder's own summary (unverified claim)\n" + (coder_summary or "(none)"),
         "## Diff stat\n```\n" + diffstat + "\n```",
         "## Diff (may be truncated; read files in /workspace for full context)\n```diff\n" + diff + "\n```",
@@ -200,7 +205,8 @@ def main(argv: list[str] | None = None) -> int:
             st = {}
     attempt = int(st.get("attempts", 0)) + 1
     print(coder(sp, step, attempt=attempt, max_attempts=step.max_attempts or 3, progress=[], git_log="",
-                feedback=list(st.get("reasons") or []), prev_diff="", state_step=st or None), end="")
+                feedback=list(st.get("reasons") or []), prev_diff="", state_step=st or None,
+                design_section=designloop.prompt_section(a.state_dir) if a.state_dir else ""), end="")
     return 0
 
 

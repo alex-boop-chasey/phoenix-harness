@@ -607,7 +607,8 @@ def _read_index(path: Path) -> dict:
     try:
         idx = json.loads(path.read_text(encoding="utf-8"))
         idx["files"] = list(idx["files"])
-        idx["last_id"] = max(int(idx.get("last_id", 0)), *(int(e["id"][1:]) for e in idx["files"]), 0)
+        idx["last_id"] = max(int(idx.get("last_id", 0)), *(int(e["id"][1:]) for e in idx["files"]
+                                                             if re.fullmatch(r"d[0-9]{3}", e["id"])), 0)
     except (ValueError, KeyError, TypeError, AttributeError):
         raise Refused("refs/index.json is not valid") from None
     idx["schema"] = 1

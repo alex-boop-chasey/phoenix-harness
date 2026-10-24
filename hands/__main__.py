@@ -34,6 +34,8 @@
                          `scaffold: ...` only when build, lint and typecheck pass; writes refs/setup.json
   design-files add FILE... [--kind K] [--note T] | list | remove ID | edit ID [--kind K] [--note T]
                          | group ID ID... [--note T] | process UPLOAD_ID   design inputs (the spec outbox is the store)
+  design view|select|choose|approve|redo STEP [--file F --shots-sha X --tweaks-sha T --design-sha Y --note T --start]
+                         the design gates (directions, tweaks, prototype); --start runs the build afterwards
   refs add URL [URL...]  add style reference URLs (change request) and run their pipeline
   refs retry N [N...]    run the style-ref pipeline again for ref N (capture, analyst, validate, freeze)
   refs remove N [N...]   drop style ref N (next.json, and refs/style-refs/NN from the spec repo)
@@ -69,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("project")
     ap.add_argument("command", choices=["run", "start", "status", "check", "validate", "prompt", "stop", "ack",
                                         "mark-done", "reset-step", "watchdog", "create", "destroy", "plan", "approve", "usage",
-                                        "merge", "discard", "setup", "refs", "design-files"])
+                                        "merge", "discard", "setup", "refs", "design-files", "design"])
     ap.add_argument("arg", nargs="?")
     ap.add_argument("args", nargs="*", help="refs add|retry|remove: the URLs or ref indexes")
     ap.add_argument("--steps", type=int)
@@ -94,6 +96,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="create / plan --amend: JSON file with the copy fields (audience, offer, proof, ...)")
     ap.add_argument("--kind", default=None, help="design-files add|edit: the file kind")
     ap.add_argument("--note", default=None, help="design-files add|edit|group: the note (max 500 characters)")
+    ap.add_argument("--file", default=None, help="design select|choose: the JSON file with the picks")
+    ap.add_argument("--shots-sha", default="", help="design: the screenshots hash the page showed")
+    ap.add_argument("--tweaks-sha", default="", help="design choose: the tweaks hash the page showed")
+    ap.add_argument("--design-sha", default="", help="design approve: the docs/design.md hash the page showed")
+    ap.add_argument("--start", action="store_true", help="design select|choose|approve|redo: start the runner afterwards")
     a = ap.parse_args(argv)
     libs = None if a.libs is None else [x.strip() for x in a.libs.split(",") if x.strip()]
     site_inputs = None
@@ -158,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.command == "design-files":
         from . import uploads
         return uploads.cli(cfg, a.arg or "", a.args, a.kind, a.note)
+    if a.command == "design":
+        return design_cmd(cfg, a)
     if a.command == "refs":
         return refs_cmd(cfg, a.arg or "", a.args)
     r = Runner(cfg)
@@ -411,6 +420,36 @@ def _process(cfg, indexes: list[int]) -> int:
         if r["index"] in indexes:
             print(f"style ref {r['index']:02d} {r['status']}" + (f": {r['reason']}" if r.get("reason") else ""))
     return failed
+
+
+def design_cmd(cfg, a) -> int:
+    """hands <p> design view|select|choose|approve|redo STEP: the design gates with this project's paths."""
+    from . import designloop, specoutbox
+    verb, step = a.arg or "", (a.args[0] if a.args else "")
+    if verb not in ("view", "select", "choose", "approve", "redo") or not step:
+        print("usage: hands <project> design view|select|choose|approve|redo STEP [options]")
+        return 2
+    if verb != "view" and Lock.held(cfg.state_dir / "runner.lock"):
+        print("runner is running; stop it first")
+        return 1
+    args = {"view": [], "select": ["--shots-sha", a.shots_sha, "--file", a.file or ""],
+            "choose": ["--tweaks-sha", a.tweaks_sha, "--shots-sha", a.shots_sha, "--file", a.file or ""],
+            "approve": ["--shots-sha", a.shots_sha, "--design-sha", a.design_sha, "--outbox", str(specoutbox.root(cfg))],
+            "redo": ["--note", a.note or ""]}[verb]
+    spec, state = str(cfg.spec_dir), str(cfg.state_dir)
+    if verb == "redo":
+        try:
+            designloop.redo(spec, state, step, a.note or "", time.time(),
+                            refusal=lambda data, sid, x: merge.reset_refusal(cfg, data, sid, x))
+            rc = 0
+        except designloop.Invalid as e:
+            print(f"invalid: {e}")
+            rc = 1
+    else:
+        rc = designloop.main([verb, "--spec", spec, "--state-dir", state, "--step", step, *args])
+    if rc == 0 and a.start and verb != "view":
+        return main([cfg.name, "start"])
+    return rc
 
 
 def refs_cmd(cfg, verb: str, args: list[str]) -> int:

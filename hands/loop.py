@@ -14,7 +14,7 @@ import signal
 import time
 from pathlib import Path
 
-from . import accview, activity, claude, docker, gitops, hooks, merge, projectenv, prompts, rounds, toolusage, usage, vendored, workspace
+from . import accview, activity, claude, designloop, docker, gitops, hooks, merge, projectenv, prompts, rounds, toolusage, usage, vendored, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -185,6 +185,9 @@ class Runner:
         refs = self.spec.root / "refs"
         if with_skills and refs.is_dir():
             m.append(Mount(refs, "/refs"))
+        records = self.cfg.state_dir / "design" / "records"
+        if with_skills and records.is_dir():
+            m.append(Mount(records, designloop.LOOP_MOUNT))
         if self.cfg.project_env and self.cfg.project_env.is_file():       # coder, acceptance, evaluator
             m.append(Mount(self.cfg.project_env, projectenv.CONTAINER_ENV_PATH))
         return m
@@ -515,6 +518,14 @@ class Runner:
                 self.log(f"WARN: state has passed step {sid} that is no longer in the spec")
         for s in self.spec.steps:
             if not self.state.passed(s.id):
+                if s.type == "human" and s.gate:
+                    if not designloop.has_shots(self.spec.root, c.state_dir, s.id):
+                        self.escalate(f"no screenshots for gate {s.id}")
+                    why = designloop.reason(s.gate, s.id)
+                    self.state.set_status("waiting_design", why)
+                    self.log(f"WAITING: {why}")
+                    self.send(f"{why}\nThen: hands {c.name} start")
+                    raise Stop(why)
                 if s.type == "human":
                     self.escalate(f"HUMAN STEP {s.id}: {s.title}\n{s.goal}\nWhen done: hands {c.name} mark-done {s.id}")
                 return s
@@ -562,7 +573,8 @@ class Runner:
             spec, step, attempt=attempt, max_attempts=max_attempts, progress=progress,
             git_log=gitops.log_oneline(c.app_dir), feedback=st.get("reasons", []), prev_diff=prev_diff,
             acc_files=acc_files, env_vars=self.env_names(), imported=c.imported,
-            regression_steps=self.regression_steps(), round_id=self.round_id))
+            regression_steps=self.regression_steps(), round_id=self.round_id, state_step=st,
+            design_section=designloop.prompt_section(c.state_dir)))
         agents = json.loads((c.runner_home / "prompts" / "agents.json").read_text())
         cmd = self.claude_cmd(model=self.model, system_file="coder.md", max_turns=c.max_turns,
                               extra=["--agents", json.dumps(agents), "--disallowedTools", "WebFetch"])
@@ -836,10 +848,10 @@ class Runner:
                 shutil.copytree(adir / "shots", dest)
             raw = gitops.git(self.cfg.app_dir, "show", f"{commit}:design/tweaks.json", check=False)
             if raw.strip():
-                tweaks = json.loads(raw)
+                tweaks = designloop.validate_tweaks(json.loads(raw))
                 dest.mkdir(parents=True, exist_ok=True)
                 (dest / "tweaks.json").write_text(json.dumps(tweaks, indent=2, sort_keys=True) + "\n")
-        except (OSError, ValueError, gitops.GitError) as e:
+        except (OSError, ValueError, designloop.Invalid, gitops.GitError) as e:
             self.log(f"design/shots/{step.id}: not stored ({type(e).__name__}: {e})")
 
     def run_evaluator(self, step, attempt, adir, base, commit, report, summary, copy_check=None, shots=None) -> dict:
@@ -849,7 +861,9 @@ class Runner:
         nonce = secrets.token_hex(8)
         (adir / "eval-prompt.md").write_text(prompts.evaluator(
             spec, step, diff=diff, diffstat=stat, accept_report=report, coder_summary=summary, nonce=nonce,
-            env_vars=self.env_names(), copy_check=copy_check, shots=shots))
+            env_vars=self.env_names(), copy_check=copy_check, shots=shots,
+            design_section=designloop.prompt_section(c.state_dir),
+            design_feedback=self.state.step(step.id).get("design_feedback", "")))
         tries = 0
         while tries < 3:
             verify = self.fresh_clone("verify", commit)
