@@ -60,7 +60,7 @@ from . import accview, claude, docker, gitops, merge, prompts, rounds
 from . import spec as specmod
 from . import config as cfgmod
 from .config import RUNNER_HOME, load
-from . import models
+from . import models, resolver
 from .docker import Mount, Run
 from .loop import Runner
 from .state import Lock, State
@@ -115,17 +115,45 @@ def models_cmd(r: Runner, a) -> int:
     return 0
 
 
+def resolver_cmd(r: Runner, a) -> int:
+    """`resolver on [--self] | off | status`. Never takes the runner lock: a running runner re-reads the toggle."""
+    cfg = r.cfg
+    sub = a.arg or "status"
+    if sub == "status":
+        s = resolver.settings(cfg.state_dir)
+        now = time.time()
+        runs = [x for x in resolver._jsonl(cfg.state_dir / "resolver.jsonl")
+                if isinstance(x.get("at"), (int, float)) and x["at"] > now - 86400]
+        print(f"resolver: {'on' if s['enabled'] else 'off'}")
+        print(f"self: {'on' if s['self_enabled'] else 'off'}")
+        print(f"daily cap: {s['daily_cap']}")
+        print(f"runs today: {len(runs)}")
+        pend = r.state.data.get("resolver_pending")
+        if r.state.status == "paused_resolver" and pend:
+            when = time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(float(pend.get("resume_at") or 0)))
+            print(f"pending retry: {pend.get('step')} at {when}")
+        return 0
+    if sub not in ("on", "off"):
+        print("usage: hands <project> resolver on [--self] | off | status")
+        return 2
+    s = resolver.toggle(cfg.state_dir, sub == "on", bool(a.self), "cli")
+    r.send(f"resolver turned {sub} for {cfg.name}" + (" (self project allowed)" if s["self_enabled"] else ""))
+    print(f"resolver: {sub}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     os.umask(0o077)       # session streams can contain tool output incl. secrets: owner-only files
     ap = argparse.ArgumentParser(prog="hands", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("project")
     ap.add_argument("command", choices=["run", "start", "status", "check", "validate", "prompt", "stop", "ack",
                                         "mark-done", "reset-step", "watchdog", "create", "destroy", "plan", "approve", "usage",
-                                        "merge", "discard", "setup", "refs", "design-files", "design", "models"])
+                                        "merge", "discard", "setup", "refs", "design-files", "design", "models", "resolver"])
     ap.add_argument("arg", nargs="?")
     ap.add_argument("args", nargs="*", help="refs add|retry|remove: the URLs or ref indexes")
     ap.add_argument("--steps", type=int)
     ap.add_argument("--clear-model", action="store_true")
+    ap.add_argument("--self", action="store_true", help="resolver on: also allow it on a self project")
     ap.add_argument("--effort", default="", help="models set: reasoning effort")
     ap.add_argument("--clear-override", action="store_true", help="models set: also drop the active auto-override")
     ap.add_argument("--confirm", default="")
@@ -234,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         reason = st.data.get("reason") or ""
         # restart only after a crash/kill/shutdown (SIGTERM); Ctrl-C (SIGINT) and tmux kill (SIGHUP) are user stops
-        if st.status in ("running", "paused_rate_limit") or (st.status == "stopped" and "signal 15" in reason):
+        if st.status in ("running", "paused_rate_limit", "paused_resolver") or (st.status == "stopped" and "signal 15" in reason):
             wf = cfg.state_dir / "watchdog.json"
             try:
                 hist = [t for t in json.loads(wf.read_text()).get("restarts", []) if time.time() - t < 3600]
@@ -282,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"runner alive: {Lock.held(cfg.state_dir / 'runner.lock')}   STOP file: {r.stop_file.exists()}")
         if d.get("model_override"):
             print(f"model override: {d['model_override']}")
+        print(f"resolver: {'on' if resolver.settings(cfg.state_dir)['enabled'] else 'off'}")
         print("models: " + ", ".join(f"{role} {e['model']}" for role, e in models.effective_all(
             models.toml_values(cfg), models.load_manual(models.models_file(cfg)), d, time.time()).items()))
         if d.get("current"):
@@ -348,11 +377,14 @@ def main(argv: list[str] | None = None) -> int:
                             progress=st.read_jsonl("progress.jsonl")[-cfg.progress_notes:],
                             git_log=gitops.log_oneline(cfg.app_dir), feedback=x.get("reasons", []), prev_diff="",
                             acc_files=accview.visible(sp, step, passed), regression_steps=r.regression_steps(),
-                            round_id=r.round_id))
+                            round_id=r.round_id, state_step=x))
         return 0
 
     if cmd == "models":
         return models_cmd(r, a)
+
+    if cmd == "resolver":
+        return resolver_cmd(r, a)
 
     if cmd == "stop":
         r.stop_file.touch()
@@ -372,6 +404,11 @@ def main(argv: list[str] | None = None) -> int:
         if a.clear_model:
             st.data.pop("model_override", None)
             st.data.pop("model_overrides", None)
+        for key in ("escalation", "resolver_escalation", "resolver_pending", "resolver_note", "resolver_amend_draft",
+                    "resolver_root_command"):
+            st.data.pop(key, None)
+        for x in st.data["steps"].values():
+            x.pop("resolver_hint", None)
         (cfg.state_dir / "watchdog.json").unlink(missing_ok=True)
         st.set_status("idle", "acknowledged")
         print("acknowledged. start again with: hands", cfg.name, "start")

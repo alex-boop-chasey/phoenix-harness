@@ -6,6 +6,7 @@ only: container exit codes, files it writes itself on the host, and git objects 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -14,7 +15,7 @@ import signal
 import time
 from pathlib import Path
 
-from . import accview, activity, claude, designloop, docker, gitops, hooks, merge, models, projectenv, prompts, rounds, toolusage, usage, vendored, workspace
+from . import accview, activity, claude, designloop, docker, gitops, hooks, merge, models, projectenv, prompts, resolver, rounds, toolusage, usage, vendored, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -68,6 +69,10 @@ class Runner:
         self.cost = 0.0
         self.transient = 0
         self.uncounted: dict[str, int] = {}
+        self.ctx: tuple[str, int] = ("", 0)               # step and attempt an escalation belongs to
+        self.nonce_bad: tuple[str, int] | None = None     # attempt whose evaluator verdict had a wrong nonce
+        self.esc_notified = False                         # the escalation text has gone to Alex
+        self.done_steps = 0
         self.sleep = time.sleep          # patched in tests
         self.clock = time.time
         self.spec: specmod.Spec | None = None
@@ -167,12 +172,51 @@ class Runner:
     def log(self, msg: str) -> None:
         self.state.log(self.redactor.text(msg))
 
-    def escalate(self, reason: str) -> None:
+    def infer_cause(self, cause: str, sid: str, attempt: int) -> str:
+        """allowlist, secret_leak and verdict_nonce are named by what happened in the escalated attempt."""
+        if cause in ("attempts_exhausted", "same_failure", "evaluator_no_verdict") and sid:
+            if self.nonce_bad == (sid, attempt):
+                return "verdict_nonce"
+            first = ((self.state.data["steps"].get(sid) or {}).get("reasons") or [""])[0]
+            if cause != "evaluator_no_verdict":
+                if first.startswith("changes outside the allowed paths"):
+                    return "allowlist"
+                if first.startswith("secret values found in the changes"):
+                    return "secret_leak"
+        return cause
+
+    def esc_step(self) -> str:
+        if self.ctx[0]:
+            return self.ctx[0]
+        return next((s.id for s in self.spec.steps if not self.state.passed(s.id)), "") if self.spec else ""
+
+    def mark_escalation(self, cause: str, reason: str) -> dict:
+        sid, attempt = self.ctx
+        esc = {"cause": self.infer_cause(cause, sid, attempt), "step": self.esc_step(), "attempt": attempt,
+               "reason": reason, "at": int(self.clock())}
+        self.state.data["escalation"] = esc
+        return esc
+
+    def resolver_gate(self, cause: str, step: str) -> dict:
+        if not step or not self.spec:
+            return {"run": False, "why": "no step"}
+        if self.sessions >= self.cfg.max_sessions or (self.cfg.cost_cap_usd and self.cost >= self.cfg.cost_cap_usd):
+            return {"run": False, "why": "session or cost cap reached"}
+        return resolver.gate(self.cfg.state_dir, cause, step, self.cfg.is_self, self.clock())
+
+    def escalate(self, reason: str, cause: str = "other") -> None:
         reason = self.redactor.text(reason)
+        esc = self.mark_escalation(cause, reason)
         self.state.set_status("escalation", reason)
         self.log(f"ESCALATION: {reason}")
-        self.send(f"ESCALATION: {reason[:1500]}\nFix, then: hands {self.cfg.name} ack")
+        self.esc_notified = not self.resolver_gate(esc["cause"], esc["step"])["run"]
+        if self.esc_notified:           # otherwise the resolver decides first and Alex hears the outcome
+            self.send_escalation(reason)
         raise Stop(reason)
+
+    def send_escalation(self, reason: str) -> None:
+        self.esc_notified = True
+        self.send(f"ESCALATION: {reason[:1500]}\nFix, then: hands {self.cfg.name} ack")
 
     def nap(self, seconds: float) -> None:
         """Sleep in slices so a STOP file is honoured promptly."""
@@ -347,15 +391,36 @@ class Runner:
         if self.state.status == "escalation":
             self.log(f"status is escalation: {self.state.data.get('reason')}\nresolve, then: hands {self.cfg.name} ack")
             return 2
-        done_steps = 0
+        self.done_steps = 0
+        first = True
+        while True:
+            try:
+                out = self._run_once(first, max_steps)
+            except Stop:                    # STOP file while waiting for a scheduled retry
+                return 0
+            except KeyboardInterrupt as e:
+                self.state.set_status("stopped", f"interrupted ({e})")
+                self.log(f"interrupted ({e}); the next run recovers the in-flight attempt")
+                self.send(f"stopped: interrupted ({e})")
+                return 130
+            first = False
+            if out is not None:
+                return out
+
+    def _run_once(self, first: bool, max_steps: int | None) -> int | None:
+        """One pass of the loop; None = an escalation was resolved and the loop goes on."""
         try:
-            n = docker.cleanup_orphans(self.cfg)
-            if n:
-                self.log(f"removed {n} orphaned container(s)")
-            docker.cleanup_volumes(self.cfg)
-            self.recover()
-            self.state.set_status("running", "")
-            self.send(f"runner started (coder {self.model}, image {self.cfg.image})")
+            if first:
+                n = docker.cleanup_orphans(self.cfg)
+                if n:
+                    self.log(f"removed {n} orphaned container(s)")
+                docker.cleanup_volumes(self.cfg)
+                self.recover()
+                if self.state.status == "paused_resolver" and self.state.data.get("resolver_pending"):
+                    if not self.wait_scheduled():
+                        return 2
+                self.state.set_status("running", "")
+                self.send(f"runner started (coder {self.model}, image {self.cfg.image})")
             while True:
                 if self.stop_file.exists():
                     self.state.set_status("stopped", "STOP file")
@@ -372,30 +437,158 @@ class Runner:
                     self.send(f"stopped: cost cap ${self.cfg.cost_cap_usd} reached (estimate)")
                     return 0
                 if self.free_gb() < self.cfg.min_free_gb:
-                    self.escalate(f"disk low: {self.free_gb():.1f} GB free; run docker system prune / clear {self.cfg.state_dir}/attempts")
+                    self.escalate(f"disk low: {self.free_gb():.1f} GB free; run docker system prune / clear {self.cfg.state_dir}/attempts", "disk_low")
                 step = self.next_step()
                 if step is None:
                     self.state.set_status("done", "all steps passed")
                     self.log("DONE: all steps passed")
                     self.send("DONE: all steps passed")
                     return 0
-                if max_steps is not None and done_steps >= max_steps:
+                if max_steps is not None and self.done_steps >= max_steps:
                     self.state.set_status("idle", f"--steps {max_steps} reached")
                     return 0
                 if self.attempt(step):
-                    done_steps += 1
+                    self.done_steps += 1
         except Stop:
-            return 2 if self.state.status == "escalation" else 0
-        except KeyboardInterrupt as e:
-            self.state.set_status("stopped", f"interrupted ({e})")
-            self.log(f"interrupted ({e}); the next run recovers the in-flight attempt")
-            self.send(f"stopped: interrupted ({e})")
-            return 130
-        except Exception as e:
-            self.state.set_status("escalation", f"runner error: {type(e).__name__}: {e}")
-            self.log(f"RUNNER ERROR: {type(e).__name__}: {e}")
-            self.send(f"RUNNER ERROR: {type(e).__name__}: {str(e)[:800]}")
+            if self.state.status == "escalation":
+                return None if self.resolve() else 2
+            return 0
+        except KeyboardInterrupt:
             raise
+        except Exception as e:
+            reason = f"runner error: {type(e).__name__}: {e}"
+            esc = self.mark_escalation("runner_error", reason)
+            self.state.set_status("escalation", reason)
+            self.log(f"RUNNER ERROR: {type(e).__name__}: {e}")
+            if self.resolver_gate("runner_error", esc["step"])["run"]:
+                if self.resolve():
+                    return None
+            else:
+                self.send(f"RUNNER ERROR: {type(e).__name__}: {str(e)[:800]}")
+            raise
+
+    # ------------------------------------------------------------------ escalation resolver
+    def resolve(self) -> bool:
+        """An escalation was just raised: run the resolver when the gate allows it and carry out its decision.
+        True = the loop goes on; False = the escalation stands (Alex has been told)."""
+        esc = self.state.data.get("escalation") or {}
+        cause, step = esc.get("cause", "other"), esc.get("step", "")
+        reason = str(self.state.data.get("reason") or esc.get("reason") or "")
+        if not self.resolver_gate(cause, step)["run"]:
+            if not self.esc_notified:
+                self.send_escalation(reason)
+            return False
+        try:
+            return self.run_resolver(esc, cause, step, reason)
+        except (Stop, KeyboardInterrupt):
+            raise
+        except Exception as e:
+            self.log(f"resolver failed: {type(e).__name__}: {e}")
+            self.state.set_status("escalation", reason)
+            self.send_escalation(reason)
+            return False
+
+    def run_resolver(self, esc: dict, cause: str, step: str, reason: str) -> bool:
+        c = self.cfg
+        assert self.spec
+        attempt = int(esc.get("attempt") or 0)
+        adir = c.state_dir / "attempts" / f"{step}-{attempt}"
+        k = 1 + len(list(adir.glob("resolver-*"))) if adir.is_dir() else 1
+        rdir = adir / f"resolver-{k}"
+        rdir.mkdir(parents=True, exist_ok=True)
+        nonce = secrets.token_hex(8)
+        text = self.redactor.text(resolver.briefing(
+            self.spec.root, c.state_dir, step, attempt, cause, reason, nonce, app_dir=c.app_dir,
+            default_max_attempts=c.default_max_attempts))
+        (rdir / "briefing.md").write_text(text)
+        (rdir / "briefing.sha256").write_text(hashlib.sha256(text.encode()).hexdigest() + "\n")
+        model, effort = self.session_model("resolver")
+        app = self.fresh_clone("resolver-app", gitops.head(c.app_dir))
+        spec_clone = c.state_dir / "resolver-spec"
+        workspace.rmtree(spec_clone)
+        gitops.git(c.state_dir, "clone", "-q", "--no-hardlinks", "--no-checkout", str(c.spec_dir), "resolver-spec")
+        gitops.git(spec_clone, "checkout", "-q", "--detach", self.spec.commit)
+        gitops.git(spec_clone, "remote", "remove", "origin", check=False)
+        self.log(f"resolver {step} ({cause}): decision {k} with {model}")
+        t0 = time.time()
+        try:
+            req = resolver.launch_spec(spec_clone, app, adir, c.runner_home / "prompts", c.claude_env, model, effort)
+            (rdir / "session.json").write_bytes(b"")
+            rc = docker.run(c, Run(
+                name=docker.unique_name(c, "resolver", f"{step}-{attempt}-{k}"), role="resolver", cmd=req["cmd"],
+                mounts=[Mount(c.runner_home / "container" / "entry.sh", docker.ENTRY),
+                        *(Mount(Path(m["src"]), m["dst"], ro=m["ro"]) for m in req["mounts"])],
+                env=self.common_env("resolver"), env_files=[Path(f) for f in req["env_files"]],
+                stdin=rdir / "briefing.md", stdout=rdir / "session.json", stderr=rdir / "session.stderr",
+                timeout_s=req["timeout_s"], append_stdout=True))
+        finally:
+            workspace.rmtree(app)
+            workspace.rmtree(spec_clone)
+        self.redact_files(rdir / "briefing.md", rdir / "session.json", rdir / "session.stderr")
+        res = claude.parse(rdir / "session.json", rc, rdir / "session.stderr")
+        self.record_session("resolver", step, attempt, res, time.time() - t0, model=model, effort=effort)
+        now = self.clock()
+        decision = resolver.parse_decision(rdir / "session.json", nonce, cause, now,
+                                           self.penv.secrets() if self.penv else None)
+        out = resolver.execute(self.state.data, step, cause, decision, now)
+        acted = decision["action"] if out["executed"] else "escalate_to_alex"
+        self.uncounted.pop(step, None)
+        self.transient = 0
+        self.state.save()
+        (rdir / "decision.json").write_text(json.dumps(
+            {"raw": self.redactor.text(res.text)[-4000:], "valid": decision.get("valid") is True,
+             "problem": decision.get("problem", ""), "action": acted, "executed": out["executed"], "model": model,
+             "effort": effort, "cost_usd": res.cost, "at": now}, indent=2))
+        resolver.record_run(c.state_dir, now, step, cause, decision, out["executed"])
+        why = self.redactor.text(str(decision.get("reason") or decision.get("problem") or ""))[:300]
+        self.log(f"resolver {step} ({cause}): {acted} executed={out['executed']} {why}")
+        if acted == "escalate_to_alex":
+            full = self.redactor.text(str(self.state.data.get("reason") or reason))
+            self.state.set_status("escalation", full)
+            self.send_escalation(full)
+            return False
+        self.state.data.pop("escalation", None)
+        if acted == "schedule_retry":
+            when = time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(self.state.data["resolver_pending"]["resume_at"]))
+            self.send(f"RESOLVER schedule_retry for {step} ({cause}): retry at {when}. {why}")
+            return self.wait_scheduled()
+        self.send(f"RESOLVER {acted} for {step} ({cause}): {why}")
+        self.state.set_status("running", "")
+        self.recover()
+        return True
+
+    def wait_scheduled(self) -> bool:
+        """Nap until the scheduled retry is due, re-reading the toggle every slice. False = cancelled (the project
+        is in plain escalation). A STOP file raises Stop and leaves paused_resolver, so a restart waits again."""
+        pend = self.state.data.get("resolver_pending") or {}
+        step, resume = str(pend.get("step") or ""), float(pend.get("resume_at") or 0)
+        self.log(f"waiting for the scheduled retry of {step} at {time.strftime('%Y-%m-%d %H:%M %Z', time.localtime(resume))}")
+        while True:
+            if self.stop_file.exists():
+                self.log("STOP file found while waiting for the scheduled retry")
+                raise Stop("STOP")
+            if not resolver.settings(self.cfg.state_dir)["enabled"]:
+                note = "(resolver turned off; scheduled retry cancelled)"
+                reason = str(self.state.data.get("reason") or "")
+                reason = reason if note in reason else f"{reason} {note}".strip()
+                self.state.data.pop("resolver_pending", None)
+                self.state.set_status("escalation", reason)
+                self.log(f"ESCALATION: {reason}")
+                self.send_escalation(reason)
+                return False
+            left = resume - self.clock()
+            if left <= 0:
+                break
+            self.sleep(min(30, left))
+        rec = self.state.step(step)
+        if rec.get("status") != "passed":
+            rec.update({"status": "pending", "attempts": 0})
+        self.state.data.pop("resolver_pending", None)
+        self.state.set_status("running", "")
+        self.log(f"scheduled retry of {step} is due; attempts reset")
+        self.send(f"RESOLVER: scheduled retry of {step} starting")
+        self.recover()
+        return True
 
     def recover(self) -> None:
         """A previous run died mid-attempt: drop its unaccepted local commit/changes before anything can push them."""
@@ -416,7 +609,7 @@ class Runner:
         self.state.save()
         self.log(f"recovered from interrupted {cur['step']} attempt {cur['attempt']} (phase {cur.get('phase')}); reset to {cur['base'][:9]}")
 
-    def _net(self, what: str, fn):
+    def _net(self, what: str, fn, cause: str = "push_failed"):
         """Network git operation with retries; escalates after 3 failures."""
         for n in range(1, 4):
             try:
@@ -424,7 +617,7 @@ class Runner:
             except gitops.GitError as e:
                 self.log(f"{what} failed ({e}); retry {n}/3")
                 if n == 3:
-                    self.escalate(f"{what} failed 3 times: {e}")
+                    self.escalate(f"{what} failed 3 times: {e}", cause)
                 self.nap(60 * n)
 
     def check_passed_records(self) -> None:
@@ -441,7 +634,7 @@ class Runner:
                 bad.append(why)
         if bad:
             self.escalate("passed step(s) changed in the spec since they passed (amendments only append; "
-                          "restore them, or reset-step to rebuild): " + " | ".join(bad[:5]))
+                          "restore them, or reset-step to rebuild): " + " | ".join(bad[:5]), "passed_changed")
 
     def open_round(self, rnd: int) -> None:
         """Branch change/C<rnd> from origin/<cfg.branch> and tag hands/pre-C<rnd> at that base, both pushed, then
@@ -451,7 +644,7 @@ class Runner:
         cur = rounds.record(self.state.data)
         if cur and cur.get("status") == "open":
             self.escalate(f"round C{cur['id']} is built on {cur.get('branch')} but not merged; merge it before "
-                          f"round C{rnd} can build")
+                          f"round C{rnd} can build", "round_conflict")
 
         def op() -> str:
             if c.push:
@@ -487,7 +680,7 @@ class Runner:
         try:
             base = self._net(f"round C{rnd} open", op)
         except rounds.RoundError as e:
-            self.escalate(str(e))
+            self.escalate(str(e), "round_conflict")
         self.state.data["round"] = {"id": rnd, "branch": name, "base_sha": base, "pre_tag": tag,
                                     "spec_commit": self.spec.commit if self.spec else "",
                                     "opened_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "status": "open",
@@ -526,19 +719,19 @@ class Runner:
                     self.log(f"pushed previously accepted commits {detail}".strip())
                 return
             if st == "diverged":
-                self.escalate(f"app repo {detail}; reconcile by hand (the runner never force-pushes)")
+                self.escalate(f"app repo {detail}; reconcile by hand (the runner never force-pushes)", "diverged")
             self.log(f"push failed ({detail}); retry {tries}/3")
             if tries == 3:
-                self.escalate(f"cannot push accepted work to origin: {detail}")
+                self.escalate(f"cannot push accepted work to origin: {detail}", "push_failed")
             self.nap(60 * tries)
 
     def next_step(self) -> specmod.Step | None:
         c = self.cfg
-        commit = self._net("spec fetch", lambda: gitops.refresh_spec(c.spec_dir, c.spec_branch))
+        commit = self._net("spec fetch", lambda: gitops.refresh_spec(c.spec_dir, c.spec_branch), "other")
         try:
             self.spec = specmod.load(c.spec_dir, commit)
         except specmod.SpecError as e:
-            self.escalate(f"spec invalid at {commit[:9]}: {e}")
+            self.escalate(f"spec invalid at {commit[:9]}: {e}", "spec_invalid")
         self.check_passed_records()
         pending = next((s for s in self.spec.steps if not self.state.passed(s.id)), None)
         if pending is not None:
@@ -556,14 +749,14 @@ class Runner:
             if not self.state.passed(s.id):
                 if s.type == "human" and s.gate:
                     if not designloop.has_shots(self.spec.root, c.state_dir, s.id):
-                        self.escalate(f"no screenshots for gate {s.id}")
+                        self.escalate(f"no screenshots for gate {s.id}", "design_gate")
                     why = designloop.reason(s.gate, s.id)
                     self.state.set_status("waiting_design", why)
                     self.log(f"WAITING: {why}")
                     self.send(f"{why}\nThen: hands {c.name} start")
                     raise Stop(why)
                 if s.type == "human":
-                    self.escalate(f"HUMAN STEP {s.id}: {s.title}\n{s.goal}\nWhen done: hands {c.name} mark-done {s.id}")
+                    self.escalate(f"HUMAN STEP {s.id}: {s.title}\n{s.goal}\nWhen done: hands {c.name} mark-done {s.id}", "human_step")
                 return s
         return None
 
@@ -571,7 +764,10 @@ class Runner:
         adir = self.cfg.state_dir / "attempts" / f"{sid}-{attempt}"
         if adir.exists() and any(adir.iterdir()):
             # an earlier uncounted try (infra error, escalation) used this number: keep its logs
-            adir.rename(adir.with_name(f"{adir.name}.{int(time.time())}"))
+            stamp = int(time.time())
+            while adir.with_name(f"{adir.name}.{stamp}").exists():
+                stamp += 1
+            adir.rename(adir.with_name(f"{adir.name}.{stamp}"))
         adir.mkdir(parents=True, exist_ok=True)
         return adir
 
@@ -582,6 +778,7 @@ class Runner:
         assert spec
         st = self.state.step(step.id)
         attempt = st["attempts"] + 1
+        self.ctx = (step.id, attempt)
         self.spec_problem = ""
         max_attempts = step.max_attempts or c.default_max_attempts
         adir = self.attempt_dir(step.id, attempt)
@@ -611,6 +808,8 @@ class Runner:
             acc_files=acc_files, env_vars=self.env_names(), imported=c.imported,
             regression_steps=self.regression_steps(), round_id=self.round_id, state_step=st,
             design_section=designloop.prompt_section(c.state_dir)))
+        if st.pop("resolver_hint", None) is not None:       # advisory and shown once
+            self.state.save()
         coder_model, coder_effort = self.session_model("coder")
         self.note_session_model("coder", coder_model)
         cmd = self.claude_cmd(model=coder_model, effort=coder_effort, system_file="coder.md", max_turns=c.max_turns,
@@ -717,6 +916,11 @@ class Runner:
         self.state.data.pop("current", None)
         self.state.save()
         self.uncounted.pop(step.id, None)
+        self.ctx = ("", 0)
+        if (self.state.data.get("resolver_escalation") or {}).get("step") == step.id:
+            self.state.data.pop("resolver_escalation")
+            self.state.data.pop("escalation", None)
+            self.state.save()
         if step.screenshots:
             self.store_shots(step, commit, adir, shots)
         pushed = "push disabled"
@@ -942,6 +1146,7 @@ class Runner:
             v = claude.parse_verdict(str(res.raw.get("result", ""))) if res.ok else None
             if v is not None and v.get("nonce") != nonce:
                 self.log(f"evaluator verdict nonce mismatch; ignoring verdict (try {n})")
+                self.nonce_bad = (step.id, attempt)
                 v = None
             if v is not None:
                 (adir / "verdict.json").write_text(json.dumps(v, indent=2))
@@ -954,7 +1159,7 @@ class Runner:
         self.state.data.pop("current", None)
         self.state.save()
         self.escalate(f"evaluator failed to produce a verdict 3 times for {step.id} attempt {attempt}; "
-                      f"candidate kept at tag {tag}; logs in {adir}")
+                      f"candidate kept at tag {tag}; logs in {adir}", "evaluator_no_verdict")
         return {"pass": False}
 
     # ------------------------------------------------------------------ outcomes
@@ -976,14 +1181,14 @@ class Runner:
         first = reasons[0] if reasons else "?"
         self.log(f"FAILED {step.id} attempt {attempt}/{max_attempts}: {first}")
         if attempt >= max_attempts:
-            self.escalate(f"{step.id} failed {attempt} attempts. Last: {' | '.join(reasons[:3])[:900]}\nLogs: {adir}")
+            self.escalate(f"{step.id} failed {attempt} attempts. Last: {' | '.join(reasons[:3])[:900]}\nLogs: {adir}", "attempts_exhausted")
         if getattr(self, "spec_problem", ""):
             self.escalate(f"{step.id} attempt {attempt} failed and the coder reports a problem in the spec/tests it "
-                          f"cannot fix:\n{self.spec_problem[:900]}\nFix the spec repo (PR), then: hands {c.name} ack\nLogs: {adir}")
+                          f"cannot fix:\n{self.spec_problem[:900]}\nFix the spec repo (PR), then: hands {c.name} ack\nLogs: {adir}", "spec_problem")
         sig = failure_signature(reasons)
         if prev_sig and sig and sig == prev_sig:
             self.escalate(f"{step.id} failed twice in a row with the same error, so another attempt is unlikely to "
-                          f"help:\n{' | '.join(reasons[:2])[:900]}\nLogs: {adir}")
+                          f"help:\n{' | '.join(reasons[:2])[:900]}\nLogs: {adir}", "same_failure")
         self.send(f"{step.id} attempt {attempt}/{max_attempts} rejected: {first[:300]}")
         return False
 
@@ -992,12 +1197,12 @@ class Runner:
             return                      # genuine waits are bounded by rate_limit_max_wait_s instead
         n = self.uncounted[sid] = self.uncounted.get(sid, 0) + 1
         if n > MAX_UNCOUNTED:
-            self.escalate(f"{sid}: {n} infrastructure failures in a row (last: {res.kind}: {res.text[:200]})")
+            self.escalate(f"{sid}: {n} infrastructure failures in a row (last: {res.kind}: {res.text[:200]})", "infra_repeated")
 
     def handle_infra(self, res: claude.Result) -> None:
         c = self.cfg
         if res.kind == "auth":
-            self.escalate(f"Claude auth failed ({res.text[:200]}). Renew the token: claude setup-token, then update {c.claude_env}")
+            self.escalate(f"Claude auth failed ({res.text[:200]}). Renew the token: claude setup-token, then update {c.claude_env}", "auth")
         if res.kind == "model_access":
             fb = self.fallback_model()
             if self.state.data.get("model_override") != fb and fb:
@@ -1006,11 +1211,11 @@ class Runner:
                 self.log(f"model access error ({res.text[:200]}); switching to fallback {fb}")
                 self.send(f"model unavailable; switched to {fb}. Clear with: hands {c.name} ack --clear-model")
                 return
-            self.escalate(f"model access error even on fallback: {res.text[:300]}")
+            self.escalate(f"model access error even on fallback: {res.text[:300]}", "model_access")
         if res.kind == "overloaded":
             self.transient += 1
             if self.transient > 6:
-                self.escalate(f"API errors persisted for 6 retries: {res.text[:300]}")
+                self.escalate(f"API errors persisted for 6 retries: {res.text[:300]}", "overloaded")
             wait = min(1800, 120 * self.transient)
             self.log(f"API overloaded/error; retry in {wait}s ({self.transient}/6)")
             self.nap(wait)
@@ -1051,7 +1256,7 @@ class Runner:
         self.send(f"usage limit hit; pausing (resets {time.strftime('%H:%M %Z', time.localtime(resets)) if resets else 'unknown'})")
         while True:
             if self.clock() - started > c.rate_limit_max_wait_s:
-                self.escalate(f"usage limit did not clear within {c.rate_limit_max_wait_s // 3600}h")
+                self.escalate(f"usage limit did not clear within {c.rate_limit_max_wait_s // 3600}h", "rate_limit_timeout")
             now = self.clock()
             if resets and now < resets <= now + 8 * 3600:
                 self.log(f"sleeping until limit reset at {time.strftime('%Y-%m-%d %H:%M %Z', time.localtime(resets))}")

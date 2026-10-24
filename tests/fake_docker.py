@@ -135,6 +135,26 @@ if role == "probe" and cmd and cmd[0] == "bash":
           "ghip-blocked\ngh-dns-blocked\ngithub=000\nhost-blocked\n1000")
     sys.exit(0)
 
+if role == "resolver":
+    # {"role": "resolver", "decision": {...}} -> the DECISION line with the briefing's nonce; "nonce" forges one;
+    # "text" / "raw" / "is_error" / "rc" replace the whole answer
+    import re
+    prompt = sys.stdin.read()
+    model = cmd[cmd.index("--model") + 1] if "--model" in cmd else "?"
+    item = pop("resolver")
+    rec = os.environ.get("FAKE_PROMPTS")
+    if rec:
+        with open(rec, "a") as f:
+            f.write(json.dumps({"role": role, "model": model, "prompt": prompt, "cmd": cmd, "mounts": mounts,
+                                "readonly": sorted(readonly), "env": env}) + "\n")
+    if "raw" in item:
+        sys.stdout.write(item["raw"])
+        sys.exit(item.get("rc", 0))
+    nonce = item.get("nonce") or (re.search(r"Nonce: ([0-9a-f]+)", prompt) or [None, ""])[1]
+    text = item.get("text", "looked\nDECISION: " + json.dumps({**(item.get("decision") or {}), "nonce": nonce}))
+    print(json.dumps(result(text, is_error=item.get("is_error", False), model=model, cost=item.get("cost", 0.1))))
+    sys.exit(item.get("rc", 0))
+
 if role in ("coder", "eval", "probe", "planner"):
     prompt = sys.stdin.read()
     model = cmd[cmd.index("--model") + 1] if "--model" in cmd else "?"
