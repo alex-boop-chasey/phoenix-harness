@@ -193,6 +193,35 @@
 
   const changedDesignFiles = (files, ids) => (Array.isArray(files) ? files : []).filter((f) => f && (ids || []).includes(f.id));
 
+  // ---- design gates (directions, tweaks, prototype): pure helpers, then the panel builder
+  const DESIGN_CHIPS = ["hero", "type", "nav", "palette", "cards", "motion", "background"];
+  const MAX_DIRECTION_NOTE = 500;
+  const MAX_REDO_NOTE = 1000;
+  const SHOT_FILE = /^[a-z0-9-]{1,80}-(desktop|mobile)\.png$/;
+  const SHOT_STEP = /^[A-Za-z0-9_-]{1,40}$/;
+
+  // cards: [{n, keep: [chips], note}] -> the select body: every direction with a chip or a note, in order.
+  function selectionBody(step, shotsSha, cards) {
+    const directions = [];
+    for (const c of cards) {
+      const note = String(c.note || "").trim().slice(0, MAX_DIRECTION_NOTE);
+      if (c.keep.length || note) directions.push({ n: c.n, keep: [...c.keep], note });
+    }
+    return { step, shots_sha: shotsSha, directions };
+  }
+  const hasPick = (cards) => cards.some((c) => c.keep.length > 0);
+
+  function tweaksComplete(groups, values) {
+    if (!Array.isArray(groups) || !groups.length) return false;
+    return groups.every((g) => g.options.some((o) => o.id === (values || {})[g.id]));
+  }
+
+  // The only image source the design view uses: the PNG route (empty for anything that is not a screenshot name).
+  function shotUrl(slug, step, file) {
+    if (!SHOT_STEP.test(step || "") || !SHOT_FILE.test(file || "")) return "";
+    return `/api/p/${encodeURIComponent(slug)}/design/shot/${step}/${file}`;
+  }
+
   // ---- DOM builders
   function h(doc, tag, attrs, ...kids) {
     const e = doc.createElement(tag);
@@ -533,7 +562,116 @@
     return h(doc, "ul", { class: "plandesignlist", "data-testid": "plan-design-files" }, rows);
   }
 
-  const api = { FRAMEWORK_LABELS, LIBS, MAX_STYLE_URLS, MAX_URL, REF_STATUSES, SETUP_STATUSES, PLAN_STATUSES,
+
+  // The design panel for a waiting_design project. `view` is GET /api/p/<n>/design (plus `step`, the gate step id);
+  // opts: {slug, send(path, body) -> Promise<{status, body}>, shotSrc(shot) (default: the PNG route), onDone()}.
+  // Only <img> of the PNG route is ever created (no iframe/object/embed).
+  function designPanel(doc, view, opts) {
+    const o = opts || {};
+    const base = `/api/p/${o.slug}/design`;
+    const src = o.shotSrc || ((s) => shotUrl(o.slug, view.source_step, s.file));
+    const shotImg = (s, testid, alt) => h(doc, "img", { class: "designshot", src: src(s), alt, loading: "lazy", "data-testid": testid });
+    const stale = h(doc, "p", { class: "reason", role: "alert", "data-testid": "design-stale" });
+    stale.hidden = true;
+    const msg = h(doc, "p", { class: "small muted", role: "status" });
+    let busy = false;
+    async function post(verb, body, done) {
+      if (busy) return;
+      busy = true;
+      stale.hidden = true;
+      msg.textContent = "";
+      try {
+        const r = await o.send(`${base}/${verb}`, body);
+        if (r.status === 409) { stale.textContent = "The screenshots changed; reload"; stale.hidden = false; }
+        else if (r.status === 200) { msg.textContent = verb === "redo" ? "Redo started." : "Saved. The build continues."; if (done) done(); if (o.onDone) o.onDone(verb); }
+        else msg.textContent = (r.body && r.body.error) || `failed (${r.status})`;
+      } catch (e) {
+        msg.textContent = `failed (${e.message})`;
+      } finally {
+        busy = false;
+      }
+    }
+    const shotsFor = (route) => ["desktop", "mobile"].map((vp) => (view.shots || []).find((s) => s.route === route && s.viewport === vp)).filter(Boolean);
+
+    const redo = h(doc, "div", { class: "designredo" });
+    if ((view.redos || 0) >= 3) {
+      redo.append(h(doc, "p", { class: "small muted" }, "Redo limit reached for this gate: amend the plan instead."));
+    } else {
+      const note = h(doc, "textarea", { class: "designnote", rows: "3", maxlength: String(MAX_REDO_NOTE), "aria-label": "What should change", "data-testid": "design-redo-note" });
+      const send = h(doc, "button", { class: "btn", type: "button", "data-testid": "design-redo-send" }, "Send redo");
+      send.disabled = true;
+      note.addEventListener("input", () => { send.disabled = !note.value.trim(); });
+      send.addEventListener("click", () => post("redo", { step: view.step, note: note.value.trim() }));
+      const box = h(doc, "div", { class: "designredobox" }, note, send);
+      box.hidden = true;
+      const open = h(doc, "button", { class: "btn", type: "button", "data-testid": "design-redo" }, "Redo with a note");
+      open.addEventListener("click", () => { box.hidden = !box.hidden; if (!box.hidden) note.focus(); });
+      redo.append(open, box);
+    }
+    const foot = h(doc, "div", { class: "designfoot" }, stale, msg, redo);
+
+    if (view.gate === "directions") {
+      const total = Math.max(0, Math.min(view.directions || 0, 8));
+      const cards = [];
+      const save = h(doc, "button", { class: "btn primary", type: "button", "data-testid": "directions-save" }, "Save picks");
+      save.disabled = true;
+      const list = h(doc, "div", { class: "directioncards" });
+      for (let n = 1; n <= total; n++) {
+        const c = { n, keep: [], note: "" };
+        cards.push(c);
+        const chips = DESIGN_CHIPS.map((chip) => {
+          const b = h(doc, "button", { class: "chip", type: "button", "aria-pressed": "false", "data-chip": chip, "data-testid": "direction-chip" }, chip);
+          b.addEventListener("click", () => {
+            const on = b.getAttribute("aria-pressed") !== "true";
+            b.setAttribute("aria-pressed", String(on));
+            c.keep = DESIGN_CHIPS.filter((k) => k === chip ? on : c.keep.includes(k));
+            save.disabled = !hasPick(cards);
+          });
+          return b;
+        });
+        const note = h(doc, "textarea", { class: "designnote", rows: "2", maxlength: String(MAX_DIRECTION_NOTE), placeholder: "Note (optional)", "aria-label": `Note for direction ${n}`, "data-testid": "direction-note" });
+        note.addEventListener("input", () => { c.note = note.value; });
+        list.append(h(doc, "section", { class: "directioncard", "data-testid": "direction-card" },
+          h(doc, "h3", {}, `Direction ${n}`),
+          h(doc, "div", { class: "directionshots" }, shotsFor(`/directions/${n}`).map((s) => shotImg(s, "direction-shot", `Direction ${n}, ${s.viewport}`))),
+          h(doc, "div", { class: "chiprow" }, chips), note));
+      }
+      save.addEventListener("click", () => post("select", selectionBody(view.step, view.shots_sha, cards)));
+      return h(doc, "section", { class: "designpanel", "data-testid": "directions-view" },
+        h(doc, "h2", {}, "Pick directions"), h(doc, "p", { class: "muted" }, "Tap what you want to keep from each direction."),
+        list, h(doc, "div", { class: "row" }, save), foot);
+    }
+
+    if (view.gate === "tweaks") {
+      const groups = (view.tweaks && view.tweaks.groups) || [];
+      const values = {};
+      const save = h(doc, "button", { class: "btn primary", type: "button", "data-testid": "tweaks-save" }, "Save tweaks");
+      save.disabled = true;
+      const fields = groups.map((g) => h(doc, "fieldset", { class: "tweakgroup", "data-testid": "tweak-group" },
+        h(doc, "legend", {}, g.label),
+        g.options.map((opt) => {
+          const input = h(doc, "input", { type: "radio", name: `tweak-${g.id}`, value: opt.id, "data-testid": "tweak-option" });
+          input.addEventListener("change", () => { values[g.id] = opt.id; save.disabled = !tweaksComplete(groups, values); });
+          return h(doc, "label", { class: "tweakopt" }, input, h(doc, "span", {}, opt.label));
+        })));
+      save.addEventListener("click", () => post("choose", { step: view.step, tweaks_sha: view.tweaks_sha, shots_sha: view.shots_sha, values: { ...values } }));
+      return h(doc, "section", { class: "designpanel", "data-testid": "tweaks-view" },
+        h(doc, "h2", {}, "Choose tweaks"),
+        h(doc, "div", { class: "designshots" }, shotsFor("/").map((s) => shotImg(s, "tweaks-shot", `Prototype, ${s.viewport}`))),
+        h(doc, "form", { class: "tweaksform", "data-testid": "tweaks-form" }, fields), h(doc, "div", { class: "row" }, save), foot);
+    }
+
+    const approved = h(doc, "span", { class: "badge ok", "data-testid": "prototype-approved" }, "Approved");
+    const approve = h(doc, "button", { class: "btn primary", type: "button", "data-testid": "prototype-approve" }, "Approve the prototype");
+    const slot = h(doc, "div", { class: "row" }, view.approved ? approved : approve);
+    approve.addEventListener("click", () => post("approve", { step: view.step, shots_sha: view.shots_sha, design_sha: view.design_sha }, () => { redo.hidden = true; slot.replaceChildren(approved); }));
+    return h(doc, "section", { class: "designpanel", "data-testid": "prototype-view" },
+      h(doc, "h2", {}, "Approve the prototype"),
+      h(doc, "div", { class: "designshots" }, shotsFor("/").map((s) => shotImg(s, "prototype-shot", `Prototype, ${s.viewport}`))),
+      slot, view.approved ? null : foot);
+  }
+
+  const api = { DESIGN_CHIPS, selectionBody, hasPick, tweaksComplete, shotUrl, designPanel, FRAMEWORK_LABELS, LIBS, MAX_STYLE_URLS, MAX_URL, REF_STATUSES, SETUP_STATUSES, PLAN_STATUSES,
     validateStyleUrl, styleUrlsFromForm, reasonText, frameworkLabel, mockFromQuery, mockToolUsage, mockSessions,
     planStatus, planChatLabel, shortSha, toolUsageParts, visibleSessions,
     CREATE_PLAN_LABEL, CREATE_PLAN_HINT, shouldOpenPlanChat,

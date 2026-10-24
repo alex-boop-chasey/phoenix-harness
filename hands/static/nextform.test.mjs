@@ -233,3 +233,35 @@ test("siteInputs defaults directions to 6 and siteInputsEmpty only holds for unt
   assert.equal(nf.siteInputsEmpty(nf.siteInputs({ offer: "x" })), false);
   assert.equal(nf.siteInputsEmpty(nf.siteInputs({ directions: 3 })), false);
 });
+
+test("selectionBody lists, in order, every direction with a chip or a note", () => {
+  const body = nf.selectionBody("S01", "a".repeat(64), [
+    { n: 1, keep: [], note: "" },
+    { n: 2, keep: ["hero"], note: "bigger headline" },
+    { n: 3, keep: [], note: "  just a note " },
+    { n: 4, keep: ["nav", "type"], note: "" },
+  ]);
+  assert.deepEqual(body, { step: "S01", shots_sha: "a".repeat(64), directions: [
+    { n: 2, keep: ["hero"], note: "bigger headline" }, { n: 3, keep: [], note: "just a note" }, { n: 4, keep: ["nav", "type"], note: "" }] });
+});
+
+test("selectionBody truncates notes to 500 characters; hasPick needs a chip", () => {
+  assert.equal(nf.selectionBody("S", "x", [{ n: 1, keep: ["hero"], note: "y".repeat(600) }]).directions[0].note.length, 500);
+  assert.equal(nf.hasPick([{ n: 1, keep: [], note: "only a note" }]), false);
+  assert.equal(nf.hasPick([{ n: 1, keep: [], note: "" }, { n: 2, keep: ["cards"], note: "" }]), true);
+});
+
+test("tweaksComplete needs every group answered with one of its options", () => {
+  const groups = [{ id: "accent", options: [{ id: "a" }, { id: "b" }, { id: "c" }] }, { id: "nav-style", options: [{ id: "x" }, { id: "y" }, { id: "z" }] }];
+  assert.equal(nf.tweaksComplete(groups, {}), false);
+  assert.equal(nf.tweaksComplete(groups, { accent: "a" }), false);
+  assert.equal(nf.tweaksComplete(groups, { accent: "a", "nav-style": "nope" }), false);
+  assert.equal(nf.tweaksComplete(groups, { accent: "a", "nav-style": "y" }), true);
+  assert.equal(nf.tweaksComplete([], {}), false);
+});
+
+test("shotUrl builds the PNG route from project, step and file and refuses anything else", () => {
+  assert.equal(nf.shotUrl("demo", "S01", "directions-1-desktop.png"), "/api/p/demo/design/shot/S01/directions-1-desktop.png");
+  assert.equal(nf.shotUrl("demo", "S01", "x.html"), "");
+  assert.equal(nf.shotUrl("demo", "S/1", "a-desktop.png"), "");
+});

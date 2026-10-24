@@ -1279,6 +1279,37 @@ async function refresh(full) {
 
 // Collapsible panels (0.6): <details class="panel"> per section; open state remembered per project in
 // localStorage (hands.panels.<name>), defaults from the project's state. A patch keeps the live open state.
+// ---- design gates (waiting_design): nextform.designPanel owns its form state, so it is built once per project and
+// gate view (re-fetched when the gate or the screenshots hash changes) and kept across patches
+let designGate = { name: null, node: null, key: "", loading: false };
+async function designSend(path, body) {
+  try { return { status: 200, body: await api(path, { method: "POST", headers: { "X-Hands": "1", "Content-Type": "application/json" }, body: JSON.stringify(body) }) }; }
+  catch (e) { return e.message === "stale" ? { status: 409, body: { error: "stale" } } : { status: 400, body: { error: e.message } }; }
+}
+async function loadDesign(name) {
+  if (designGate.loading) return;
+  designGate.loading = true;
+  try {
+    const view = await api(`/api/p/${encodeURIComponent(name)}/design`);
+    const key = `${view.step}:${view.shots_sha}:${view.tweaks_sha || ""}`;
+    if (designGate.name === name && designGate.key !== key) {
+      designGate.key = key;
+      designGate.node.replaceChildren(hands.nextform.designPanel(document, view, { slug: encodeURIComponent(name), send: designSend, onDone: () => refresh(false) }));
+    }
+  } catch (e) {
+    if (designGate.name === name) designGate.node.replaceChildren(el("p", { class: "reason" }, `Design view unavailable: ${e.message}`));
+  }
+  designGate.loading = false;
+}
+function designNode(name, d) {
+  if (d.status !== "waiting_design") { designGate = { name: null, node: null, key: "", loading: false }; return null; }
+  if (designGate.name !== name) {
+    designGate = { name, node: el("section", { "data-key": `design:${name}`, "data-self-managed": "" }, el("p", { class: "muted" }, "Loading…")), key: "", loading: false };
+  }
+  loadDesign(name);
+  return keep(designGate.node, `design:${name}`);
+}
+
 const PANEL_DEFAULTS = {
   plan: (d) => ["ready", "planning", "failed"].includes((d.plan && d.plan.state) || "") || !!(d.plan && d.plan.running),
   rounds: (d) => !!(d.round && d.round.record && d.round.record.status !== "merged"),
@@ -1286,6 +1317,7 @@ const PANEL_DEFAULTS = {
   env: () => false, steps: () => true, metrics: () => false, log: (d) => !!d.alive, attempts: () => false,
   progress: () => false, viewer: () => false, create: () => true,
   planchat: (d) => !!(d.next && d.next.plan_session && ["open", "brief_ready"].includes(d.next.plan_session.status)),
+  design: () => true,
   stylerefs: (d) => !!(d.next && ((d.next.style_refs || []).some((r) => r.status !== "frozen") || (d.next.setup && d.next.setup.status === "failed"))),
 };
 function panelsSaved(name) {
@@ -1324,6 +1356,7 @@ function render(name, d, log) {
   const p = d.plan || {};
   const failed = d.steps.filter((s) => s.status === "failed").length;
   const content = el("div", { class: "content" }, ...[statusSection(d),
+    panel(name, "design", "Design", d, designNode(name, d)),
     panel(name, "create", "Creation", d, createSec),
     d.managed ? panel(name, "plan", "Plan", d, planSection(d), p.running ? "planning…" : p.state && p.state !== "none" ? p.state : "") : null,
     panel(name, "rounds", "Change rounds", d, roundsSection(d)),

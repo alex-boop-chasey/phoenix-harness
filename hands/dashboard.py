@@ -56,6 +56,7 @@ from pathlib import Path
 
 from . import config as cfgmod
 from . import designfiles
+from . import designloop
 from . import gitops
 from . import publicaccess
 from . import rounds
@@ -440,6 +441,75 @@ def design_files_action(name: str, action: str, req: dict) -> dict:
         return uploads.group(cfg, ids, str(req.get("note") or ""))
     except designfiles.Refused as e:
         raise ValueError(str(e))
+
+
+# ---------------------------------------------------------------- design gates (directions, tweaks, prototype)
+def current_gate(steps: list[dict], state_steps: dict) -> str | None:
+    """The first gate step that is not passed yet, or None."""
+    for s in steps:
+        if s.get("gate") and (state_steps.get(s["id"]) or {}).get("status") != "passed":
+            return s["id"]
+    return None
+
+
+def _gate_id(cfg) -> str:
+    sp = specmod.load(cfg.spec_dir, gitops.head(cfg.spec_dir))
+    st = read_json(cfg.state_dir / "state.json", {})
+    gate = current_gate([{"id": s.id, "gate": s.gate} for s in sp.steps], st.get("steps") or {})
+    if not gate:
+        raise LookupError("no design gate")
+    return gate
+
+
+def design_view(name: str) -> dict:
+    cfg = load_cfg(name)
+    try:
+        gate = _gate_id(cfg)
+        out = designloop.view(cfg.spec_dir, cfg.state_dir, gate)
+    except (designloop.Invalid, specmod.SpecError, OSError) as e:
+        raise LookupError(str(e))
+    out["step"] = gate
+    return out
+
+
+def design_shot(state_dir, step: str, file: str) -> bytes:
+    """The bytes of one harness-sanitised screenshot; LookupError on any refusal (names, symlinks, missing)."""
+    try:
+        return designloop.shot_file(state_dir, step, file).read_bytes()
+    except (designloop.Invalid, OSError):
+        raise LookupError(file)
+
+
+class DesignStale(Exception):
+    pass
+
+
+def design_action(name: str, verb: str, req: dict) -> dict:
+    from . import merge
+    cfg = load_cfg(name)
+    step, spec, sd = req.get("step"), cfg.spec_dir, cfg.state_dir
+    if not isinstance(step, str):
+        raise ValueError("step is required")
+    if Lock.held(sd / "runner.lock"):
+        raise ValueError("the runner is running; stop it first")
+    text = lambda k: req[k] if isinstance(req.get(k), str) else ""  # noqa: E731
+    try:
+        if verb == "select":
+            designloop.select(spec, sd, step, text("shots_sha"), req)
+        elif verb == "choose":
+            designloop.choose(spec, sd, step, text("tweaks_sha"), text("shots_sha"), req.get("values"))
+        elif verb == "approve":
+            from . import specoutbox
+            designloop.approve(spec, sd, step, text("shots_sha"), text("design_sha"), specoutbox.root(cfg))
+        else:
+            designloop.redo(spec, sd, step, req.get("note"), time.time(),
+                            refusal=lambda data, sid, x: merge.reset_refusal(cfg, data, sid, x))
+    except designloop.Stale:
+        raise DesignStale()
+    except (designloop.Invalid, specmod.SpecError, OSError) as e:
+        raise ValueError(str(e))
+    started = run_action(name, "start")
+    return {"ok": True, "started": started.get("rc") == 0}
 
 
 def design_files_view(cfg) -> dict:
@@ -1427,6 +1497,10 @@ class Handler(BaseHTTPRequestHandler):
                                        else log_tail(name, int((q.get("lines") or ["300"])[0] or 300)))
             if rest == ["attempts"]:
                 return self._json(200, attempts(name))
+            if rest == ["design"]:
+                return self._json(200, design_view(name))
+            if len(rest) == 4 and rest[0] == "design" and rest[1] == "shot":
+                return self._send(200, design_shot(load_cfg(name).state_dir, rest[2], rest[3]), "image/png")
             if rest == ["design-files"]:
                 return self._json(200, uploads.listing(load_cfg(name)))
             if len(rest) == 3 and rest[0] == "design-files" and rest[2] == "thumb":
@@ -1456,6 +1530,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, start_create(str(req.get("slug", "")), str(req.get("description", "")),
                                                 str(req.get("from_repo", "") or ""), str(req.get("branch", "") or ""),
                                                 req.get("ruleset") is True, req))
+        if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "design" and parts[4] in (
+                "select", "choose", "approve", "redo"):
+            try:
+                return self._json(200, design_action(parts[2], parts[4], _json_body(body)))
+            except DesignStale:
+                return self._json(409, {"error": "stale"})
         if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "design-files" and parts[4] in (
                 "remove", "edit", "group"):
             return self._json(200, design_files_action(parts[2], parts[4], _json_body(body)))
