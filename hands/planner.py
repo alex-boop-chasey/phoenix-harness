@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from base64 import b64encode
 from pathlib import Path
 
-from . import accview, claude, codesummary, docker, gitops, planaudit, rounds, toolusage, workspace
+from . import accview, claude, codesummary, docker, gitops, planaudit, rounds, specoutbox, toolusage, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -93,6 +93,8 @@ class Log:
 def changed_files(spec_dir: Path, candidate: Path, names: list[str]) -> list[str]:
     out = []
     for n in names:
+        if specoutbox.is_harness_path(n):            # judged by specoutbox.check in check_output
+            continue
         base = spec_dir / n
         new = candidate / n
         if base.is_file() and not base.is_symlink() and base.read_bytes() == new.read_bytes():
@@ -121,7 +123,8 @@ def deleted_files(spec_dir: Path, candidate: Path) -> list[str]:
 
 def check_output(cfg: Config, candidate: Path, changed: list[str], amend: AmendBase | None = None) -> list[str]:
     """Problems with the candidate spec (empty = good)."""
-    errs = [f"{p}: not part of the planner output contract (allowed: steps.json, PLAN.md, allowed-domains, "
+    errs = specoutbox.check(specoutbox.root(cfg), cfg.spec_dir, candidate)
+    errs += [f"{p}: not part of the planner output contract (allowed: steps.json, PLAN.md, allowed-domains, "
             f"docs/*.md, acceptance/**)" for p in changed if not ALLOWED.match(p) or ".." in p.split("/")]
     for need in ("steps.json", "PLAN.md", "docs/design.md", "docs/plan.md", "docs/conventions.md"):
         if not (candidate / need).is_file():
@@ -661,6 +664,7 @@ def make_work(cfg: Config, work: Path, overlay: Path | None) -> None:
     workspace.rmtree(work)
     gitops.git(work.parent, "clone", "-q", "--no-hardlinks", str(cfg.spec_dir), work.name)
     gitops.git(work, "remote", "remove", "origin", check=False)
+    ob = specoutbox.root(cfg)
     if overlay and overlay.is_dir():
         for root, dirs, files in os.walk(overlay, followlinks=False):
             for f in files:
@@ -679,6 +683,7 @@ def make_work(cfg: Config, work: Path, overlay: Path | None) -> None:
                 f = work / rel
                 if f.is_file() and not f.is_symlink():
                     f.unlink()
+    specoutbox.overlay(ob, work)                    # harness refs waiting for this PR are visible to the planner
 
 
 # ---------------------------------------------------------------- GitHub
@@ -700,6 +705,13 @@ def open_pr(cfg: Config, candidate: Path, changed: list[str], title: str, body: 
         raise PlanError(f"spec repo main moved during planning ({local[:9]} -> {base[:9]}); plan again")
     _, bc = gh.call("GET", f"/repos/{org}/{repo}/git/commits/{base}")
     entries = []
+    harness = specoutbox.changed(specoutbox.root(cfg), cfg.spec_dir)
+    for path in harness["deleted"]:
+        entries.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
+    for path in harness["changed"]:
+        _, blob = gh.call("POST", f"/repos/{org}/{repo}/git/blobs",
+                          {"content": b64encode((specoutbox.root(cfg) / path).read_bytes()).decode(), "encoding": "base64"})
+        entries.append({"path": path, "mode": "100644", "type": "blob", "sha": blob["sha"]})
     for path in changed:
         if not (candidate / path).exists():                 # removed by the planner: a deletion in the tree
             entries.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
@@ -873,6 +885,9 @@ def _plan(cfg: Config, feedback: str, log: Log, amend: bool = False) -> int:
     warnings = codesummary.coverage_warnings(sp.allowed_paths, cfg.app_dir) if cfg.imported else []
     for w in warnings:
         log(f"WARNING: {w}")
+    hc = specoutbox.changed(specoutbox.root(cfg), cfg.spec_dir)
+    harness_paths = sorted([*hc["changed"], *hc["deleted"]])
+    harness_md = ("**Harness refs:**\n" + "".join(f"- `{x}`\n" for x in harness_paths) + "\n") if harness_paths else ""
     info = (base.info if base and base.info else {"new_steps": [], "tests_changed": [], "shared_changed": []}) if amend else None
     if amend:
         old_domains = set(domains(cfg.spec_dir / "allowed-domains"))
@@ -888,6 +903,7 @@ def _plan(cfg: Config, feedback: str, log: Log, amend: bool = False) -> int:
                 + (f"**Shared settings changed:** {', '.join(x['key'] for x in info['shared_changed'])} (needs an explicit tick)\n\n"
                    if info["shared_changed"] else "")
                 + (f"**Adds network access for:** {', '.join(new_domains)}\n\n" if new_domains else "")
+                + harness_md
                 + "".join(f"**Warning:** {w}\n\n" for w in warnings)
                 + "Existing steps are unchanged; passed steps were compared with the spec commit they passed on. "
                   "Review in the hands dashboard and press **Approve & build amendment** (merges exactly this commit).\n\n---\n\n"
@@ -897,12 +913,14 @@ def _plan(cfg: Config, feedback: str, log: Log, amend: bool = False) -> int:
         title, branch = f"Plan: {cfg.name}", BRANCH
         body = (f"**Plan for `{cfg.name}`** — {summary}\n\n"
                 + (f"**Adds network access for:** {', '.join(new_domains)}\n\n" if new_domains else "")
+                + harness_md
                 + "".join(f"**Warning:** {w}\n\n" for w in warnings)
                 + "Review in the hands dashboard and press **Approve & build** (merges exactly this commit).\n\n---\n\n"
                 + plan_md[:55000])
     pr = open_pr(cfg, candidate, changed, title, body, log, branch)
     write_state(cfg, state="ready", error="", summary=summary, files=changed, steps=len(sp.steps),
-                domains=new_domains, warnings=warnings, **pr, **(info or {}))
+                domains=new_domains, warnings=warnings, design_changed=specoutbox.design_changed(harness_paths),
+                **pr, **(info or {}))
     log(f"READY: {summary}. Review and approve in the dashboard.")
     log.notify.send(f"{'AMENDMENT' if amend else 'PLAN'} READY: {summary[:300]}" + (f"\nNew network domains: {', '.join(new_domains)}" if new_domains else "")
                     + "\nReview and approve in the dashboard.")
@@ -914,11 +932,11 @@ def _fmt(v) -> str:
 
 
 def approve(cfg: Config, expected_sha: str = "", ack_shared: bool = False, ack_domains: bool = False,
-            ack_tests: bool = False) -> int:
+            ack_tests: bool = False, ack_design: bool = False) -> int:
     """Merge exactly the reviewed plan commit. expected_sha = the head the human was shown (dashboard).
     A plan that adds network domains needs ack_domains; an amendment that changes shared settings needs
     ack_shared; one that changes or removes existing tests needs ack_tests (CLI flags --ack-domains /
-    --ack-shared / --ack-tests; the dashboard sends them from its review ticks)."""
+    --ack-shared / --ack-tests; design files or the prototype changed needs ack_design (--ack-design); the dashboard sends them from its review ticks)."""
     log = Log(cfg)
     d = pdir(cfg)
     d.mkdir(parents=True, exist_ok=True)
@@ -955,6 +973,11 @@ def approve(cfg: Config, expected_sha: str = "", ack_shared: bool = False, ack_d
                 raise PlanError("this plan adds network access for the build containers: " + ", ".join(new_domains)
                                 + "\nre-run with --ack-domains to allow them")
             log("acknowledging new network domains (--ack-domains): " + ", ".join(new_domains))
+        if st.get("design_changed"):
+            if not ack_design:
+                raise PlanError("design files changed: tick --ack-design (the PR adds or changes files under "
+                                "refs/design/, refs/prototype/ or refs/index.json)")
+            log("acknowledging design file changes (--ack-design)")
         if Lock.held(cfg.state_dir / "runner.lock"):
             raise PlanError("the build is already running")
         gh = github()
@@ -984,6 +1007,7 @@ def approve(cfg: Config, expected_sha: str = "", ack_shared: bool = False, ack_d
             raise PlanError(f"{cfg.spec_branch} after the merge differs from the reviewed plan; check the spec repo "
                             f"before pressing Start")
         specmod.load(cfg.spec_dir, commit)
+        specoutbox.clear_merged(specoutbox.root(cfg), cfg.spec_dir)
         write_state(cfg, merged_sha=commit)
     except Exception as e:
         msg = str(e) if isinstance(e, PlanError) else f"{type(e).__name__}: {e}"

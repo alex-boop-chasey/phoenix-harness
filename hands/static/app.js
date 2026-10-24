@@ -983,6 +983,7 @@ const planViewerTitle = el("h3", { "data-self-managed": "" }, "File");
 
 let sharedAck = false;
 let testsAck = false;
+let designAck = false;
 let ackFor = "";                       // head_sha the ticks were given for: a new candidate starts unticked
 const RISKY = /\b(curl|wget|nc|ncat|socat|ssh|scp|base64|eval|exec|python3? -c|node -e|perl|env|printenv|sudo)\b|\|\s*(ba)?sh\b|\$\(|`|>\s*\/|https?:\/\//;
 let domainAck = false;
@@ -998,9 +999,9 @@ async function planAction(name, act, label, headSha) {
       headers: { "X-Hands": "1", "Content-Type": "application/json" },
       body: JSON.stringify({ feedback: act === "plan" || act === "amend" ? planFeedback : "", head_sha: headSha || "",
         shared_ack: act === "approve" ? sharedAck : false, domains_ack: act === "approve" ? domainAck : false,
-        tests_ack: act === "approve" ? testsAck : false }) });
+        tests_ack: act === "approve" ? testsAck : false, design_ack: act === "approve" ? designAck : false }) });
     if (act === "plan" || act === "amend") planFeedback = "";
-    if (act === "approve") { sharedAck = false; domainAck = false; testsAck = false; }
+    if (act === "approve") { sharedAck = false; domainAck = false; testsAck = false; designAck = false; }
   } catch (e) { toast(`${label} failed: ${e.message}`, true); }
   refresh(false);
 }
@@ -1117,11 +1118,19 @@ function planSection(d) {
   const parts = [head];
   if (p.error) parts.push(el("p", { class: "reason" }, p.error));
   if (st === "ready") {
-    if ((p.head_sha || "") !== ackFor) { ackFor = p.head_sha || ""; sharedAck = false; domainAck = false; testsAck = false; }
+    if ((p.head_sha || "") !== ackFor) { ackFor = p.head_sha || ""; sharedAck = false; domainAck = false; testsAck = false; designAck = false; }
     parts.push(el("p", {}, p.summary || ""));
     if (amend) parts.push(amendNotice(p));
     if (amend && (p.shared_changed || []).length) parts.push(sharedBox(p));
     if (amend && (p.tests_changed || []).length) parts.push(testsBox(p));
+    if (p.design_changed) {
+      const box = el("input", { type: "checkbox", id: "designack" });
+      box.checked = designAck;
+      box.addEventListener("change", () => { designAck = box.checked; refresh(false); });
+      parts.push(el("div", { class: "warnbox" },
+        el("strong", {}, "This PR adds or changes design files or the prototype (refs/design, refs/prototype, refs/index.json)."),
+        el("label", { for: "designack", class: "inline" }, box, " I checked the design files and want them")));
+    }
     (p.warnings || []).forEach((w) => parts.push(el("div", { class: "notice warn" }, el("strong", {}, "Check before approving"), w)));
     if ((p.domains || []).length) {
       const box = el("input", { type: "checkbox", id: "domack" });
@@ -1161,7 +1170,7 @@ function planSection(d) {
   if (p.plan_md) parts.push(el("h3", {}, "PLAN.md"), el("pre", {}, p.plan_md));
   parts.push(el("label", {}, st === "ready" ? "Feedback (optional, for a re-plan)" : "Feedback for the next attempt (optional)"), fb);
   const canApprove = !d.alive && (!(p.domains || []).length || domainAck) && (!amend || !(p.shared_changed || []).length || sharedAck)
-    && (!amend || !(p.tests_changed || []).length || testsAck);
+    && (!amend || !(p.tests_changed || []).length || testsAck) && (!p.design_changed || designAck);
   parts.push(el("div", { class: "row out" },
     st === "ready" ? btn(`Approve & build${amend ? " amendment" : ""} (${(p.head_sha || "").slice(0, 7)})`, "approve",
       `Merge PR #${p.pr} at ${(p.head_sha || "").slice(0, 7)} exactly as reviewed and start building`, canApprove, p.head_sha || "") : null,

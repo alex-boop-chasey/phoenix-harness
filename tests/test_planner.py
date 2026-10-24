@@ -849,11 +849,11 @@ class TestAmend(TestPlanner):
         from hands.__main__ import main as cli
         seen = []
         orig = planner.approve
-        planner.approve = lambda cfg, sha="", ack_shared=False, ack_domains=False, ack_tests=False: \
-            seen.append((sha, ack_shared, ack_domains, ack_tests)) or 0
+        planner.approve = lambda cfg, sha="", ack_shared=False, ack_domains=False, ack_tests=False, ack_design=False: \
+            seen.append((sha, ack_shared, ack_domains, ack_tests, ack_design)) or 0
         try:
-            self.assertEqual(cli(["site", "approve", "a" * 40, "--ack-shared", "--ack-domains", "--ack-tests"]), 0)
-            self.assertEqual(seen, [("a" * 40, True, True, True)])
+            self.assertEqual(cli(["site", "approve", "a" * 40, "--ack-shared", "--ack-domains", "--ack-tests", "--ack-design"]), 0)
+            self.assertEqual(seen, [("a" * 40, True, True, True, True)])
         finally:
             planner.approve = orig
 

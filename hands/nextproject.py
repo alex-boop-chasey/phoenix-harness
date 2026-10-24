@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from . import nextstate, setup
+from . import nextstate, setup, specoutbox
 from .gitops import GitError
 from .state import Lock, State
 
@@ -111,6 +111,8 @@ def process_refs(cfg, indexes: list[int]) -> int:
         for i in indexes:
             if stylerefs.process(cfg, i) != "frozen":
                 failed += 1
+            else:
+                specoutbox.put_tree(specoutbox.root(cfg), f"refs/style-refs/{i:02d}", stylerefs.ref_dir(Path(cfg.spec_dir), i))
     return failed
 
 
@@ -126,6 +128,7 @@ def remove_ref(cfg, index: int) -> None:
     nextstate.ref(nextstate.load(file(cfg)), index)
     stylerefs.remove(Path(cfg.spec_dir), index)
     shutil.rmtree(stylerefs.work_dir(cfg, index), ignore_errors=True)
+    specoutbox.delete(specoutbox.root(cfg), f"refs/style-refs/{index:02d}")
     nextstate.remove_ref(file(cfg), index)
 
 
@@ -303,5 +306,6 @@ def plan_chat_approve(cfg, sha: str) -> dict:
         raise ValueError(f"brief not ready: {e}")
     except GitError as e:
         raise ValueError(f"spec repo commit failed: {str(e)[:300]}")
+    specoutbox.mirror(cfg, [res["brief_path"], res["coverage_path"], "brief.sha256", "refs/site-inputs.json"])
     nextstate.set_plan_session(file(cfg), "approved", sha=res["sha256"])
     return res

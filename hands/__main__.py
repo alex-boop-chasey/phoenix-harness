@@ -75,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--amend", action="store_true", help="plan: amend the approved plan (change request on stdin)")
     ap.add_argument("--ack-shared", action="store_true", help="approve: accept the amendment's shared-settings changes")
     ap.add_argument("--ack-domains", action="store_true", help="approve: accept the plan's new network domains")
+    ap.add_argument("--ack-design", action="store_true", help="approve: accept the PR's new or changed design files")
     ap.add_argument("--ack-tests", action="store_true", help="approve: accept the amendment's changed/removed tests")
     ap.add_argument("--from-repo", default="", metavar="OWNER/REPO")
     ap.add_argument("--branch", default="")
@@ -129,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
                 if rc != 0:
                     return rc
             return planner.plan(cfg, fb, amend=a.amend)
-        return planner.approve(cfg, a.arg or "", ack_shared=a.ack_shared, ack_domains=a.ack_domains, ack_tests=a.ack_tests)
+        return planner.approve(cfg, a.arg or "", ack_shared=a.ack_shared, ack_domains=a.ack_domains, ack_tests=a.ack_tests, ack_design=a.ack_design)
     if a.command in ("merge", "discard"):
         return round_cmd(cfg, a.command, a.branch_sha, a.main_sha)
     if a.command == "setup":

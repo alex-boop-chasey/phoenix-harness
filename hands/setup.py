@@ -623,6 +623,7 @@ def run(cfg, framework: int | None = None, libs: list[str] | None = None) -> int
 
 
 def _run_locked(cfg, st, opts, kit, pkgs_needed, docker, gitops, workspace, Mount, Run) -> int:
+    from . import specoutbox
     sdir = cfg.state_dir / "setup"
     sdir.mkdir(parents=True, exist_ok=True)
     for old in sdir.glob("*.log"):
@@ -735,6 +736,7 @@ def _run_locked(cfg, st, opts, kit, pkgs_needed, docker, gitops, workspace, Moun
     ref = cfg.spec_dir / "refs" / "setup.json"
     ref.parent.mkdir(parents=True, exist_ok=True)
     ref.write_text(json.dumps(rec, indent=2) + "\n")
+    specoutbox.put(specoutbox.root(cfg), "refs/setup.json", ref)
     try:
         gitops.git(cfg.spec_dir, "add", "-A", "--", "refs/setup.json")
         if gitops.git(cfg.spec_dir, "status", "--porcelain", "--", "refs/setup.json").strip():
