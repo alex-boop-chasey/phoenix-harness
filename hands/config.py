@@ -51,6 +51,7 @@ class Config:
     diff_limit_chars: int = 60000
     docker_bin: str = "docker"
     planner_model: str = ""              # default: coder_model
+    resolver_model: str = ""             # default: eval_model
     planner_max_turns: int = 300
     planner_timeout_min: int = 90
     planner_web_search: bool = True      # WebSearch (server-side); WebFetch is always off
