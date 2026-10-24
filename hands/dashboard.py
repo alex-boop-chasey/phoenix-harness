@@ -42,6 +42,7 @@ import os
 import re
 import secrets
 import select
+import shutil
 import socket
 import shlex
 import stat
@@ -54,10 +55,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import config as cfgmod
+from . import designfiles
 from . import gitops
 from . import publicaccess
 from . import rounds
 from . import sessions
+from . import uploads
 from . import spec as specmod
 from . import ws
 from .state import Lock
@@ -312,6 +315,36 @@ def set_hidden(name: str, hidden: bool) -> dict:
 
 
 _UI_MUTEX = threading.Lock()
+_BATCH_TTL = 3600
+_batches: dict = {}                        # (project, batch id) -> {"total", "count", "at"}: per-batch upload totals
+_batches_lock = threading.Lock()
+
+
+def uploads_batch(query: str) -> str:
+    return (urllib.parse.parse_qs(query).get("batch") or [""])[0]
+
+
+def _batch_add(key: tuple, length: int) -> None:
+    now = time.time()
+    with _batches_lock:
+        for k in [k for k, v in _batches.items() if now - v["at"] > _BATCH_TTL]:
+            del _batches[k]
+        b = _batches.setdefault(key, {"total": 0, "count": 0, "at": now})
+        b["total"] += length
+        b["count"] += 1
+        b["at"] = now
+
+
+class _BodyReader:
+    """Reads exactly `length` bytes of the request body from the socket file, no more."""
+
+    def __init__(self, rfile, length: int):
+        self.rfile, self.left = rfile, length
+
+    def read(self, n: int = 65536) -> bytes:
+        buf = self.rfile.read(min(n, self.left)) if self.left else b""
+        self.left -= len(buf)
+        return buf
 
 
 # ---------------------------------------------------------------- environment variables (hands/projectenv.py)
@@ -390,6 +423,32 @@ def version(cfg: cfgmod.Config) -> str:
     return f"{newest:x}-{size:x}"
 
 
+def design_files_action(name: str, action: str, req: dict) -> dict:
+    cfg = load_cfg(name)
+    try:
+        if action == "remove":
+            uploads.remove(cfg, str(req.get("id", "")))
+            return {"ok": True}
+        if action == "edit":
+            kind, note = req.get("kind"), req.get("note")
+            if not all(v is None or isinstance(v, str) for v in (kind, note)):
+                raise ValueError("kind and note must be text")
+            return uploads.edit(cfg, str(req.get("id", "")), kind, note)
+        ids = req.get("ids")
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            raise ValueError("ids must be a list")
+        return uploads.group(cfg, ids, str(req.get("note") or ""))
+    except designfiles.Refused as e:
+        raise ValueError(str(e))
+
+
+def design_files_view(cfg) -> dict:
+    try:
+        return uploads.listing(cfg)
+    except (OSError, ValueError, designfiles.Refused):
+        return {"files": [], "inbox": []}
+
+
 def detail(name: str) -> dict:
     cfg = load_cfg(name)
     sd = cfg.state_dir
@@ -405,6 +464,7 @@ def detail(name: str) -> dict:
         "progress": read_jsonl(sd / "progress.jsonl", 30),
         "round": st.get("round") if isinstance(st.get("round"), dict) else None,
         "version": version(cfg),
+        "design_files": design_files_view(cfg),
     })
     sst = st.get("steps") or {}
     steps, spec_err, spec_commit = [], None, ""
@@ -704,6 +764,7 @@ def start_create(slug: str, description: str, from_repo: str = "", branch: str =
         env["PYTHONPATH"] = str(cfgmod.RUNNER_HOME)
         from . import projectenv
         projectenv.discard_pending(slug)             # stale variables from an earlier, failed attempt
+        shutil.rmtree(uploads.creating_inbox(slug), ignore_errors=True)
         newproject.write_status(slug, "running")     # visible at once; the child rewrites it
         fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "a") as out:
@@ -1027,6 +1088,10 @@ class Handler(BaseHTTPRequestHandler):
             if not self.parse_request():
                 return
             self._requests += 1
+            if self.command == "POST" and uploads.UPLOAD_PATH.match(urllib.parse.urlsplit(self.path).path):
+                self._upload()               # design files: decided from the headers, the body is streamed
+                self.wfile.flush()
+                return
             if not self._read_body():        # every request's body is consumed (or the connection closed)
                 return                       # before anything answers, so no leftover bytes become the
             if self.command not in ("GET", "HEAD", "POST", "DELETE"):   # next request on a kept-alive connection
@@ -1135,6 +1200,60 @@ class Handler(BaseHTTPRequestHandler):
         if cfg is not None and host.lower() in cfg.hosts:
             return "public"
         return ""
+
+    def _upload(self) -> None:
+        """POST /api/p/<n>/design-files/upload: login, origin and caps are decided before any body byte is read;
+        a refusal closes the connection with the body unread. The body is streamed into the design inbox."""
+        u = urllib.parse.urlsplit(self.path)
+        name = uploads.UPLOAD_PATH.match(u.path).group(1)
+        self.close_connection = True
+        kind = self._host_kind()
+        if not kind:
+            return self._text(403, "forbidden host")
+        if kind == "public":
+            reason = self._access_check()
+            if reason:
+                return self._text(403, f"forbidden: {reason}")
+        hdrs = {k: v for k, v in self.headers.items()}
+        if len(self.headers.get_all("Content-Length") or []) > 1 or len(self.headers.get_all("Host") or []) > 1:
+            return self._json(400, {"error": "duplicate header"})
+        cfg, pending = None, False
+        if name in project_names():
+            try:
+                cfg = load_cfg(name)
+            except SystemExit:
+                cfg = None
+        else:
+            info = create_info(name)
+            pending = bool(info and info["state"] == "running")
+        with _batches_lock:
+            pre_batch = dict(_batches.get((name, uploads_batch(u.query)), {"total": 0, "count": 0}))
+        pre = uploads.precheck({"method": "POST", "path": self.path, "headers": hdrs,
+                                "logged_in": kind == "public" or self._authed(), "same_origin": self._same_origin(),
+                                "batch": pre_batch}, uploads.caps(cfg) if cfg else None)
+        if pre["code"]:
+            return self._json(pre["code"], {"error": pre["error"]})
+        if cfg is None and not pending:
+            return self._json(404, {"error": "not found"})
+        length, q = int(hdrs["Content-Length"]), pre["query"]
+        box = uploads.inbox(cfg) if cfg else uploads.creating_inbox(name)
+        floor = (cfg.min_free_gb if cfg else cfgmod.Config.min_free_gb) * (1 << 30)
+        box.parent.mkdir(parents=True, exist_ok=True)
+        refusal = uploads.guard(length, shutil.disk_usage(box.parent).free, floor,
+                                uploads.pending_bytes(cfg, box) if cfg else uploads.tree_bytes(box))
+        if refusal:
+            return self._json(refusal[0], {"error": refusal[1]})
+        self.close_connection = False
+        try:
+            ident = designfiles.receive(box, _BodyReader(self.rfile, length), q["name"], q["kind"],
+                                        q.get("note", ""), q["batch"], length)
+        except ValueError as e:
+            self.close_connection = True
+            return self._json(400, {"error": str(e)[:200]})
+        _batch_add((name, q["batch"]), length)
+        if cfg:
+            spawn_cli(cfg.state_dir / "design.log", [name, "design-files", "process", ident])
+        self._json(200, {"id": ident, "status": "queued"})
 
     def _host_ok(self) -> bool:
         return self._host_kind() == "local"
@@ -1285,6 +1404,16 @@ class Handler(BaseHTTPRequestHandler):
                                        else log_tail(name, int((q.get("lines") or ["300"])[0] or 300)))
             if rest == ["attempts"]:
                 return self._json(200, attempts(name))
+            if rest == ["design-files"]:
+                return self._json(200, uploads.listing(load_cfg(name)))
+            if len(rest) == 3 and rest[0] == "design-files" and rest[2] == "thumb":
+                if not re.fullmatch(r"d[0-9]{3}", rest[1]):
+                    raise LookupError(path)
+                try:
+                    png = (uploads.thumbs(load_cfg(name)) / f"{rest[1]}.png").read_bytes()
+                except OSError:
+                    raise LookupError(path)
+                return self._send(200, png, "image/png")
             if len(rest) == 3 and rest[0] == "attempts":
                 text, cut = attempt_file(name, rest[1], rest[2])
                 return self._text(200, text + (f"\n[... truncated at {MAX_FILE} bytes]" if cut else ""))
@@ -1304,6 +1433,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, start_create(str(req.get("slug", "")), str(req.get("description", "")),
                                                 str(req.get("from_repo", "") or ""), str(req.get("branch", "") or ""),
                                                 req.get("ruleset") is True, req))
+        if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "design-files" and parts[4] in (
+                "remove", "edit", "group"):
+            return self._json(200, design_files_action(parts[2], parts[4], _json_body(body)))
         if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "action" and parts[4] in ("plan", "amend", "approve"):
             try:
                 req = json.loads(body or b"{}")

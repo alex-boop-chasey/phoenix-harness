@@ -846,8 +846,8 @@ def _write_json(path: Path, obj) -> None:
     os.replace(tmp, path)
 
 
-def _set_status(upload_dir: Path, status: str, reason: str = "") -> dict:
-    st = {"status": status, "reason": reason, "id": upload_dir.name}
+def _set_status(upload_dir: Path, status: str, reason: str = "", design_id: str = "") -> dict:
+    st = {"status": status, "reason": reason, "id": design_id or upload_dir.name, "upload": upload_dir.name}
     _write_json(upload_dir / "status.json", st)
     return st
 
@@ -901,7 +901,7 @@ def _sanitizer_reason(stage: Path, code: int) -> str:
 
 
 def process_upload(upload_dir, store, thumbs, capture_dir, secrets=None, caps=None, launcher=None,
-                   base_index=None) -> dict:
+                   base_index=None, image: str = "hands") -> dict:
     d = Path(upload_dir)
     stage = d / "stage"
     launcher = launcher or docker_launcher()
@@ -914,11 +914,11 @@ def process_upload(upload_dir, store, thumbs, capture_dir, secrets=None, caps=No
             clean = stage / "clean"
             clean.mkdir(exist_ok=True)
             clean.chmod(0o777)
-            code = launcher(plan_sanitize(stage, capture_dir), stage)
+            code = launcher(plan_sanitize(stage, capture_dir, image), stage)
             if code != 0:
                 raise Refused(_sanitizer_reason(stage, code))
         entry = ingest(store, stage, thumbs, base_index=base_index)
-        result = {**_set_status(d, "ready"), "design_id": entry["id"], "entry": entry}
+        result = {**_set_status(d, "ready", design_id=entry["id"]), "design_id": entry["id"], "entry": entry}
     except Refused as exc:
         result = _set_status(d, "refused", str(exc))
     except (OSError, ValueError, KeyError) as exc:

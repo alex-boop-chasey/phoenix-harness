@@ -56,6 +56,7 @@ class Config:
     planner_web_search: bool = True      # WebSearch (server-side); WebFetch is always off
     min_release_age_days: float = 3.0    # planned npm pins must be at least this old (pnpm 12 enforces >= 1 day)
     ai_kit: dict = field(default_factory=dict)   # [ai_kit] repo, ref, install_command for setup frameworks 3/5
+    design_caps: dict = field(default_factory=dict)   # [design_caps] text, image, font, zip, video, submit (bytes)
     # set by `hands <p> create`; `destroy` only deletes GitHub repos of managed projects
     managed: bool = False
     imported: bool = False              # app repo existed before hands (never deleted by destroy)

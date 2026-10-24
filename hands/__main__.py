@@ -30,6 +30,8 @@
   setup                  scaffold the app repo with the project's framework/libs choices inside the firewalled
                          container (--framework N --libs a,b store new choices first); commits and pushes
                          `scaffold: ...` only when build, lint and typecheck pass; writes refs/setup.json
+  design-files add FILE... [--kind K] [--note T] | list | remove ID | edit ID [--kind K] [--note T]
+                         | group ID ID... [--note T] | process UPLOAD_ID   design inputs (the spec outbox is the store)
   refs add URL [URL...]  add style reference URLs (change request) and run their pipeline
   refs retry N [N...]    run the style-ref pipeline again for ref N (capture, analyst, validate, freeze)
   refs remove N [N...]   drop style ref N (next.json, and refs/style-refs/NN from the spec repo)
@@ -65,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("project")
     ap.add_argument("command", choices=["run", "start", "status", "check", "validate", "prompt", "stop", "ack",
                                         "mark-done", "reset-step", "watchdog", "create", "destroy", "plan", "approve", "usage",
-                                        "merge", "discard", "setup", "refs"])
+                                        "merge", "discard", "setup", "refs", "design-files"])
     ap.add_argument("arg", nargs="?")
     ap.add_argument("args", nargs="*", help="refs add|retry|remove: the URLs or ref indexes")
     ap.add_argument("--steps", type=int)
@@ -86,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--libs", default=None, help="setup: comma-separated library ids (shadcn, gsap); '' for none")
     ap.add_argument("--style-ref", action="append", default=[], metavar="URL",
                     help="create / plan --amend: a style reference URL (repeatable)")
+    ap.add_argument("--kind", default=None, help="design-files add|edit: the file kind")
+    ap.add_argument("--note", default=None, help="design-files add|edit|group: the note (max 500 characters)")
     a = ap.parse_args(argv)
     libs = None if a.libs is None else [x.strip() for x in a.libs.split(",") if x.strip()]
     if a.project == "all":
@@ -136,6 +140,9 @@ def main(argv: list[str] | None = None) -> int:
     if a.command == "setup":
         from . import setup
         return setup.run(cfg, framework=a.framework, libs=libs)
+    if a.command == "design-files":
+        from . import uploads
+        return uploads.cli(cfg, a.arg or "", a.args, a.kind, a.note)
     if a.command == "refs":
         return refs_cmd(cfg, a.arg or "", a.args)
     r = Runner(cfg)
@@ -337,9 +344,12 @@ def after_create(cfg, style_refs: list[str], framework: int, libs: list[str]) ->
     """Right after the clones exist: record the choices, run the style-ref pipeline for every URL, then the
     scaffold when a framework was chosen. 1 when a ref or the scaffold failed (the project exists either way;
     `refs retry N` / `refs remove N` / `setup` fix it, and the gate holds planning until then)."""
-    from . import nextproject, setup
+    from . import nextproject, setup, uploads
     state = nextproject.init(cfg, style_refs, framework, libs)
     rc = 0
+    for res in uploads.process_pending(cfg, uploads.creating_inbox(cfg.name)):
+        if res["status"] != "ready":
+            print(f"design file {res['id']}: {res['status']} ({res['reason']})", flush=True)
     indexes = [r["index"] for r in state["style_refs"]]
     if indexes and _process(cfg, indexes):
         rc = 1
