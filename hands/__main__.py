@@ -60,9 +60,59 @@ from . import accview, claude, docker, gitops, merge, prompts, rounds
 from . import spec as specmod
 from . import config as cfgmod
 from .config import RUNNER_HOME, load
+from . import models
 from .docker import Mount, Run
 from .loop import Runner
 from .state import Lock, State
+
+
+def models_cmd(r: Runner, a) -> int:
+    """`models [show]`, `models set ROLE MODEL [--effort E] [--clear-override]`, `models reset`. Never takes the
+    runner lock: a change is saved and applies at the next session start."""
+    cfg, st = r.cfg, r.state
+    path, audit = models.models_file(cfg), cfg.state_dir / "models-audit.jsonl"
+    sub = a.arg or "show"
+    if sub == "show":
+        now = time.time()
+        eff = models.effective_all(models.toml_values(cfg), models.load_manual(path), st.data, now)
+        running = (st.data.get("current") or {}).get("models") or {}
+        for role, e in eff.items():
+            print(f"{role:<10} {e['model']:<18} {e['effort'] or '-':<7} {e['source']}")
+            ov = e["override"]
+            if ov:
+                until = time.strftime("%Y-%m-%d %H:%M", time.localtime(ov["until"])) if ov.get("until") else "cleared manually"
+                print(f"  override: {ov.get('reason', '')} until {until}")
+            if role in running and running[role] != e["model"]:
+                print(f"  pending: {e['model']} applies at next session (now running {running[role]})")
+        return 0
+    if sub == "reset":
+        models.reset(path, audit, "cli")
+        print("saved; applies at next session")
+        return 0
+    if sub != "set" or len(a.args) != 2:
+        print("usage: hands <project> models [show] | set ROLE MODEL [--effort E] [--clear-override] | reset")
+        return 1
+    role, model = a.args
+    try:
+        models.validate(role, model, a.effort)
+    except models.InvalidModel as e:
+        print(f"refused: {e}")
+        return 1
+    old = models.effective(role, models.toml_values(cfg), models.load_manual(path), st.data, time.time())["model"]
+    if model != old:
+        res = r.probe(model)
+        if not res.ok:
+            print(f"probe failed for {model}: {res.kind} {res.text[:200]}")
+            return 1
+    models.set_choice(path, role, model, a.effort, audit, "cli")
+    if a.clear_override:
+        (st.data.get("model_overrides") or {}).pop(role, None)
+        if role in ("coder", "evaluator"):
+            st.data.pop("model_override", None)
+        st.save()
+    r.send(f"models: {role} {old} -> {model}")
+    print("saved; applies at next session")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -71,11 +121,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("project")
     ap.add_argument("command", choices=["run", "start", "status", "check", "validate", "prompt", "stop", "ack",
                                         "mark-done", "reset-step", "watchdog", "create", "destroy", "plan", "approve", "usage",
-                                        "merge", "discard", "setup", "refs", "design-files", "design"])
+                                        "merge", "discard", "setup", "refs", "design-files", "design", "models"])
     ap.add_argument("arg", nargs="?")
     ap.add_argument("args", nargs="*", help="refs add|retry|remove: the URLs or ref indexes")
     ap.add_argument("--steps", type=int)
     ap.add_argument("--clear-model", action="store_true")
+    ap.add_argument("--effort", default="", help="models set: reasoning effort")
+    ap.add_argument("--clear-override", action="store_true", help="models set: also drop the active auto-override")
     ap.add_argument("--confirm", default="")
     ap.add_argument("--then-plan", action="store_true")
     ap.add_argument("--amend", action="store_true", help="plan: amend the approved plan (change request on stdin)")
@@ -230,6 +282,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"runner alive: {Lock.held(cfg.state_dir / 'runner.lock')}   STOP file: {r.stop_file.exists()}")
         if d.get("model_override"):
             print(f"model override: {d['model_override']}")
+        print("models: " + ", ".join(f"{role} {e['model']}" for role, e in models.effective_all(
+            models.toml_values(cfg), models.load_manual(models.models_file(cfg)), d, time.time()).items()))
         if d.get("current"):
             print(f"current: {d['current']}")
         rr = rounds.record(d)
@@ -297,6 +351,9 @@ def main(argv: list[str] | None = None) -> int:
                             round_id=r.round_id))
         return 0
 
+    if cmd == "models":
+        return models_cmd(r, a)
+
     if cmd == "stop":
         r.stop_file.touch()
         print(f"STOP requested ({r.stop_file}); the loop stops at the next safe point. Remove the file to run again.")
@@ -314,6 +371,7 @@ def main(argv: list[str] | None = None) -> int:
                 x["attempts"] = 0
         if a.clear_model:
             st.data.pop("model_override", None)
+            st.data.pop("model_overrides", None)
         (cfg.state_dir / "watchdog.json").unlink(missing_ok=True)
         st.set_status("idle", "acknowledged")
         print("acknowledged. start again with: hands", cfg.name, "start")
@@ -682,7 +740,7 @@ def check(r: Runner) -> int:
         line(True, f"app repo vs origin: {gitops.ahead_behind(cfg.app_dir, r.branch)} (report only, nothing pushed)")
     except gitops.GitError as e:
         line(False, f"app repo fetch: {e}")
-    for model in dict.fromkeys([cfg.coder_model, cfg.eval_model, cfg.fallback_model]):
+    for model in dict.fromkeys(r.session_model(x)[0] for x in ("coder", "evaluator", "fallback")):
         if not model:
             continue
         res = r.probe(model)
@@ -694,9 +752,9 @@ def check(r: Runner) -> int:
     workspace.make_work(cfg.app_dir, work)
     (pdir / "flags.txt").write_text(
         "Reply with exactly one line: SKILLS=<comma-separated names of skills you have> AGENTS=<comma-separated subagent names you can use>\n")
-    agents = json.loads((cfg.runner_home / "prompts" / "agents.json").read_text())
-    cmd = r.claude_cmd(model=r.model, system_file="coder.md", max_turns=2,
-                       extra=["--agents", json.dumps(agents), "--disallowedTools", "WebFetch"])
+    coder_model, coder_effort = r.session_model("coder")
+    cmd = r.claude_cmd(model=coder_model, effort=coder_effort, system_file="coder.md", max_turns=2,
+                       extra=["--agents", json.dumps(r.agents()), "--disallowedTools", "WebFetch"])
     rc = docker.run(cfg, Run(name=docker.unique_name(cfg, "probe", "flags"), role="probe", cmd=cmd,
                              mounts=r.mounts(work, store=cfg.pnpm_volume, with_skills=True), env=r.common_env("coder"),
                              env_files=r.env_files(claude_token=True),

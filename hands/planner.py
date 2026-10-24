@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from base64 import b64encode
 from pathlib import Path
 
-from . import accview, claude, codesummary, docker, gitops, planaudit, rounds, specoutbox, toolusage, vendored, workspace
+from . import accview, claude, codesummary, docker, gitops, models, planaudit, rounds, specoutbox, toolusage, vendored, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
@@ -502,13 +502,17 @@ def prompt(cfg: Config, idea: str, feedback: str, errors: list[str], revising: b
 
 def run_session(cfg: Config, work: Path, prompt_file: Path, out: Path, err: Path, log: Log,
                 app_ro: Path | None = None) -> claude.Result:
-    model = cfg.planner_model or cfg.coder_model
+    chosen = models.for_session(cfg, "planner")
+    model, effort = chosen["model"], chosen["effort"]
     cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model,
            "--max-turns", str(cfg.planner_max_turns),
            "--dangerously-skip-permissions", "--no-session-persistence",
            "--append-system-prompt-file", "/opt/hands/prompts/planner.md"]
-    if cfg.fallback_model and cfg.fallback_model != model:
-        cmd += ["--fallback-model", cfg.fallback_model]
+    if effort:
+        cmd += ["--effort", effort]
+    fallback = models.for_session(cfg, "fallback")["model"]
+    if fallback and fallback != model:
+        cmd += ["--fallback-model", fallback]
     env = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1", "DISABLE_AUTOUPDATER": "1",
            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "CLAUDE_CODE_DISABLE_WEB_FETCH": "1",
            "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0"}
@@ -858,7 +862,7 @@ def _plan(cfg: Config, feedback: str, log: Log, amend: bool = False) -> int:
                              revising or bool(errors), code_summary, amend_ctx))
         res = run_session(cfg, work, pf, pdir(cfg) / f"session-{rnd}.json", pdir(cfg) / f"session-{rnd}.stderr", log,
                           app_ro=app_ro)
-        if res.kind in ("rate_limit", "auth", "model_access", "overloaded"):
+        if res.kind in ("rate_limit", "model_limit", "auth", "model_access", "overloaded"):
             raise PlanError(f"planner session failed ({res.kind}): {res.text[:300]}")
         if "PLAN_FAILED:" in res.text:
             raise PlanError("planner gave up: " + res.text.split("PLAN_FAILED:", 1)[1].strip()[:500])

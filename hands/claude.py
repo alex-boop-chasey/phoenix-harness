@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from . import models
+
 RATE_LIMIT = re.compile(
     r"rate.?limit|usage limit|hit your (?:session |weekly |opus |sonnet |fable |individual )?(?:usage )?limit"
     r"|too many requests|\b429\b|limit reached|spend limit",
@@ -38,7 +40,7 @@ class Result:
 
     @property
     def kind(self) -> str:
-        """ok | rate_limit | auth | model_access | overloaded | timeout | max_turns | crash"""
+        """ok | rate_limit | model_limit | auth | model_access | overloaded | timeout | max_turns | crash"""
         if self.rc in (124, 137) and not self.raw:
             return "timeout"
         if self.ok:
@@ -54,7 +56,7 @@ class Result:
         if status in ("401", "403") and AUTH.search(self.text):
             return "auth"
         if RATE_LIMIT.search(t):
-            return "rate_limit"
+            return "model_limit" if models.classify_limit(t)["model_only"] else "rate_limit"
         if AUTH.search(t):
             return "auth"
         if MODEL_ACCESS.search(t):

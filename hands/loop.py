@@ -14,14 +14,14 @@ import signal
 import time
 from pathlib import Path
 
-from . import accview, activity, claude, designloop, docker, gitops, hooks, merge, projectenv, prompts, rounds, toolusage, usage, vendored, workspace
+from . import accview, activity, claude, designloop, docker, gitops, hooks, merge, models, projectenv, prompts, rounds, toolusage, usage, vendored, workspace
 from . import spec as specmod
 from .config import Config
 from .docker import Mount, Run
 from .notify import Notifier
 from .state import Lock, State
 
-INFRA = ("rate_limit", "auth", "model_access", "overloaded")
+INFRA = ("rate_limit", "model_limit", "auth", "model_access", "overloaded")
 MAX_UNCOUNTED = 10        # infra retries per step before escalating (rate-limit waits excepted)
 
 
@@ -124,13 +124,45 @@ class Runner:
             except OSError as e:
                 self.state.log(f"WARN: could not redact {p.name}: {e}")
 
+    def drop_expired_overrides(self) -> None:
+        ovs = self.state.data.get("model_overrides") or {}
+        now = self.clock()
+        gone = [r for r, ov in ovs.items() if not isinstance(ov, dict) or (ov.get("until") is not None and ov["until"] <= now)]
+        for r in gone:
+            ovs.pop(r)
+            self.log(f"model override for {r} expired")
+        if gone:
+            self.state.save()
+
+    def session_model(self, role: str) -> tuple[str, str]:
+        """(model, effort) for a session starting now; read afresh every call, never cached."""
+        self.drop_expired_overrides()
+        e = models.for_session(self.cfg, role, self.state.data, self.clock())
+        return e["model"], e["effort"]
+
+    def fallback_model(self) -> str:
+        return models.for_session(self.cfg, "fallback", self.state.data, self.clock())["model"]
+
+    def agents(self) -> dict:
+        agents = json.loads((self.cfg.runner_home / "prompts" / "agents.json").read_text())
+        sub = self.session_model("subagents")[0]
+        for a in agents.values():
+            a["model"] = sub
+        return agents
+
+    def note_session_model(self, role: str, model: str) -> None:
+        cur = self.state.data.get("current")
+        if cur is not None:
+            cur.setdefault("models", {})[role] = model
+            self.state.save()
+
     @property
     def model(self) -> str:
-        return self.state.data.get("model_override") or self.cfg.coder_model
+        return self.session_model("coder")[0]
 
     @property
     def eval_model(self) -> str:
-        return self.state.data.get("model_override") or self.cfg.eval_model
+        return self.session_model("evaluator")[0]
 
     def log(self, msg: str) -> None:
         self.state.log(self.redactor.text(msg))
@@ -211,17 +243,20 @@ class Runner:
             files.append(self.cfg.project_env)
         return files
 
-    def claude_cmd(self, *, model: str, system_file: str, max_turns: int, extra: list[str]) -> list[str]:
+    def claude_cmd(self, *, model: str, system_file: str, max_turns: int, extra: list[str], effort: str = "") -> list[str]:
         cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--model", model,
                "--max-turns", str(max_turns), "--dangerously-skip-permissions",
                "--no-session-persistence",
                "--append-system-prompt-file", f"/opt/hands/prompts/{system_file}"]
-        if self.cfg.fallback_model and self.cfg.fallback_model != model:
-            cmd += ["--fallback-model", self.cfg.fallback_model]
+        if effort:
+            cmd += ["--effort", effort]
+        fallback = self.fallback_model()
+        if fallback and fallback != model:
+            cmd += ["--fallback-model", fallback]
         return cmd + extra
 
     def record_session(self, role: str, step: str, attempt: int, res: claude.Result, dur: float,
-                       skills: list[str] | None = None) -> None:
+                       skills: list[str] | None = None, model: str = "", effort: str = "") -> None:
         self.sessions += 1
         self.cost += res.cost
         self.state.data["total_sessions"] = self.state.data.get("total_sessions", 0) + 1
@@ -229,7 +264,7 @@ class Runner:
         self.state.save()
         self.state.append_jsonl("metrics.jsonl", {
             "role": role, "step": step, "attempt": attempt, "kind": res.kind, "rc": res.rc,
-            "turns": res.turns, "cost_usd": res.cost, "models": res.models, "duration_s": round(dur),
+            "turns": res.turns, "cost_usd": res.cost, "models": res.models, "model": model, "effort": effort, "duration_s": round(dur),
             "spec_commit": self.spec.commit if self.spec else "", "skills": skills or [],
         })
         self.log(f"{role} {step}#{attempt}: kind={res.kind} rc={res.rc} turns={res.turns} cost={res.cost:.3f} "
@@ -282,6 +317,7 @@ class Runner:
         c.state_dir.mkdir(parents=True, exist_ok=True)
         if self.free_gb() < c.min_free_gb:
             problems.append(f"only {self.free_gb():.1f} GB free (min_free_gb={c.min_free_gb}); try: docker system prune")
+        problems += models.check(models.toml_values(c), models.load_manual(models.models_file(c)))
         if problems:
             raise SystemExit("preflight failed:\n  " + "\n  ".join(problems))
 
@@ -575,9 +611,10 @@ class Runner:
             acc_files=acc_files, env_vars=self.env_names(), imported=c.imported,
             regression_steps=self.regression_steps(), round_id=self.round_id, state_step=st,
             design_section=designloop.prompt_section(c.state_dir)))
-        agents = json.loads((c.runner_home / "prompts" / "agents.json").read_text())
-        cmd = self.claude_cmd(model=self.model, system_file="coder.md", max_turns=c.max_turns,
-                              extra=["--agents", json.dumps(agents), "--disallowedTools", "WebFetch"])
+        coder_model, coder_effort = self.session_model("coder")
+        self.note_session_model("coder", coder_model)
+        cmd = self.claude_cmd(model=coder_model, effort=coder_effort, system_file="coder.md", max_turns=c.max_turns,
+                              extra=["--agents", json.dumps(self.agents()), "--disallowedTools", "WebFetch"])
         t0 = time.time()
         (adir / "coder.json").write_bytes(b"")
         with activity.Tail(adir / "coder.json", self.on_activity):
@@ -590,7 +627,8 @@ class Runner:
         self.redact_files(adir / "coder.json", adir / "coder.stderr")     # before anything parses or serves them
         res = claude.parse(adir / "coder.json", rc, adir / "coder.stderr")
         used = self.record_tools(adir / "coder.json", "coder", adir / "tools.json", step_skills=step.skills)
-        self.record_session("coder", step.id, attempt, res, time.time() - t0, skills=used)
+        self.record_session("coder", step.id, attempt, res, time.time() - t0, skills=used,
+                            model=coder_model, effort=coder_effort)
 
         if res.kind in INFRA:
             workspace.rmtree(work)
@@ -651,7 +689,7 @@ class Runner:
                               "environment or /run/hands/project.env at run time, never write them into files:",
                               *leaks[:40]], committed=False)
         msg = (f"{step.id}: {step.title}\n\n{summary[:1500]}\n\n"
-               f"Spec-Commit: {spec.commit}\nHands-Attempt: {attempt}\nHands-Model: {','.join(res.models) or self.model}\n")
+               f"Spec-Commit: {spec.commit}\nHands-Attempt: {attempt}\nHands-Model: {','.join(res.models) or coder_model}\n")
         gitops.git(c.app_dir, "-c", "user.name=hands-runner", "-c", "user.email=runner@hands.local",
                    "commit", "-q", "--no-verify", "-F", "-", input=msg.encode())
         commit = gitops.head(c.app_dir)
@@ -869,7 +907,9 @@ class Runner:
             verify = self.fresh_clone("verify", commit)
             store = docker.volume_create(c, f"hands-{c.name}-eval-{secrets.token_hex(4)}")
             n = tries + 1
-            cmd = self.claude_cmd(model=self.eval_model, system_file="evaluator.md", max_turns=c.eval_max_turns,
+            eval_model, eval_effort = self.session_model("evaluator")
+            self.note_session_model("evaluator", eval_model)
+            cmd = self.claude_cmd(model=eval_model, effort=eval_effort, system_file="evaluator.md", max_turns=c.eval_max_turns,
                                   extra=["--disallowedTools", "Write,Edit,NotebookEdit,Agent,WebFetch"])
             t0 = time.time()
             mounts = self.mounts(verify, store=store, with_skills=True, role="evaluator")
@@ -891,7 +931,8 @@ class Runner:
             self.redact_files(adir / f"eval-{n}.json", adir / f"eval-{n}.stderr")
             res = claude.parse(adir / f"eval-{n}.json", rc, adir / f"eval-{n}.stderr")
             used = self.record_tools(adir / f"eval-{n}.json", "evaluator", adir / f"eval-{n}-tools.json")
-            self.record_session("eval", step.id, attempt, res, time.time() - t0, skills=used)
+            self.record_session("eval", step.id, attempt, res, time.time() - t0, skills=used,
+                                model=eval_model, effort=eval_effort)
             if res.kind in INFRA:
                 self.count_uncounted(step.id, res)
                 self.handle_infra(res)      # waits / switches model; does not use up a try
@@ -958,11 +999,12 @@ class Runner:
         if res.kind == "auth":
             self.escalate(f"Claude auth failed ({res.text[:200]}). Renew the token: claude setup-token, then update {c.claude_env}")
         if res.kind == "model_access":
-            if self.state.data.get("model_override") != c.fallback_model and c.fallback_model:
-                self.state.data["model_override"] = c.fallback_model
+            fb = self.fallback_model()
+            if self.state.data.get("model_override") != fb and fb:
+                self.state.data["model_override"] = fb
                 self.state.save()
-                self.log(f"model access error ({res.text[:200]}); switching to fallback {c.fallback_model}")
-                self.send(f"model unavailable; switched to {c.fallback_model}. Clear with: hands {c.name} ack --clear-model")
+                self.log(f"model access error ({res.text[:200]}); switching to fallback {fb}")
+                self.send(f"model unavailable; switched to {fb}. Clear with: hands {c.name} ack --clear-model")
                 return
             self.escalate(f"model access error even on fallback: {res.text[:300]}")
         if res.kind == "overloaded":
@@ -973,8 +1015,33 @@ class Runner:
             self.log(f"API overloaded/error; retry in {wait}s ({self.transient}/6)")
             self.nap(wait)
             return
+        if res.kind == "model_limit":
+            if self.switch_limited_models(res.text):
+                return
+            self.wait_rate_limit(res.text)
         if res.kind == "rate_limit":
             self.wait_rate_limit(res.text)
+
+    def switch_limited_models(self, text: str) -> bool:
+        """A usage limit that names one model family: roles on that family use the fallback until the reset."""
+        family = models.classify_limit(text)["family"]
+        fallback = self.fallback_model()
+        if not family or not fallback or models.family_of(fallback) == family:
+            return False
+        now = self.clock()
+        until = claude.parse_resets_at(text, tz=self.cfg.tz, now=now) or now + 5 * 3600
+        hit = [r for r in ("planner", "coder", "evaluator", "subagents", "resolver")
+               if models.family_of(self.session_model(r)[0]) == family]
+        if not hit:
+            return False
+        ovs = self.state.data.setdefault("model_overrides", {})
+        for r in hit:
+            ovs[r] = {"model": fallback, "reason": f"model-only limit ({family})", "until": until}
+        self.state.save()
+        when = time.strftime("%Y-%m-%d %H:%M %Z", time.localtime(until))
+        self.log(f"{family} limit hit; {', '.join(hit)} use {fallback} until {when}")
+        self.send(f"{family} limit hit; {', '.join(hit)} switched to {fallback} until {when}")
+        return True
 
     def wait_rate_limit(self, text: str) -> None:
         c = self.cfg

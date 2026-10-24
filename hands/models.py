@@ -111,6 +111,23 @@ def effective_all(toml: dict, manual: dict, state: dict, now: float) -> dict:
     return {r: effective(r, toml, manual, state, now) for r in ROLES}
 
 
+def toml_values(cfg) -> dict:
+    """The project TOML's model keys as read into Config (empty = not set)."""
+    return {key: getattr(cfg, key, "") for key in TOML_KEYS.values()}
+
+
+def for_session(cfg, role: str, state: dict | None = None, now: float | None = None) -> dict:
+    """Effective choice for one session start, read afresh from the TOML values, models.json and state.json."""
+    if state is None:
+        state = _read_json(cfg.state_dir / "state.json", {})
+    return effective(role, toml_values(cfg), load_manual(models_file(cfg)), state,
+                     time.time() if now is None else now)
+
+
+def family_of(model: str) -> str:
+    return next((f for f in ("fable", "opus", "sonnet", "haiku") if f in model), "")
+
+
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
