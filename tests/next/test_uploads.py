@@ -67,6 +67,53 @@ class Precheck(unittest.TestCase):
         self.assertEqual(uploads.precheck(req())["query"]["name"], "hero.png")
 
 
+class GroupMarker(unittest.TestCase):
+    def test_precheck_passes_the_group_marker_and_rejects_bad_ones(self):
+        ok = uploads.precheck(req(path=f"/x?{Q}&group=g1&group_n=3"))
+        self.assertEqual((ok["code"], ok["query"]["group"], ok["query"]["group_n"]), (0, "g1", "3"))
+        for bad in ("group=g1", "group=g1&group_n=1", "group=g1&group_n=99", "group=a/b&group_n=2", "group_n=2"):
+            r = uploads.precheck(req(path=f"/x?{Q}&{bad}"))
+            self.assertEqual(r["code"], 400, bad)
+
+    def _cfg(self, tmp):
+        from types import SimpleNamespace
+        spec = Path(tmp) / "spec"
+        spec.mkdir()
+        return SimpleNamespace(state_dir=Path(tmp) / "state", spec_dir=spec, runner_home=Path(tmp), docker_bin="docker",
+                               image="hands", project_env=None, design_caps={})
+
+    def _receive(self, box, name, data, group="", n=0):
+        import io
+        from hands import designfiles
+        return designfiles.receive(box, io.BytesIO(data), name, "style-pack", "", "b1", len(data), group, n)
+
+    def test_grouped_uploads_become_one_style_pack_entry_when_the_last_one_is_processed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            box = Path(tmp) / "box"
+            ids = [self._receive(box, n, b"x", "g1", 3) for n in ("a.md", "b.css", "c.txt")]
+            self._receive(box, "solo.md", b"y")
+            for ident in ids[:2]:
+                res = uploads.process(cfg, box / ident)
+                self.assertEqual(res["status"], "ready")
+                self.assertNotIn("group_id", res)
+            res = uploads.process(cfg, box / ids[2])
+            entries = uploads.index(cfg)["files"]
+            self.assertEqual([e["kind"] for e in entries], ["style-pack"])
+            self.assertEqual(sorted(entries[0]["files"]), sorted(f"refs/design/{entries[0]['id']}/{n}" for n in ("a.md", "b.css", "c.txt")))
+            self.assertEqual(res["group_id"], entries[0]["id"])
+
+    def test_a_refused_member_is_skipped_and_a_lone_survivor_stays_single(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            box = Path(tmp) / "box"
+            ids = [self._receive(box, "a.md", b"x", "g2", 2), self._receive(box, "b.json", b"not json", "g2", 2)]
+            for ident in ids:
+                res = uploads.process(cfg, box / ident)
+            self.assertEqual(len(uploads.index(cfg)["files"]), 1)
+            self.assertIn("group_error", res)
+
+
 class Guard(unittest.TestCase):
     def test_disk_and_pending_caps(self):
         gb = 1 << 30

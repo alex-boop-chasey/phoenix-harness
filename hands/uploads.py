@@ -58,6 +58,10 @@ def precheck(req: dict, caps: dict | None = None) -> dict:
         return _refuse(400, f"note too long (max {designfiles.MAX_NOTE} characters)", query)
     if not BATCH_ID.match(query.get("batch", "")):
         return _refuse(400, "batch id required", query)
+    group, group_n = query.get("group", ""), query.get("group_n", "")
+    if group or group_n:
+        if not (BATCH_ID.match(group) and group_n.isdigit() and 2 <= int(group_n) <= MAX_FILES):
+            return _refuse(400, "bad group marker", query)
     ext = designfiles._ext(safe)
     if ext not in designfiles.EXT_CLASS:
         return _refuse(400, "type not allowed" + designfiles.TYPE_HINTS.get(ext, ""), query)
@@ -135,11 +139,48 @@ def secrets(cfg) -> dict:
     return designfiles.load_secrets(cfg.project_env)
 
 
+def _read(path: Path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _group_done(cfg, upload_dir: Path, result: dict) -> dict:
+    """Uploads sent with the same group marker become one style-pack entry once every member is finished. Runs
+    under the design lock, so only the last member to finish sees the whole group; a failure is returned as
+    group_error and written to that member's status so the project page can show it."""
+    up = _read(upload_dir / "upload.json") or {}
+    group, want = up.get("group"), up.get("group_n")
+    if not group or not isinstance(want, int):
+        return result
+    members = []
+    for d in sorted(upload_dir.parent.iterdir()):
+        meta = _read(d / "upload.json")
+        if meta and meta.get("group") == group:
+            members.append((meta, _read(d / "status.json") or {}))
+    if len(members) < want or any(st.get("status") not in ("ready", "refused") for _, st in members):
+        return result
+    ids = sorted(st["id"] for _, st in members if st.get("status") == "ready")
+    try:
+        if len(ids) < len(members):
+            raise designfiles.Refused(f"style pack: {len(members) - len(ids)} of {len(members)} files were refused")
+        entry = designfiles.group(specoutbox.root(cfg), ids, "")
+    except (designfiles.Refused, OSError, ValueError) as exc:
+        return {**designfiles._set_status(upload_dir, "ready", f"group failed: {exc}", result.get("design_id", "")),
+                "group_error": str(exc), "design_id": result.get("design_id", "")}
+    _retire(cfg, ids)
+    return {**result, "group_id": entry["id"]}
+
+
 def process(cfg, upload_dir, docker: str | None = None) -> dict:
+    upload_dir = Path(upload_dir)
     with locked(cfg):
-        return designfiles.process_upload(
+        res = designfiles.process_upload(
             upload_dir, specoutbox.root(cfg), thumbs(cfg), Path(cfg.runner_home) / "capture", secrets(cfg), caps(cfg),
             designfiles.docker_launcher(docker or cfg.docker_bin), base_index(cfg), image=cfg.image)
+        return _group_done(cfg, upload_dir, res)
 
 
 def process_pending(cfg, pending: Path) -> list[dict]:

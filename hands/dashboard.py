@@ -547,6 +547,7 @@ def plan_info(cfg) -> dict:
                                   "activity", "files_written", "started", "warnings",
                                   "mode", "round", "app_sha", "request", "branch")}
     out["design_changed"] = st.get("design_changed") is True
+    out["design_ids"] = [x for x in st.get("design_ids") or [] if isinstance(x, str)]
     for k in ("new_steps", "tests_changed", "shared_changed"):
         out[k] = st.get(k) if isinstance(st.get(k), list) else []
     out["tests_changed"] = [x if isinstance(x, dict) else {"path": str(x), "change": "change", "why": ""}
@@ -1246,7 +1247,8 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = False
         try:
             ident = designfiles.receive(box, _BodyReader(self.rfile, length), q["name"], q["kind"],
-                                        q.get("note", ""), q["batch"], length)
+                                        q.get("note", ""), q["batch"], length, q.get("group", ""),
+                                        int(q.get("group_n") or 0))
         except ValueError as e:
             self.close_connection = True
             return self._json(400, {"error": str(e)[:200]})

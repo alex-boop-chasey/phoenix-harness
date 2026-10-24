@@ -920,6 +920,7 @@ def _plan(cfg: Config, feedback: str, log: Log, amend: bool = False) -> int:
     pr = open_pr(cfg, candidate, changed, title, body, log, branch)
     write_state(cfg, state="ready", error="", summary=summary, files=changed, steps=len(sp.steps),
                 domains=new_domains, warnings=warnings, design_changed=specoutbox.design_changed(harness_paths),
+                design_ids=specoutbox.design_ids(harness_paths),
                 **pr, **(info or {}))
     log(f"READY: {summary}. Review and approve in the dashboard.")
     log.notify.send(f"{'AMENDMENT' if amend else 'PLAN'} READY: {summary[:300]}" + (f"\nNew network domains: {', '.join(new_domains)}" if new_domains else "")

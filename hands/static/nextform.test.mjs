@@ -138,3 +138,85 @@ test("shouldOpenPlanChat: once, and only once the project exists", () => {
   assert.equal(nf.shouldOpenPlanChat(null), false);
   assert.equal(nf.shouldOpenPlanChat({}), false);
 });
+
+// ---- design files (C1-05)
+test("DESIGN_KINDS and DESIGN_ACCEPT: ten kinds in order, 15 extensions plus the image/video types, no HEIC", () => {
+  assert.deepEqual(nf.DESIGN_KINDS, ["design-md", "style-pack", "screenshot", "brand", "avoid", "font", "icon-pack", "video", "copy-tone", "feature-list"]);
+  const parts = nf.DESIGN_ACCEPT.split(",");
+  for (const e of [".md", ".json", ".css", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".woff2", ".ttf", ".otf", ".zip", ".mp4", ".webm"]) assert.ok(parts.includes(e), e);
+  for (const m of ["image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm"]) assert.ok(parts.includes(m), m);
+  assert.equal(parts.length, 20);
+  assert.ok(!/heic|heif|mov|quicktime/i.test(nf.DESIGN_ACCEPT));
+});
+
+test("designKindGuess follows the server's table", () => {
+  const g = nf.designKindGuess;
+  assert.equal(g("DESIGN.md"), "design-md");
+  assert.equal(g("tokens.json"), "style-pack");
+  assert.equal(g("theme.CSS"), "style-pack");
+  assert.equal(g("notes.txt"), "copy-tone");
+  assert.equal(g("brand-voice.md"), "copy-tone");
+  assert.equal(g("features.md"), "feature-list");
+  assert.equal(g("avoid-this.md"), "avoid");
+  assert.equal(g("hero.png"), "screenshot");
+  assert.equal(g("shot.JPEG"), "screenshot");
+  assert.equal(g("logo.svg"), "brand");
+  assert.equal(g("icons.svg"), "icon-pack");
+  assert.equal(g("Inter.woff2"), "font");
+  assert.equal(g("pack.zip"), "icon-pack");
+  assert.equal(g("demo.mp4"), "video");
+  assert.equal(g("mystery"), "design-md");
+});
+
+test("designFileCheck refuses wrong types (HEIC and MOV with a hint) and oversize files", () => {
+  const c = nf.designFileCheck;
+  assert.equal(c("a.md", 10), null);
+  assert.equal(c("run.exe", 10), "type not allowed");
+  assert.equal(c("IMG_1.HEIC", 10), "type not allowed (HEIC: share the photo as JPEG)");
+  assert.equal(c("x.heif", 10), "type not allowed (HEIC: share the photo as JPEG)");
+  assert.equal(c("clip.mov", 10), "type not allowed (MOV: export as MP4)");
+  assert.equal(c("a.md", 1048576), null);
+  assert.equal(c("a.md", 1048577), "too large");
+  assert.equal(c("a.woff2", 5 * 1048576 + 1), "too large");
+  assert.equal(c("a.png", 15 * 1048576), null);
+  assert.equal(c("a.mp4", 50 * 1048576 + 1), "too large");
+  assert.equal(c("a.zip", 25 * 1048576 + 1), "too large");
+  assert.equal(c("a.md", 2000, { text: 1000 }), "too large", "caps override");
+  assert.equal(c("a.png", 2000, { text: 1000 }), null, "other classes keep their default");
+});
+
+test("designTotalCheck refuses a submit over the cap", () => {
+  assert.equal(nf.designTotalCheck([100, 200], 1000), null);
+  assert.match(nf.designTotalCheck([600, 500], 1000), /^files total over /);
+  assert.match(nf.designTotalCheck([150 * 1048576, 60 * 1048576]), /over 200 MB/);
+  assert.equal(nf.designTotalCheck([], 1), null);
+});
+
+test("designSize prints bytes, KB and MB", () => {
+  assert.equal(nf.designSize(12), "12 bytes");
+  assert.equal(nf.designSize(12 * 1024), "12 KB");
+  assert.equal(nf.designSize(Math.round(1.2 * 1048576)), "1.2 MB");
+});
+
+test("designSubmitLines: one upload line per plain row, one group line per group, refused rows absent", () => {
+  const lines = nf.designSubmitLines([
+    { name: "a.md", kind: "design-md", size: 3 },
+    { name: "x.md", kind: "style-pack", size: 1, group: "g1", group_n: 2 },
+    { name: "y.css", kind: "style-pack", size: 1, group: "g1", group_n: 2 },
+  ]);
+  assert.deepEqual(lines, ["upload a.md design-md 3", "group x.md y.css"]);
+});
+
+test("designUploadUrl carries name, kind, note, batch and the group marker", () => {
+  const u = nf.designUploadUrl("demo", { name: "a b.md", kind: "design-md", note: "n&t", group: "g1", group_n: 2 }, "b1");
+  assert.equal(u, "/api/p/demo/design-files/upload?name=a%20b.md&kind=design-md&note=n%26t&batch=b1&group=g1&group_n=2");
+  assert.equal(nf.designUploadUrl("demo", { name: "a.md", kind: "design-md", note: "" }, "b1"),
+    "/api/p/demo/design-files/upload?name=a.md&kind=design-md&note=&batch=b1");
+});
+
+test("changedDesignFiles keeps only the index entries the plan names", () => {
+  const files = [{ id: "d001" }, { id: "d002" }, { id: "d003" }];
+  assert.deepEqual(nf.changedDesignFiles(files, ["d003", "d001"]).map((f) => f.id), ["d001", "d003"]);
+  assert.deepEqual(nf.changedDesignFiles(files, []), []);
+  assert.deepEqual(nf.changedDesignFiles(null, ["d001"]), []);
+});

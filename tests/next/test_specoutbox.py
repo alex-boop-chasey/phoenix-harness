@@ -74,6 +74,12 @@ class Module(Base):
         specoutbox.clear_merged(self.root, self.spec)
         self.assertEqual(specoutbox.listing(self.root), {"files": ["refs/index.json"], "deletions": ["refs/old.txt"]})
 
+    def test_design_ids_lists_the_design_entries_a_diff_touches(self):
+        paths = ["brief.md", "refs/design/d002/a.png", "refs/design/d002/b.md", "refs/design/d010/x.svg",
+                 "refs/index.json", "refs/prototype/index.html", "refs/design/../x"]
+        self.assertEqual(specoutbox.design_ids(paths), ["d002", "d010"])
+        self.assertEqual(specoutbox.design_ids(["brief.md"]), [])
+
     def test_design_changed(self):
         self.assertTrue(specoutbox.design_changed(["brief.md", "refs/design/d1/a.png"]))
         self.assertTrue(specoutbox.design_changed(["refs/index.json"]))

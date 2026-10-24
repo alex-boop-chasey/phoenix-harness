@@ -182,6 +182,16 @@ def design_changed(paths) -> bool:
     return any(p.startswith(DESIGN_PREFIXES) or p == "refs/index.json" for p in paths)
 
 
+def design_ids(paths) -> list[str]:
+    """The design entry ids (refs/design/<id>/...) the given harness paths touch, sorted."""
+    ids = set()
+    for p in paths:
+        parts = p.split("/")
+        if len(parts) > 3 and parts[:2] == ["refs", "design"] and re.fullmatch(r"d[0-9]{3}", parts[2]):
+            ids.add(parts[2])
+    return sorted(ids)
+
+
 def mirror(cfg, rels, source: Path | None = None) -> None:
     """Copy harness files from the spec clone (default cfg.spec_dir) into the outbox; a missing file is a deletion."""
     src = Path(source or cfg.spec_dir)

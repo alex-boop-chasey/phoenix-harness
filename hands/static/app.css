@@ -441,3 +441,23 @@ select.input { width: auto; max-width: 100%; }
 .s-project { color: var(--accent); } .badge.s-project { background: var(--accent-soft); }
 .badge.s-project::before { display: none; }
 .sitem .sname .badge.s-project { font-family: var(--mono); }
+
+/* design files section (env-var editor look) and the plan panel's design list */
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.designfiles { display: grid; gap: var(--sp-2); max-width: 900px; }
+.designrows { display: grid; gap: 6px; }
+.designrow { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--line, currentColor); border-radius: 8px; }
+.designmain { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.designmain .designname { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+.designmeta { display: grid; grid-template-columns: minmax(140px, 220px) minmax(0, 1fr); gap: 6px 8px; }
+.designrow .btn, .designfiles > .row .btn, .designsel { min-height: 44px; min-width: 44px; }
+.designsel { display: inline-flex; align-items: center; justify-content: center; }
+.designdrop { padding: 14px; text-align: center; border: 2px dashed var(--line, currentColor); border-radius: 8px; color: var(--ink-2); }
+.designdrop.over { border-style: solid; }
+@media (pointer: coarse) { .designdrop { display: none; } }
+.plandesignlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.plandesign { display: flex; gap: 10px; align-items: flex-start; }
+.plandesign .designthumb { width: 80px; height: 80px; object-fit: contain; border: 1px solid var(--line, currentColor); border-radius: 6px; flex: none; }
+.plandesigntext { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .designmeta { grid-template-columns: minmax(0, 1fr); } }
+.designsel:empty { display: none; }

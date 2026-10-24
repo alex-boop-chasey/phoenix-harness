@@ -117,6 +117,81 @@
     ];
   }
 
+  // ---- design files (docs/design.md "Design files"): the same kinds, caps, kind guesses and refusal texts as
+  // hands.designfiles; the server checks every file again. File names and notes are only ever set with textContent.
+  const MIB = 1048576;
+  const DESIGN_KINDS = ["design-md", "style-pack", "screenshot", "brand", "avoid", "font", "icon-pack", "video", "copy-tone", "feature-list"];
+  const DESIGN_EXT_CLASS = { ".md": "text", ".json": "text", ".css": "text", ".txt": "text", ".png": "image", ".jpg": "image",
+    ".jpeg": "image", ".webp": "image", ".svg": "image", ".woff2": "font", ".ttf": "font", ".otf": "font", ".zip": "zip",
+    ".mp4": "video", ".webm": "video" };
+  const DESIGN_ACCEPT = [...Object.keys(DESIGN_EXT_CLASS), "image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm"].join(",");
+  const DESIGN_CAPS = { text: MIB, image: 15 * MIB, font: 5 * MIB, zip: 25 * MIB, video: 50 * MIB, submit: 200 * MIB };
+  const DESIGN_HINTS = { ".heic": " (HEIC: share the photo as JPEG)", ".heif": " (HEIC: share the photo as JPEG)", ".mov": " (MOV: export as MP4)" };
+  const DESIGN_TEXT_EXT = [".md", ".json", ".css", ".txt"];
+  const DESIGN_THUMB_EXT = [".png", ".jpg", ".jpeg", ".webp", ".svg"];
+  const MAX_NOTE = 500;
+  const MAX_DESIGN_FILES = 50;
+  const extOf = (name) => { const m = /\.[^./\\]*$/.exec(String(name || "")); return m ? m[0].toLowerCase() : ""; };
+
+  function designKindGuess(name) {
+    const low = String(name || "").toLowerCase();
+    const ext = extOf(low);
+    const cls = DESIGN_EXT_CLASS[ext];
+    if (low.includes("tone") || low.includes("voice")) return "copy-tone";
+    if (low.includes("feature")) return "feature-list";
+    if (low.includes("avoid") || low.includes("dont")) return "avoid";
+    if (ext === ".md") return "design-md";
+    if (ext === ".json" || ext === ".css") return "style-pack";
+    if (ext === ".txt") return "copy-tone";
+    if (cls === "image" && ext !== ".svg") return "screenshot";
+    if (ext === ".svg") return low.includes("logo") || low.includes("brand") ? "brand" : "icon-pack";
+    if (cls === "font") return "font";
+    if (ext === ".zip") return "icon-pack";
+    if (cls === "video") return "video";
+    return "design-md";
+  }
+
+  // null when the file may be uploaded, else the reason shown on its row.
+  function designFileCheck(name, size, caps) {
+    const ext = extOf(name);
+    const cls = DESIGN_EXT_CLASS[ext];
+    if (!cls) return "type not allowed" + (DESIGN_HINTS[ext] || "");
+    const limit = { ...DESIGN_CAPS, ...(caps || {}) }[cls];
+    return Number(size) > limit ? "too large" : null;
+  }
+
+  function designTotalCheck(sizes, cap) {
+    const limit = cap || DESIGN_CAPS.submit;
+    const total = (sizes || []).reduce((a, b) => a + (Number(b) || 0), 0);
+    return total > limit ? `files total over ${Math.round(limit / MIB)} MB` : null;
+  }
+
+  function designSize(n) {
+    const v = Number(n) || 0;
+    if (v < 1024) return `${v} bytes`;
+    if (v < MIB) return `${Math.round(v / 1024)} KB`;
+    return `${(Math.round((v / MIB) * 10) / 10).toString()} MB`;
+  }
+
+  // One line per accepted plain row and one per group, as the mock pages print them.
+  function designSubmitLines(ups) {
+    const lines = [], groups = new Map();
+    for (const u of ups || []) {
+      if (u.group) { if (!groups.has(u.group)) groups.set(u.group, []); groups.get(u.group).push(u.name); }
+      else lines.push(`upload ${u.name} ${u.kind} ${u.size}`);
+    }
+    for (const names of groups.values()) lines.push(`group ${names.join(" ")}`);
+    return lines;
+  }
+
+  function designUploadUrl(slug, u, batch) {
+    const q = [["name", u.name], ["kind", u.kind], ["note", u.note || ""], ["batch", batch]];
+    if (u.group) q.push(["group", u.group], ["group_n", String(u.group_n)]);
+    return `/api/p/${encodeURIComponent(slug)}/design-files/upload?` + q.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+  }
+
+  const changedDesignFiles = (files, ids) => (Array.isArray(files) ? files : []).filter((f) => f && (ids || []).includes(f.id));
+
   // ---- DOM builders
   function h(doc, tag, attrs, ...kids) {
     const e = doc.createElement(tag);
@@ -283,11 +358,147 @@
       h(doc, "span", { class: "when" + (r.live ? " live" : "") }, o.when || ""));
   }
 
+  // The Design files section. opts: {caps}. rows() describes every row; uploads() lists the files to send:
+  // {file, name, kind, note, size, group?, group_n?} (refused and empty rows are left out; the members of a grouped
+  // row share a group marker and the server merges them into one style-pack entry). setStatus(row, text, bad).
+  function designFilesSection(doc, opts) {
+    const o = opts || {};
+    const state = [];                       // {id, members: [File], name, kind, note, grouped, tr nodes...}
+    let seq = 0, groupSeq = 0;
+    const list = h(doc, "div", { class: "designrows", "data-testid": "design-files-rows" });
+    const totalErr = h(doc, "p", { class: "reason small", role: "alert", "data-testid": "design-files-total-error" });
+    totalErr.hidden = true;
+    const input = h(doc, "input", { type: "file", multiple: "", accept: DESIGN_ACCEPT, class: "visually-hidden", tabindex: "-1",
+      "data-testid": "design-files-input", "aria-label": "Design files" });
+    const addButton = h(doc, "button", { class: "btn", type: "button", "data-testid": "design-files-add-button" }, "Add files");
+    const plus = h(doc, "button", { class: "btn quiet", type: "button", "data-testid": "design-file-add", "aria-label": "Add an empty design file row" }, "+");
+    const groupBtn = h(doc, "button", { class: "btn", type: "button", disabled: "", "data-testid": "design-files-group" }, "Group as style pack");
+    const drop = h(doc, "div", { class: "designdrop", "data-testid": "design-files-drop" }, "Drop files here");
+
+    const members = (r) => r.members.length;
+    const sizeOf = (r) => r.members.reduce((a, f) => a + f.size, 0);
+    function refresh() {
+      const picked = state.filter((r) => r.select && r.select.checked);
+      groupBtn.disabled = picked.length < 2;
+      const sizes = state.filter((r) => !r.error).map(sizeOf);
+      const bad = designTotalCheck(sizes, (o.caps || {}).submit);
+      totalErr.hidden = !bad;
+      totalErr.textContent = bad || "";
+    }
+    function paint(r) {
+      r.nameEl.textContent = r.grouped ? `style pack (${members(r)} files)` : (r.members[0] ? r.members[0].name : "");
+      r.nameEl.title = r.members.map((f) => f.name).join(" ");
+      r.sizeEl.textContent = r.members.length ? designSize(sizeOf(r)) : "";
+      r.pick.hidden = members(r) > 0;
+      r.errBox.replaceChildren();
+      if (r.error) r.errBox.append(h(doc, "p", { class: "reason small", role: "alert", "data-testid": "design-file-error" }, r.error));
+      const selectable = !r.error && !r.grouped && members(r) === 1 && DESIGN_TEXT_EXT.includes(extOf(r.members[0].name));
+      if (selectable) r.selWrap.append(r.select);
+      else { r.select.checked = false; r.select.remove(); }
+    }
+    function addRow(file) {
+      const r = { id: ++seq, members: [], kind: "design-md", grouped: false, error: "" };
+      r.nameEl = h(doc, "span", { class: "mono designname", "data-testid": "design-file-name" });
+      r.sizeEl = h(doc, "span", { class: "muted small", "data-testid": "design-file-size" });
+      r.statusEl = h(doc, "span", { class: "small", "data-testid": "design-file-status" });
+      r.errBox = h(doc, "div", {});
+      r.kindSel = h(doc, "select", { class: "input", "data-testid": "design-file-kind", "aria-label": "Kind" },
+        DESIGN_KINDS.map((k) => h(doc, "option", { value: k }, k)));
+      r.noteEl = h(doc, "input", { type: "text", class: "input", maxlength: String(MAX_NOTE), placeholder: "Note (what to take from it)",
+        "data-testid": "design-file-note", "aria-label": "Note" });
+      r.select = h(doc, "input", { type: "checkbox", "data-testid": "design-file-select", "aria-label": "Select for style pack",
+        on: { change: refresh } });
+      r.selWrap = h(doc, "label", { class: "designsel" });
+      r.pick = h(doc, "input", { type: "file", accept: DESIGN_ACCEPT, "data-testid": "design-file-pick", "aria-label": "Choose a file",
+        on: { change: () => { const f = r.pick.files && r.pick.files[0]; if (f) setFile(r, f); } } });
+      const rm = h(doc, "button", { class: "btn quiet", type: "button", "data-testid": "design-file-remove", "aria-label": "Remove this file",
+        on: { click: () => { state.splice(state.indexOf(r), 1); r.row.remove(); refresh(); } } }, "✕");
+      r.row = h(doc, "div", { class: "designrow", "data-testid": "design-file-row" },
+        h(doc, "div", { class: "designmain" }, r.selWrap, r.nameEl, r.pick, r.sizeEl, r.statusEl, rm),
+        h(doc, "div", { class: "designmeta" }, r.kindSel, r.noteEl), r.errBox);
+      state.push(r);
+      list.append(r.row);
+      if (file) setFile(r, file); else paint(r);
+      refresh();
+      return r;
+    }
+    function setFile(r, f) {
+      r.members = [f];
+      r.kindSel.value = designKindGuess(f.name);
+      r.error = designFileCheck(f.name, f.size, o.caps) || "";
+      paint(r);
+      refresh();
+    }
+    const addFiles = (files) => { for (const f of Array.from(files || [])) if (state.length < MAX_DESIGN_FILES) addRow(f); };
+    input.addEventListener("change", () => { addFiles(input.files); input.value = ""; });
+    addButton.addEventListener("click", () => input.click());
+    plus.addEventListener("click", () => { if (state.length < MAX_DESIGN_FILES) addRow(null); });
+    for (const ev of ["dragenter", "dragover"]) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); addFiles(e.dataTransfer && e.dataTransfer.files); });
+    groupBtn.addEventListener("click", () => {
+      const picked = state.filter((r) => r.select && r.select.checked);
+      if (picked.length < 2) return;
+      const first = picked[0];
+      first.members = picked.flatMap((r) => r.members);
+      first.grouped = true;
+      first.kindSel.value = "style-pack";
+      for (const r of picked.slice(1)) { state.splice(state.indexOf(r), 1); r.row.remove(); }
+      paint(first);
+      refresh();
+    });
+
+    const root = h(doc, "section", { class: "designfiles envedit", "data-testid": "design-files" },
+      h(doc, "div", { class: "flabel" }, "Design files (optional)"),
+      h(doc, "p", { class: "muted" }, "Screenshots, DESIGN.md, tokens, fonts, icons, brand files and short videos the build should follow. Each file becomes a row; the kind is guessed and can be changed."),
+      h(doc, "div", { class: "row" }, addButton, plus, groupBtn), input, drop, list, totalErr);
+    return {
+      root,
+      rows: () => state.map((r) => ({ id: r.id, name: r.nameEl.textContent, kind: r.kindSel.value, note: r.noteEl.value, size: sizeOf(r),
+        files: r.members.slice(), grouped: r.grouped, error: r.error })),
+      uploads() {
+        const out = [];
+        if (!totalErr.hidden) return out;
+        for (const r of state) {
+          if (r.error || !r.members.length) continue;
+          const g = r.grouped ? `g${Date.now().toString(36)}${++groupSeq}` : "";
+          for (const f of r.members) {
+            out.push({ file: f, name: f.name, kind: r.kindSel.value, note: r.noteEl.value.slice(0, MAX_NOTE), size: f.size, row: r.id,
+              ...(g ? { group: g, group_n: r.members.length } : {}) });
+          }
+        }
+        return out;
+      },
+      blocked: () => (totalErr.hidden ? "" : totalErr.textContent),
+      setStatus(rowId, text, bad) {
+        const r = state.find((x) => x.id === rowId);
+        if (r) { r.statusEl.textContent = text; r.statusEl.className = bad ? "small reason" : "small muted"; }
+      },
+    };
+  }
+
+  // The plan panel's list of design files the PR adds or changes: PNG thumbnail (only for image files; `thumb` is the
+  // PNG route and an SVG URL is never used), kind, note (text), size.
+  function planDesignFiles(doc, files) {
+    const rows = (Array.isArray(files) ? files : []).map((f) => {
+      const thumb = typeof f.thumb === "string" && !/\.svg(\?|$)/i.test(f.thumb) && DESIGN_THUMB_EXT.includes(extOf(f.file)) ? f.thumb : "";
+      return h(doc, "li", { class: "plandesign", "data-testid": "plan-design-file" },
+        thumb ? h(doc, "img", { class: "designthumb", src: thumb, alt: "", width: "80", height: "80", loading: "lazy", "data-testid": "design-file-thumb" }) : null,
+        h(doc, "div", { class: "plandesigntext" },
+          h(doc, "div", {}, h(doc, "span", { class: "mono" }, f.file || f.id || ""), " ", h(doc, "span", { class: "badge" }, f.kind || "")),
+          h(doc, "div", { class: "muted small" }, designSize(f.size)),
+          f.note ? h(doc, "p", { class: "goal" }, f.note) : null));
+    });
+    return h(doc, "ul", { class: "plandesignlist", "data-testid": "plan-design-files" }, rows);
+  }
+
   const api = { FRAMEWORK_LABELS, LIBS, MAX_STYLE_URLS, MAX_URL, REF_STATUSES, SETUP_STATUSES, PLAN_STATUSES,
     validateStyleUrl, styleUrlsFromForm, reasonText, frameworkLabel, mockFromQuery, mockToolUsage, mockSessions,
     planStatus, planChatLabel, shortSha, toolUsageParts, visibleSessions,
     CREATE_PLAN_LABEL, CREATE_PLAN_HINT, shouldOpenPlanChat,
-    styleUrlList, setupFields, styleRefsPanel, planChatPanel, toolUsage, sessionItem };
+    styleUrlList, setupFields, styleRefsPanel, planChatPanel, toolUsage, sessionItem,
+    DESIGN_KINDS, DESIGN_ACCEPT, designKindGuess, designFileCheck, designTotalCheck, designSize, designSubmitLines, designUploadUrl,
+    changedDesignFiles, designFilesSection, planDesignFiles };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (root && root.document) {
     root.hands = root.hands || {};

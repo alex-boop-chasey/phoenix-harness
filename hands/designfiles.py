@@ -861,7 +861,8 @@ def _prune_inbox(inbox: Path, now: float) -> None:
             continue
 
 
-def receive(inbox, stream, name: str, kind: str, note: str, batch: str, size: int) -> str:
+def receive(inbox, stream, name: str, kind: str, note: str, batch: str, size: int, group: str = "",
+            group_n: int = 0) -> str:
     inbox = Path(inbox)
     inbox.mkdir(parents=True, exist_ok=True)
     _prune_inbox(inbox, time.time())
@@ -882,7 +883,8 @@ def receive(inbox, stream, name: str, kind: str, note: str, batch: str, size: in
         if total != size:
             raise ValueError(f"upload is {total} bytes, expected {size}")
         _write_json(d / "upload.json", {"name": name, "kind": kind, "note": note or "", "batch": batch,
-                                        "size": size, "received_at": _now(None)})
+                                        "size": size, "received_at": _now(None),
+                                        **({"group": group, "group_n": group_n} if group and group_n else {})})
         _set_status(d, "queued")
     except BaseException:
         shutil.rmtree(d, ignore_errors=True)

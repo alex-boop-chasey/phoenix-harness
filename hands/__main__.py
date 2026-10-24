@@ -350,6 +350,8 @@ def after_create(cfg, style_refs: list[str], framework: int, libs: list[str]) ->
     for res in uploads.process_pending(cfg, uploads.creating_inbox(cfg.name)):
         if res["status"] != "ready":
             print(f"design file {res['id']}: {res['status']} ({res['reason']})", flush=True)
+        if res.get("group_error"):
+            print(f"design files: style pack not grouped ({res['group_error']})", flush=True)
     indexes = [r["index"] for r in state["style_refs"]]
     if indexes and _process(cfg, indexes):
         rc = 1

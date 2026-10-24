@@ -715,6 +715,49 @@ function envSection(name) {
     envPanel(name, name));
 }
 
+// ---- design files (C1-05): the section is nextform.js's. Uploads are one fetch per file (raw body, X-Hands) under one
+// batch id; grouped rows send a shared group marker and the server merges them into one style-pack entry, so the
+// new-project path never has to wait for design ids.
+const newBatch = () => `b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+async function uploadDesignFiles(slug, section) {
+  const ups = section.uploads(), batch = newBatch(), failed = [], sent = [];
+  for (const [i, u] of ups.entries()) {
+    section.setStatus(u.row, `uploading ${i + 1}/${ups.length}…`);
+    try {
+      const r = await fetch(hands.nextform.designUploadUrl(slug, u, batch), { method: "POST",
+        headers: { "X-Hands": "1", "Content-Type": "application/octet-stream" }, body: u.file });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || r.status);
+      sent.push({ row: u.row, id: body.id });
+      section.setStatus(u.row, "uploaded");
+    } catch (e) {
+      failed.push(`${u.name}: ${e.message}`);
+      section.setStatus(u.row, `failed: ${e.message}`, true);
+    }
+  }
+  return { failed, sent };
+}
+// existing project only: wait (bounded) until the harness has processed what was just sent, showing each row's result
+async function awaitDesignFiles(slug, section, sent) {
+  const bad = [];
+  for (let n = 0; n < 90 && sent.length; n++) {
+    let rows;
+    try { rows = (await api(`/api/p/${encodeURIComponent(slug)}/design-files`)).inbox || []; } catch (e) { return [`status unavailable (${e.message})`]; }
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    bad.length = 0;
+    let open = 0;
+    for (const x of sent) {
+      const r = byId.get(x.id);
+      if (!r || r.status === "queued" || r.status === "processing") { open++; section.setStatus(x.row, "processing…"); continue; }
+      section.setStatus(x.row, r.reason ? `${r.status}: ${r.reason}` : r.status, r.status !== "ready" || !!r.reason);
+      if (r.status !== "ready" || r.reason) bad.push(`${r.name}: ${r.reason || r.status}`);
+    }
+    if (!open) return bad;
+    await new Promise((res) => setTimeout(res, 2000));
+  }
+  return bad.concat(["timed out waiting for the harness"]);
+}
+
 function showNew() {
   mode = "new";
   loadProjects().catch(() => {});
@@ -728,6 +771,7 @@ function showNew() {
     hands.nextform.CREATE_PLAN_LABEL);
   const styleUrls = hands.nextform.styleUrlList(document);
   const setupFields = hands.nextform.setupFields(document);
+  const designFiles = hands.nextform.designFilesSection(document);
   const envLocal = envEditor({ local: true });
   // Start from an existing repo (step 15): the app repo already exists; hands only adds a deploy key to it.
   const fromRepo = el("input", { type: "checkbox", id: "fromrepo" });
@@ -754,6 +798,7 @@ function showNew() {
     let vars;
     try { vars = envLocal.collect(); } catch (e) { out.textContent = e.message; return; }
     if (!styleUrls.validate()) { out.textContent = "Fix the style URLs marked above (or clear them)."; return; }
+    if (designFiles.blocked()) { out.textContent = designFiles.blocked(); return; }
     const chat = !!(ev.submitter && ev.submitter.value === "chat");
     const importing = fromRepo.checked;
     const q = importing
@@ -776,6 +821,12 @@ function showNew() {
           headers: { "X-Hands": "1", "Content-Type": "application/json" }, body: JSON.stringify({ set: vars }) });
       } catch (e) { creatingEnvError = `The project is being created, but its variables were not saved (${e.message}). Add them below.`; }
     }
+    creatingDesignError = "";
+    if (designFiles.uploads().length) {
+      out.textContent = "Uploading design files…";
+      const res = await uploadDesignFiles(slug.value, designFiles);
+      if (res.failed.length) creatingDesignError = `Some design files were not uploaded: ${res.failed.join("; ")}`;
+    }
     mode = "creating"; creatingSlug = slug.value; creatingChat = chat; creatingChatStarted = false; refresh(false);
   } } },
     el("label", { for: "slug" }, "Project slug"), slug,
@@ -788,6 +839,7 @@ function showNew() {
     el("p", { class: "muted" }, `Sites whose look and motion the app should follow, up to ${hands.nextform.MAX_STYLE_URLS} http(s) URLs. Each is captured and analysed before planning; text, images and logos are never copied.`),
     styleUrls.root,
     setupFields.root,
+    designFiles.root,
     el("label", {}, "Environment variables (optional)"),
     el("p", { class: "muted" }, "Test API keys and service URLs the build containers need. You can also add them later on the project page."),
     envLocal,
@@ -803,6 +855,7 @@ function showNew() {
 }
 
 let creatingEnvError = "";
+let creatingDesignError = "";     // design files that did not reach the server; the rest are processed when the project exists
 let creatingChat = false;     // created with "Create and plan with Claude": open the planning chat once it exists
 let creatingChatStarted = false;   // the POST went out for this create; never a second one from the poller
 async function refreshCreating() {
@@ -814,6 +867,7 @@ async function refreshCreating() {
     $("#main").replaceChildren(...[el("section", {},
       el("div", { class: "row" }, el("h2", {}, `Creating ${slug}`), badge(c.state === "failed" ? "escalation" : c.state)),
       c.error ? el("p", { class: "reason" }, c.error) : null,
+      creatingDesignError ? el("div", { class: "notice bad" }, creatingDesignError) : null,
       el("pre", {}, c.lines.join("\n")),
       done ? el("div", { class: "row out" }, el("button", { class: "act", "data-act": "select", "data-arg": slug }, `Open ${slug}`),
         creatingChat ? el("button", { class: "btn primary", "data-act": "plan-chat", "data-arg": slug }, "Plan with Claude") : null) : null,
@@ -992,14 +1046,37 @@ const cmdView = (c) => {
   return el("div", { class: risky ? "cmd risky" : "cmd" }, risky ? "⚠ " : "", c);
 };
 
+// the change-request form's style URLs and design files: built once per project, kept across patches
+let amendExtras = { name: null, node: null, styles: null, designs: null };
+function amendExtrasNode(name) {
+  if (amendExtras.name !== name) {
+    const styles = hands.nextform.styleUrlList(document);
+    const designs = hands.nextform.designFilesSection(document);
+    const node = el("div", { class: "amendextras", "data-key": `amend-extras:${name}`, "data-self-managed": "" },
+      el("div", { class: "flabel" }, "Style references (optional)"), styles.root, designs.root);
+    amendExtras = { name, node, styles, designs };
+  }
+  return keep(amendExtras.node, `amend-extras:${name}`);
+}
+
 async function planAction(name, act, label, headSha) {
+  const ex = act === "amend" && amendExtras.name === name ? amendExtras : null;
+  if (ex && !ex.styles.validate()) { toast("Fix the style URLs marked in the change request.", true); return; }
+  if (ex && ex.designs.blocked()) { toast(ex.designs.blocked(), true); return; }
   if (!(await confirmDialog({ title: `${label}?`, body: `Project ${name}.`, ok: label, okClass: "btn primary" }))) return;
+  if (ex && ex.designs.uploads().length) {
+    const res = await uploadDesignFiles(name, ex.designs);
+    const bad = res.failed.concat(await awaitDesignFiles(name, ex.designs, res.sent));
+    if (bad.length) { toast(`Design files: ${bad.join("; ")}`, true); if (res.failed.length) return; }
+    amendExtras = { name: null, node: null, styles: null, designs: null };
+  }
   try {
     await api(`/api/p/${encodeURIComponent(name)}/action/${act}`, { method: "POST",
       headers: { "X-Hands": "1", "Content-Type": "application/json" },
       body: JSON.stringify({ feedback: act === "plan" || act === "amend" ? planFeedback : "", head_sha: headSha || "",
         shared_ack: act === "approve" ? sharedAck : false, domains_ack: act === "approve" ? domainAck : false,
-        tests_ack: act === "approve" ? testsAck : false, design_ack: act === "approve" ? designAck : false }) });
+        tests_ack: act === "approve" ? testsAck : false, design_ack: act === "approve" ? designAck : false,
+        ...(ex ? { style_refs: ex.styles.values() } : {}) }) });
     if (act === "plan" || act === "amend") planFeedback = "";
     if (act === "approve") { sharedAck = false; domainAck = false; testsAck = false; designAck = false; }
   } catch (e) { toast(`${label} failed: ${e.message}`, true); }
@@ -1018,6 +1095,7 @@ function amendForm(d, p, btn) {
       `(ids C${(p.round || 0) + (p.state === "approved" || !p.mode || p.mode === "fresh" ? 1 : 0)}-…). ` +
       "Existing steps stay as they are; steps already built cannot change. You review the amendment before anything is built."),
     el("label", { for: "amendtext" }, "Change request"), Object.assign(fb, { id: "amendtext" }),
+    amendExtrasNode(d.name),
     el("div", { class: "row out" }, btn("Amend plan", "amend", "Start the planner on this change", !d.alive)));
 }
 
@@ -1069,7 +1147,7 @@ function planSection(d) {
   const st = p.state || "none";
   const btn = (label, act, confirmLabel, enabled = true, head = "") =>
     el("button", { class: "act", "data-act": "plan", "data-arg": act, "data-label": confirmLabel, "data-head": head,
-      ...(enabled ? {} : { disabled: "" }) }, label);
+      ...(act === "approve" ? { "data-testid": "plan-approve" } : {}), ...(enabled ? {} : { disabled: "" }) }, label);
   const fb = el("textarea", { rows: "4", maxlength: "8000", class: "feedback",
     placeholder: "What should change? (e.g. 'use Cloudflare Pages, drop the blog, add a pricing page')" });
   fb.value = planFeedback;
@@ -1127,9 +1205,13 @@ function planSection(d) {
       const box = el("input", { type: "checkbox", id: "designack" });
       box.checked = designAck;
       box.addEventListener("change", () => { designAck = box.checked; refresh(false); });
+      box.setAttribute("data-testid", "plan-design-ack");
+      const changedFiles = hands.nextform.changedDesignFiles(((d.design_files || {}).files || []).map((f) => ({ ...f,
+        thumb: `/api/p/${encodeURIComponent(d.name)}/design-files/${encodeURIComponent(f.id)}/thumb` })), p.design_ids || []);
       parts.push(el("div", { class: "warnbox" },
         el("strong", {}, "This PR adds or changes design files or the prototype (refs/design, refs/prototype, refs/index.json)."),
-        el("label", { for: "designack", class: "inline" }, box, " I checked the design files and want them")));
+        changedFiles.length ? hands.nextform.planDesignFiles(document, changedFiles) : null,
+        el("label", { for: "designack", class: "inline" }, box, " I reviewed the design files")));
     }
     (p.warnings || []).forEach((w) => parts.push(el("div", { class: "notice warn" }, el("strong", {}, "Check before approving"), w)));
     if ((p.domains || []).length) {
