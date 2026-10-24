@@ -109,6 +109,24 @@ if role == "accept":
     p = subprocess.run(["bash", "-c", cmd[2]], cwd=ws)
     sys.exit(p.returncode)
 
+if role == "shots":
+    import struct
+    import zlib
+
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00")) + chunk(b"IEND", b""))
+    out = Path(mounts["/shots"])
+    assert "/opt/hands/capture" in readonly, "capture package must be read-only"
+    if os.environ.get("FAKE_SHOTS_FAIL"):
+        (out / "errors.json").write_text('[{"route": "*", "error": "server did not start"}]')
+        sys.exit(3)
+    (out / "home-desktop.png").write_bytes(png)
+    (out / "shots.json").write_text('[{"route": "/", "viewport": "desktop", "file": "home-desktop.png"}]')
+    sys.exit(0)
+
 if role == "probe" and cmd and cmd[0] == "bash":
     # a locked-down container's answer to FIREWALL_PROBE (hands/__main__.py)
     print("blocked\nip-blocked\nanthropic=404\ncannot-flush\nno-sudo\nv6-blocked\ndns-allowed-ok\ndns-random-blocked\n"

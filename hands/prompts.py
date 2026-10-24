@@ -130,8 +130,18 @@ def copy_check_section(findings: list[dict]) -> str:
             + ("\n".join(lines) if lines else "- (no findings)"))
 
 
+def screenshots_section(shots: dict | str) -> str:
+    """The shots container's result: a manifest (files readable at /shots) or the reason it failed."""
+    if isinstance(shots, str):
+        return f"## Screenshots\nScreenshots failed: {shots}"
+    lines = [f"- `/shots/{s['file']}` ({s['route']}, {s['viewport']}, {s['width']}x{s['height']})" for s in shots["shots"]]
+    return ("## Screenshots\nThe built site, one PNG per route and viewport; view them with Read. Manifest: "
+            "`/shots/manifest.json`.\n" + "\n".join(lines))
+
+
 def evaluator(spec: Spec, step: Step, *, diff: str, diffstat: str, accept_report: list[dict], coder_summary: str,
-              nonce: str, env_vars: list[tuple[str, bool]] | None = None, copy_check: list[dict] | None = None) -> str:
+              nonce: str, env_vars: list[tuple[str, bool]] | None = None, copy_check: list[dict] | None = None,
+              shots: dict | str | None = None) -> str:
     acc = "\n".join(f"- exit {r['rc']}: `{r['cmd']}`" for r in accept_report) or "- (none)"
     parts = [
         f"# Review step {step.id}: {step.title}",
@@ -145,6 +155,7 @@ def evaluator(spec: Spec, step: Step, *, diff: str, diffstat: str, accept_report
         "## Acceptance commands already run by the runner (all passed)\n" + acc,
         "## E2E specs for this step\n" + (_bullets([f"acceptance/{e}" for e in step.e2e]) if step.e2e else "- (none listed; still exercise user-facing behaviour if any)"),
         *([copy_check_section(copy_check)] if copy_check is not None else []),
+        *([screenshots_section(shots)] if shots is not None else []),
         "## Builder's own summary (unverified claim)\n" + (coder_summary or "(none)"),
         "## Diff stat\n```\n" + diffstat + "\n```",
         "## Diff (may be truncated; read files in /workspace for full context)\n```diff\n" + diff + "\n```",

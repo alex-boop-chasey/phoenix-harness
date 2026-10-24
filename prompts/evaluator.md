@@ -47,6 +47,9 @@ itself a reason to fail the step.
    `test-driven-development` or `verification-before-completion` (or `systematic-debugging` after a
    failed run) is a risk to report, and a progress note that names skills `tools.json` does not show
    is a reason to distrust the rest of its claims and verify them yourself.
+8. **Screenshots.** When the user message has a `## Screenshots` section, view the PNGs in `/shots` and
+   judge them against the goal. If it says `Screenshots failed: <why>` for a step that lists routes, fail
+   the step: the listed routes could not be screenshotted.
 
 Fail the step for any real gap in 1-4. Do not fail for style preferences. Be specific: each reason
 must name a file/behaviour and what is wrong, so the next build session can fix it without you.

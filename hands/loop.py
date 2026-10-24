@@ -651,10 +651,11 @@ class Runner:
         if failure:
             return self.fail(step, attempt, max_attempts, base, adir, failure, committed=True)
         copy_check = self.run_copy_check(step, base, commit, adir)
+        shots = self.run_shots(step, attempt, commit, adir) if step.screenshots else None
 
         # ---- independent evaluator: another fresh clone + store (acceptance ran agent code in the last one)
         self.set_phase("evaluator")
-        verdict = self.run_evaluator(step, attempt, adir, base, commit, report, summary, copy_check)
+        verdict = self.run_evaluator(step, attempt, adir, base, commit, report, summary, copy_check, shots)
         if not verdict["pass"]:
             reasons = ["independent review failed:", *[str(r) for r in verdict.get("reasons", [])][:30]]
             return self.fail(step, attempt, max_attempts, base, adir, reasons, committed=True)
@@ -666,6 +667,8 @@ class Runner:
         self.state.data.pop("current", None)
         self.state.save()
         self.uncounted.pop(step.id, None)
+        if step.screenshots:
+            self.store_shots(step, commit, adir, shots)
         pushed = "push disabled"
         if c.push:
             ok, err = gitops.push_branch(c.app_dir, self.branch)
@@ -771,14 +774,82 @@ class Runner:
         self.log(f"copy check {step.id}: {len(problems)} finding(s)")
         return problems
 
-    def run_evaluator(self, step, attempt, adir, base, commit, report, summary, copy_check=None) -> dict:
+    def run_shots(self, step, attempt, commit, adir) -> dict | str:
+        """Screenshots of the built candidate for the evaluator: the manifest (sanitised PNGs in adir/shots), or the
+        reason it failed. Never fails the step by itself."""
+        from . import shots as shotsmod
+        c = self.cfg
+        raw, dest = adir / "shots-raw", adir / "shots"
+        workspace.rmtree(raw)
+        workspace.rmtree(dest)
+        raw.mkdir(parents=True)
+        raw.chmod(0o777)
+        capture = c.runner_home / "capture"
+        if not (capture / "shots.mjs").is_file():
+            self.log(f"shots {step.id}: {capture}/shots.mjs is missing")
+            return "the harness capture package has no shots.mjs"
+        verify = self.fresh_clone("verify", commit)
+        store = docker.volume_create(c, f"hands-{c.name}-shots-{secrets.token_hex(4)}")
+        logf = adir / "shots.log"
+        logf.write_text("")
+        try:
+            mounts = self.mounts(verify, store=store)
+            mounts += [Mount(capture, shotsmod.CAPTURE_MOUNT), Mount(raw, shotsmod.SHOTS_MOUNT, ro=False)]
+            rc = docker.run(c, Run(
+                name=docker.unique_name(c, "shots", f"{step.id}-{attempt}"), role="shots",
+                cmd=["bash", "-c", shotsmod.command(step.screenshots)], mounts=mounts,
+                env=self.common_env("accept"), env_files=self.env_files(claude_token=False),
+                stdout=logf, stderr=logf, timeout_s=c.accept_timeout_min * 60, append_stdout=True))
+            self.redact_files(logf)
+            if rc != 0:
+                errs = raw / "errors.json"
+                why = "timed out" if rc == 124 else f"exit {rc}"
+                if errs.is_file():
+                    try:
+                        why += ": " + json.dumps(json.loads(errs.read_text())[:6])[:400]
+                    except ValueError:
+                        pass
+                self.log(f"shots {step.id}#{attempt} failed ({why})")
+                return why
+            try:
+                res = shotsmod.finish(raw, dest, step.id, commit)
+            except shotsmod.Refused as e:
+                self.log(f"shots {step.id}#{attempt} refused: {e}")
+                return f"the screenshots were refused ({e})"
+            (adir / "shots_sha").write_text(res["shots_sha"] + "\n")
+            self.log(f"shots {step.id}#{attempt}: {len(res['manifest']['shots'])} file(s) {res['shots_sha'][:12]}")
+            return res["manifest"]
+        except Exception as e:                   # a broken shots phase is facts for the evaluator, not a failed step
+            self.log(f"shots {step.id}#{attempt} skipped: {type(e).__name__}: {e}")
+            return f"the screenshot run could not start ({type(e).__name__})"
+        finally:
+            docker.volume_rm(c, store)
+            workspace.rmtree(verify)
+            workspace.rmtree(raw)
+
+    def store_shots(self, step, commit, adir, shots) -> None:
+        """On pass: latest accepted shots and design/tweaks.json (when valid JSON) under <state_dir>/design/shots/<step>."""
+        dest = self.cfg.state_dir / "design" / "shots" / step.id
+        try:
+            workspace.rmtree(dest)
+            if isinstance(shots, dict):
+                shutil.copytree(adir / "shots", dest)
+            raw = gitops.git(self.cfg.app_dir, "show", f"{commit}:design/tweaks.json", check=False)
+            if raw.strip():
+                tweaks = json.loads(raw)
+                dest.mkdir(parents=True, exist_ok=True)
+                (dest / "tweaks.json").write_text(json.dumps(tweaks, indent=2, sort_keys=True) + "\n")
+        except (OSError, ValueError, gitops.GitError) as e:
+            self.log(f"design/shots/{step.id}: not stored ({type(e).__name__}: {e})")
+
+    def run_evaluator(self, step, attempt, adir, base, commit, report, summary, copy_check=None, shots=None) -> dict:
         c, spec = self.cfg, self.spec
         diff = prompts.truncate(self.redactor.text(gitops.diff(c.app_dir, base, commit)), c.diff_limit_chars)
         stat = gitops.git(c.app_dir, "diff", "--stat", "--no-ext-diff", base, commit, check=False)
         nonce = secrets.token_hex(8)
         (adir / "eval-prompt.md").write_text(prompts.evaluator(
             spec, step, diff=diff, diffstat=stat, accept_report=report, coder_summary=summary, nonce=nonce,
-            env_vars=self.env_names(), copy_check=copy_check))
+            env_vars=self.env_names(), copy_check=copy_check, shots=shots))
         tries = 0
         while tries < 3:
             verify = self.fresh_clone("verify", commit)
@@ -787,12 +858,15 @@ class Runner:
             cmd = self.claude_cmd(model=self.eval_model, system_file="evaluator.md", max_turns=c.eval_max_turns,
                                   extra=["--disallowedTools", "Write,Edit,NotebookEdit,Agent,WebFetch"])
             t0 = time.time()
+            mounts = self.mounts(verify, store=store, with_skills=True, role="evaluator")
+            if isinstance(shots, dict):
+                mounts.append(Mount(adir / "shots", "/shots"))
             try:
                 (adir / f"eval-{n}.json").write_bytes(b"")
                 with activity.Tail(adir / f"eval-{n}.json", self.on_activity):
                     rc = docker.run(c, Run(
                         name=docker.unique_name(c, "eval", f"{step.id}-{attempt}-{n}"), role="eval", cmd=cmd,
-                        mounts=self.mounts(verify, store=store, with_skills=True, role="evaluator"),
+                        mounts=mounts,
                         env=self.common_env("eval"),
                         env_files=self.env_files(claude_token=True), stdin=adir / "eval-prompt.md",
                         stdout=adir / f"eval-{n}.json", stderr=adir / f"eval-{n}.stderr",
