@@ -76,6 +76,15 @@ def request(cfg, style_refs: list[str], framework: int | None = None, libs: list
     return indexes
 
 
+def set_site_inputs(cfg, inputs: dict) -> dict:
+    """The copy fields: validated, kept in next.json under `copy` and put into the spec outbox as
+    refs/site-inputs.json (the next plan/amend PR carries it)."""
+    from . import sitecopy
+    ensure(cfg)
+    nextstate.set_copy(file(cfg), inputs)
+    return sitecopy.write(inputs, specoutbox.root(cfg))
+
+
 def setup_pending(cfg) -> bool:
     return nextstate.load(file(cfg))["setup"]["status"] == "pending"
 

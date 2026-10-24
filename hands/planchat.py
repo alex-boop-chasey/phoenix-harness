@@ -39,6 +39,7 @@ from typing import Any
 
 from .gitops import GitError, git
 from .setup import FRAMEWORK_LABELS
+from . import sitecopy
 
 ROLE = "plan-chat"
 KINDS = ("new", "existing")
@@ -55,6 +56,7 @@ DOMAINS_MOUNT = "/etc/hands/allowed-domains"
 CHAT_DOMAINS = ("platform.claude.com",)   # the chat's whole per-run egress list, on top of the image allowlist
 BRIEF_FILE = "brief.md"
 COVERAGE_FILE = "coverage.md"
+SITE_INPUTS_FILE = "site-inputs.json"
 BRIEF_HEADINGS = ("## Idea", "## Must have", "## Nice to have", "## Out of scope", "## Style and motion",
                   "## Setup", "## Open decisions")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -239,6 +241,18 @@ def primer(ctx: PlanContext) -> str:
     lines += [
         f"Then write `{coverage_md}`: a Markdown table with the columns `Requirement` and `Where` that maps every "
         "requirement the owner stated to the brief section that covers it (or `Out of scope`).",
+        "",
+        "## Copywriter interview",
+        "Once the brief is settled, interview the owner for the site copy, one question per message: "
+        "`audience` (who the site is for, up to 500 characters), `offer` (what is sold or promised, up to 500), "
+        "`proof` (real numbers, press and testimonials with names exactly as the owner gives them, up to 20 lines "
+        "of 300 characters; never invent any), `tone_notes` (voice, up to 1000), `banned_words` (words or phrases "
+        "to avoid, up to 50 of 40 characters) and `directions` (how many homepage directions to explore, 2 to 8, "
+        "default 6). Skip what the owner has no answer for.",
+        f"Then write `{brief}/site-inputs.json` as `{{\"schema\": 1, \"audience\": \"\", \"offer\": \"\", "
+        "\"proof\": [], \"tone_notes\": \"\", \"banned_words\": [], \"directions\": 6}` with those fields "
+        "and no others. On approval the harness validates it and puts it into the spec as refs/site-inputs.json.",
+        "",
         "Both files are reviewed and approved by the owner on the dashboard; they are not the spec. Do not write "
         "anything else. Start by introducing yourself in one sentence and asking the first question.",
     ]
@@ -418,12 +432,23 @@ def approve(brief_dir: Path, spec_dir: Path, sha: str, round: int | None = None)
     current = brief_hash(brief_dir)
     if not isinstance(sha, str) or sha.strip().lower() != current:
         raise HashMismatch(f"hash mismatch: brief.md is {current}")
+    inputs = None
+    if (brief_dir / SITE_INPUTS_FILE).is_file():
+        try:
+            inputs = sitecopy.read(brief_dir / SITE_INPUTS_FILE)
+        except sitecopy.InvalidInputs as e:
+            raise BriefIncomplete(f"{SITE_INPUTS_FILE} invalid: {e}") from None
     for rel, source in ((brief_rel, BRIEF_FILE), (coverage_rel, COVERAGE_FILE)):
         target = spec_dir / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(brief_dir / source, target)
     (spec_dir / "brief.sha256").write_text(current + "\n", encoding="utf-8")
     changed = [brief_rel, coverage_rel, "brief.sha256"]
+    if inputs is not None:
+        target = spec_dir / sitecopy.REL_PATH
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(inputs, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        changed.append(sitecopy.REL_PATH)
     git(spec_dir, "add", "-A", "--", *changed)
     if git(spec_dir, "status", "--porcelain", "--", *changed).strip():
         git(spec_dir, "commit", "-q", "-m", f"brief: approved {current[:12]}", "--", *changed)

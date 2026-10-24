@@ -14,6 +14,7 @@
   ];
   const MAX_STYLE_URLS = 10;
   const MAX_URL = 2048;
+  const COPY_DIRECTIONS = 6;
   const REF_STATUSES = ["queued", "capturing", "analysing", "frozen", "failed"];
   const SETUP_STATUSES = ["none", "pending", "running", "done", "failed"];
   const REASONS = {
@@ -266,6 +267,46 @@
     return { root, framework: () => Number(select.value), libs: () => boxes.filter((b) => b.box.checked).map((b) => b.lib.id) };
   }
 
+  // Site inputs from raw field values: proof one item per line, banned words comma-separated, trimmed, empties dropped.
+  function siteInputs(v) {
+    const split = (text, sep) => String(text || "").split(sep).map((x) => x.trim()).filter(Boolean);
+    const n = Number(v && v.directions);
+    return { audience: String((v && v.audience) || "").trim(), offer: String((v && v.offer) || "").trim(),
+      proof: split(v && v.proof, "\n"), tone_notes: String((v && v.tone_notes) || "").trim(),
+      banned_words: split(v && v.banned_words, ","), directions: Number.isInteger(n) ? n : COPY_DIRECTIONS };
+  }
+
+  // True when nothing was typed and the number of directions is the default.
+  function siteInputsEmpty(si) {
+    return !si.audience && !si.offer && !si.proof.length && !si.tone_notes && !si.banned_words.length && si.directions === COPY_DIRECTIONS;
+  }
+
+  // The copy fields of the new-project and change-request forms (the site inputs of docs/design.md#copy-pipeline).
+  function copyFields(doc) {
+    const field = (tag, id, label, attrs) => {
+      const e = h(doc, tag, { id, class: "input", "data-testid": id, ...attrs });
+      return { e, label: h(doc, "label", { for: id }, label) };
+    };
+    const audience = field("input", "copy-audience", "Audience", { type: "text", maxlength: "500", autocomplete: "off" });
+    const offer = field("input", "copy-offer", "Offer", { type: "text", maxlength: "500", autocomplete: "off" });
+    const proof = field("textarea", "copy-proof", "Proof (one per line)", { rows: "3", placeholder: "Numbers, press, testimonials with names, as you would have them shown" });
+    const tone = field("textarea", "copy-tone", "Tone notes", { rows: "2", maxlength: "1000" });
+    const banned = field("input", "copy-banned", "Banned words (comma-separated)", { type: "text", autocomplete: "off" });
+    const count = field("input", "directions-count", "Homepage directions", { type: "number", min: "2", max: "8", value: String(COPY_DIRECTIONS) });
+    const root = h(doc, "div", { class: "copyfields" },
+      h(doc, "div", { class: "flabel" }, "Site copy (optional)"),
+      h(doc, "p", { class: "muted" }, "Who the site is for and what it offers. Real proof only: the build never invents numbers, press or testimonials and marks gaps instead."),
+      audience.label, audience.e, offer.label, offer.e, proof.label, proof.e, tone.label, tone.e, banned.label, banned.e,
+      count.label, count.e, h(doc, "p", { class: "muted" }, "Directions: how many homepage designs to explore, 2 to 8."));
+    const values = () => siteInputs({ audience: audience.e.value, offer: offer.e.value, proof: proof.e.value,
+      tone_notes: tone.e.value, banned_words: banned.e.value, directions: count.e.value });
+    const blocked = () => {
+      const n = Number(count.e.value);
+      return Number.isInteger(n) && n >= 2 && n <= 8 ? "" : "Homepage directions must be a whole number from 2 to 8.";
+    };
+    return { root, values, blocked, empty: () => siteInputsEmpty(values()) };
+  }
+
   // The project page's style refs + setup panel from the project detail's `next` ({style_refs, setup}).
   // `addForm` (optional) is the add-URL form node app.js keeps across patches.
   function styleRefsPanel(doc, next, addForm) {
@@ -496,7 +537,7 @@
     validateStyleUrl, styleUrlsFromForm, reasonText, frameworkLabel, mockFromQuery, mockToolUsage, mockSessions,
     planStatus, planChatLabel, shortSha, toolUsageParts, visibleSessions,
     CREATE_PLAN_LABEL, CREATE_PLAN_HINT, shouldOpenPlanChat,
-    styleUrlList, setupFields, styleRefsPanel, planChatPanel, toolUsage, sessionItem,
+    siteInputs, siteInputsEmpty, copyFields, styleUrlList, setupFields, styleRefsPanel, planChatPanel, toolUsage, sessionItem,
     DESIGN_KINDS, DESIGN_ACCEPT, designKindGuess, designFileCheck, designTotalCheck, designSize, designSubmitLines, designUploadUrl,
     changedDesignFiles, designFilesSection, planDesignFiles };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

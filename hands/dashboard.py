@@ -622,6 +622,8 @@ def plan_action(name: str, action: str, feedback: str, head_sha: str = "", share
     if not cfg.managed:
         raise ValueError("planning is only for projects created by hands")
     extra = next_flags(req) if (req and action == "amend") else []
+    if req and action == "amend":
+        extra += site_inputs_flags(req, cfg.state_dir / "site-inputs-request.json")
     with _CREATE_MUTEX:
         d = planner.pdir(cfg)
         if Lock.held(d / "plan.lock"):
@@ -750,6 +752,7 @@ def start_create(slug: str, description: str, from_repo: str = "", branch: str =
         if ruleset:
             extra.append("--ruleset")
     extra += next_extra
+    extra += site_inputs_flags(req or {}, newproject.creating_dir() / f"{slug}.site-inputs.json")
     with _CREATE_MUTEX:
         if (config_home() / "projects" / f"{slug}.toml").exists():
             raise ValueError(f"project {slug} already exists")
@@ -959,6 +962,24 @@ def next_flags(req: dict) -> list[str]:
     if libs is not None:
         flags += ["--libs", ",".join(lb)]
     return flags
+
+
+def site_inputs_flags(req: dict, path: Path) -> list[str]:
+    """`--site-inputs FILE` for the create/plan CLI when the form body carries `site_inputs`; the validated JSON is
+    written to `path` (0600), which the CLI reads and deletes. Raises ValueError for invalid inputs."""
+    from . import sitecopy
+    raw = (req or {}).get("site_inputs")
+    if raw is None:
+        return []
+    try:
+        clean = sitecopy.validate(raw)
+    except sitecopy.InvalidInputs as e:
+        raise ValueError(f"site_inputs: {e}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(clean, f)
+    return ["--site-inputs", str(path)]
 
 
 def _idle(cfg) -> None:

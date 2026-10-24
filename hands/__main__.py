@@ -21,6 +21,8 @@
     --style-ref URL      (repeatable) style reference URLs, captured, analysed and frozen into the spec repo
                          right after the clones exist; --framework N --libs a,b choose the scaffold, which
                          runs next (state: <state_dir>/next.json); planning waits for both (the gate)
+    --site-inputs FILE   (create, plan --amend) the copy fields as JSON (audience, offer, proof, tone_notes,
+                         banned_words, directions); kept in next.json and put into the spec outbox
   destroy --confirm P    delete a hands-created project: GitHub repos, keys, folders, config
                          (an imported repo is never deleted: only its hands deploy key is removed)
   plan                   run the planner (feedback on stdin): idea -> spec -> PR hands/plan
@@ -88,10 +90,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--libs", default=None, help="setup: comma-separated library ids (shadcn, gsap); '' for none")
     ap.add_argument("--style-ref", action="append", default=[], metavar="URL",
                     help="create / plan --amend: a style reference URL (repeatable)")
+    ap.add_argument("--site-inputs", default=None, metavar="FILE",
+                    help="create / plan --amend: JSON file with the copy fields (audience, offer, proof, ...)")
     ap.add_argument("--kind", default=None, help="design-files add|edit: the file kind")
     ap.add_argument("--note", default=None, help="design-files add|edit|group: the note (max 500 characters)")
     a = ap.parse_args(argv)
     libs = None if a.libs is None else [x.strip() for x in a.libs.split(",") if x.strip()]
+    site_inputs = None
+    if a.site_inputs and a.command in ("create", "plan"):
+        from . import sitecopy
+        try:
+            site_inputs = sitecopy.read(Path(a.site_inputs))
+        except sitecopy.InvalidInputs as e:
+            print(f"FAILED: site inputs: {e}")
+            return 2
+        finally:
+            Path(a.site_inputs).unlink(missing_ok=True)      # a one-shot hand-over from the dashboard
     if a.project == "all":
         if a.command == "usage":
             from . import usage
@@ -114,7 +128,8 @@ def main(argv: list[str] | None = None) -> int:
                 if rc != 0:
                     return rc
                 cfg = load(a.project)
-                rc = after_create(cfg, list(a.style_ref), 1 if a.framework is None else a.framework, libs or [])
+                rc = after_create(cfg, list(a.style_ref), 1 if a.framework is None else a.framework, libs or [],
+                                  site_inputs)
                 if a.then_plan:
                     from . import planner
                     print("starting the planner (log: dashboard Plan section)", flush=True)
@@ -129,8 +144,8 @@ def main(argv: list[str] | None = None) -> int:
         from . import planner
         if a.command == "plan":
             fb = sys.stdin.read() if not sys.stdin.isatty() else ""
-            if a.style_ref or a.framework is not None or libs is not None:
-                rc = change_request(cfg, list(a.style_ref), a.framework, libs)
+            if a.style_ref or a.framework is not None or libs is not None or site_inputs is not None:
+                rc = change_request(cfg, list(a.style_ref), a.framework, libs, site_inputs)
                 if rc != 0:
                     return rc
             return planner.plan(cfg, fb, amend=a.amend)
@@ -340,13 +355,15 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
-def after_create(cfg, style_refs: list[str], framework: int, libs: list[str]) -> int:
+def after_create(cfg, style_refs: list[str], framework: int, libs: list[str], site_inputs: dict | None = None) -> int:
     """Right after the clones exist: record the choices, run the style-ref pipeline for every URL, then the
     scaffold when a framework was chosen. 1 when a ref or the scaffold failed (the project exists either way;
     `refs retry N` / `refs remove N` / `setup` fix it, and the gate holds planning until then)."""
     from . import nextproject, setup, uploads
     state = nextproject.init(cfg, style_refs, framework, libs)
     rc = 0
+    if site_inputs is not None:
+        nextproject.set_site_inputs(cfg, site_inputs)
     for res in uploads.process_pending(cfg, uploads.creating_inbox(cfg.name)):
         if res["status"] != "ready":
             print(f"design file {res['id']}: {res['status']} ({res['reason']})", flush=True)
@@ -363,8 +380,9 @@ def after_create(cfg, style_refs: list[str], framework: int, libs: list[str]) ->
     return rc
 
 
-def change_request(cfg, style_refs: list[str], framework: int | None, libs: list[str] | None) -> int:
-    """New style refs and/or setup choices for an existing project; the new refs are processed at once."""
+def change_request(cfg, style_refs: list[str], framework: int | None, libs: list[str] | None,
+                   site_inputs: dict | None = None) -> int:
+    """New style refs, setup choices and/or copy fields for an existing project; the new refs are processed at once."""
     from . import nextproject, nextstate
     why = nextproject.busy(cfg) if style_refs else ""
     if why:
@@ -375,6 +393,8 @@ def change_request(cfg, style_refs: list[str], framework: int | None, libs: list
     except nextstate.InvalidInput as e:
         print(f"FAILED: {e}")
         return 2
+    if site_inputs is not None:
+        nextproject.set_site_inputs(cfg, site_inputs)
     if indexes:
         _process(cfg, indexes)
     if framework is not None or libs is not None:

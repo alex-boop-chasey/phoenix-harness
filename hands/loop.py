@@ -644,10 +644,11 @@ class Runner:
         report, failure = self.run_acceptance(step, attempt, commit, adir)
         if failure:
             return self.fail(step, attempt, max_attempts, base, adir, failure, committed=True)
+        copy_check = self.run_copy_check(step, base, commit, adir)
 
         # ---- independent evaluator: another fresh clone + store (acceptance ran agent code in the last one)
         self.set_phase("evaluator")
-        verdict = self.run_evaluator(step, attempt, adir, base, commit, report, summary)
+        verdict = self.run_evaluator(step, attempt, adir, base, commit, report, summary, copy_check)
         if not verdict["pass"]:
             reasons = ["independent review failed:", *[str(r) for r in verdict.get("reasons", [])][:30]]
             return self.fail(step, attempt, max_attempts, base, adir, reasons, committed=True)
@@ -736,14 +737,42 @@ class Runner:
             docker.volume_rm(c, store)
             workspace.rmtree(verify)
 
-    def run_evaluator(self, step, attempt, adir, base, commit, report, summary) -> dict:
+    def run_copy_check(self, step, base, commit, adir) -> list[dict] | None:
+        """Copy check facts for the evaluator: None when the spec has no refs/site-inputs.json, else the findings over
+        the files this step added or changed (copy-check.json in the attempt dir). Never fails the step."""
+        inputs_file = self.spec.root / "refs" / "site-inputs.json"
+        if not inputs_file.is_file():
+            return None
+        from . import copylint, sitecopy
+        code_steps = [s.id for s in self.spec.steps if s.type == "code"]
+        final = bool(code_steps) and step.id == code_steps[-1]
+        verify = None
+        try:
+            inputs = sitecopy.read(inputs_file)
+            names = gitops.git(self.cfg.app_dir, "diff", "--name-only", "--diff-filter=AM", "-z", base, commit, check=False)
+            files = [n for n in names.split("\0") if n]
+            verify = self.fresh_clone("verify", commit)
+            copy_md = verify / "docs" / "copy.md"
+            problems = copylint.check(verify, inputs, copy_md.read_text(encoding="utf-8") if copy_md.is_file() else None,
+                                      files, final)
+        except Exception as e:                   # facts for the evaluator only: a broken check must not fail a step
+            self.log(f"copy check skipped: {type(e).__name__}: {e}")
+            return None
+        finally:
+            if verify is not None:
+                workspace.rmtree(verify)
+        (adir / "copy-check.json").write_text(json.dumps({"final": final, "problems": problems}, indent=2))
+        self.log(f"copy check {step.id}: {len(problems)} finding(s)")
+        return problems
+
+    def run_evaluator(self, step, attempt, adir, base, commit, report, summary, copy_check=None) -> dict:
         c, spec = self.cfg, self.spec
         diff = prompts.truncate(self.redactor.text(gitops.diff(c.app_dir, base, commit)), c.diff_limit_chars)
         stat = gitops.git(c.app_dir, "diff", "--stat", "--no-ext-diff", base, commit, check=False)
         nonce = secrets.token_hex(8)
         (adir / "eval-prompt.md").write_text(prompts.evaluator(
             spec, step, diff=diff, diffstat=stat, accept_report=report, coder_summary=summary, nonce=nonce,
-            env_vars=self.env_names()))
+            env_vars=self.env_names(), copy_check=copy_check))
         tries = 0
         while tries < 3:
             verify = self.fresh_clone("verify", commit)

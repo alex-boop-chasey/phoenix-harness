@@ -766,12 +766,13 @@ function showNew() {
   const desc = el("textarea", { id: "desc", rows: "5", maxlength: "4000", required: "",
     placeholder: "One or two sentences: what the app is, who it is for. The planner asks the rest." });
   const out = el("pre", {}, "");
-  const submit = el("button", { class: "act", type: "submit" }, "Create project");
+  const submit = el("button", { class: "act", type: "submit", "data-testid": "create-project" }, "Create project");
   const withClaude = el("button", { class: "btn primary", type: "submit", value: "chat", "data-testid": "plan-with-claude" },
     hands.nextform.CREATE_PLAN_LABEL);
   const styleUrls = hands.nextform.styleUrlList(document);
   const setupFields = hands.nextform.setupFields(document);
   const designFiles = hands.nextform.designFilesSection(document);
+  const copyFields = hands.nextform.copyFields(document);
   const envLocal = envEditor({ local: true });
   // Start from an existing repo (step 15): the app repo already exists; hands only adds a deploy key to it.
   const fromRepo = el("input", { type: "checkbox", id: "fromrepo" });
@@ -799,6 +800,7 @@ function showNew() {
     try { vars = envLocal.collect(); } catch (e) { out.textContent = e.message; return; }
     if (!styleUrls.validate()) { out.textContent = "Fix the style URLs marked above (or clear them)."; return; }
     if (designFiles.blocked()) { out.textContent = designFiles.blocked(); return; }
+    if (copyFields.blocked()) { out.textContent = copyFields.blocked(); return; }
     const chat = !!(ev.submitter && ev.submitter.value === "chat");
     const importing = fromRepo.checked;
     const q = importing
@@ -809,6 +811,7 @@ function showNew() {
     out.textContent = "Starting…";
     const body = { slug: slug.value, description: desc.value, style_refs: styleUrls.values(),
       framework: setupFields.framework(), libs: setupFields.libs(), plan_with_claude: chat };
+    if (!copyFields.empty()) body.site_inputs = copyFields.values();
     if (importing) { body.from_repo = repo.value.trim(); body.branch = branch.value.trim(); body.ruleset = ruleset.checked; }
     try {
       await api("/api/new", { method: "POST", headers: { "X-Hands": "1", "Content-Type": "application/json" },
@@ -839,6 +842,7 @@ function showNew() {
     el("p", { class: "muted" }, `Sites whose look and motion the app should follow, up to ${hands.nextform.MAX_STYLE_URLS} http(s) URLs. Each is captured and analysed before planning; text, images and logos are never copied.`),
     styleUrls.root,
     setupFields.root,
+    copyFields.root,
     designFiles.root,
     el("label", {}, "Environment variables (optional)"),
     el("p", { class: "muted" }, "Test API keys and service URLs the build containers need. You can also add them later on the project page."),
@@ -1047,14 +1051,15 @@ const cmdView = (c) => {
 };
 
 // the change-request form's style URLs and design files: built once per project, kept across patches
-let amendExtras = { name: null, node: null, styles: null, designs: null };
+let amendExtras = { name: null, node: null, styles: null, designs: null, copy: null };
 function amendExtrasNode(name) {
   if (amendExtras.name !== name) {
     const styles = hands.nextform.styleUrlList(document);
     const designs = hands.nextform.designFilesSection(document);
+    const copy = hands.nextform.copyFields(document);
     const node = el("div", { class: "amendextras", "data-key": `amend-extras:${name}`, "data-self-managed": "" },
-      el("div", { class: "flabel" }, "Style references (optional)"), styles.root, designs.root);
-    amendExtras = { name, node, styles, designs };
+      el("div", { class: "flabel" }, "Style references (optional)"), styles.root, copy.root, designs.root);
+    amendExtras = { name, node, styles, designs, copy };
   }
   return keep(amendExtras.node, `amend-extras:${name}`);
 }
@@ -1062,13 +1067,14 @@ function amendExtrasNode(name) {
 async function planAction(name, act, label, headSha) {
   const ex = act === "amend" && amendExtras.name === name ? amendExtras : null;
   if (ex && !ex.styles.validate()) { toast("Fix the style URLs marked in the change request.", true); return; }
+  if (ex && ex.copy.blocked()) { toast(ex.copy.blocked(), true); return; }
   if (ex && ex.designs.blocked()) { toast(ex.designs.blocked(), true); return; }
   if (!(await confirmDialog({ title: `${label}?`, body: `Project ${name}.`, ok: label, okClass: "btn primary" }))) return;
   if (ex && ex.designs.uploads().length) {
     const res = await uploadDesignFiles(name, ex.designs);
     const bad = res.failed.concat(await awaitDesignFiles(name, ex.designs, res.sent));
     if (bad.length) { toast(`Design files: ${bad.join("; ")}`, true); if (res.failed.length) return; }
-    amendExtras = { name: null, node: null, styles: null, designs: null };
+    amendExtras = { name: null, node: null, styles: null, designs: null, copy: null };
   }
   try {
     await api(`/api/p/${encodeURIComponent(name)}/action/${act}`, { method: "POST",
@@ -1076,7 +1082,8 @@ async function planAction(name, act, label, headSha) {
       body: JSON.stringify({ feedback: act === "plan" || act === "amend" ? planFeedback : "", head_sha: headSha || "",
         shared_ack: act === "approve" ? sharedAck : false, domains_ack: act === "approve" ? domainAck : false,
         tests_ack: act === "approve" ? testsAck : false, design_ack: act === "approve" ? designAck : false,
-        ...(ex ? { style_refs: ex.styles.values() } : {}) }) });
+        ...(ex ? { style_refs: ex.styles.values() } : {}),
+        ...(ex && !ex.copy.empty() ? { site_inputs: ex.copy.values() } : {}) }) });
     if (act === "plan" || act === "amend") planFeedback = "";
     if (act === "approve") { sharedAck = false; domainAck = false; testsAck = false; designAck = false; }
   } catch (e) { toast(`${label} failed: ${e.message}`, true); }

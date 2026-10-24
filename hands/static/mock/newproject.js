@@ -11,21 +11,23 @@ document.addEventListener("DOMContentLoaded", () => {
   };
   const urls = nf.styleUrlList(document);
   const setup = nf.setupFields(document);
-  const out = h("pre", { class: "out" });
+  const copy = nf.copyFields(document);
+  const out = h("pre", { class: "out", "data-testid": "mock-out" });
   const form = h("form", {},
     h("label", { for: "slug" }, "Project slug"), h("input", { id: "slug", value: "landing", autocomplete: "off" }),
     h("label", { for: "desc" }, "Idea"), h("textarea", { id: "desc", rows: "3" }),
     h("div", { class: "flabel" }, "Style references (optional)"),
     h("p", { class: "muted" }, "Sites whose look and motion the app should follow. Up to 10 http(s) URLs."), urls.root,
-    setup.root,
-    h("div", { class: "row" }, h("button", { class: "act", type: "submit" }, "Create project"),
+    setup.root, copy.root,
+    h("div", { class: "row" }, h("button", { class: "act", type: "submit", "data-testid": "create-project" }, "Create project"),
       h("button", { class: "btn primary", type: "submit", "data-testid": "plan-with-claude", value: "chat" },
         "Plan with Claude")),
     out);
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
     if (!urls.validate()) { out.textContent = "Fix the style URLs first."; return; }
-    const body = { slug: form.querySelector("#slug").value, style_refs: urls.values(), framework: setup.framework(), libs: setup.libs(),
+    if (copy.blocked()) { out.textContent = copy.blocked(); return; }
+    const body = { slug: form.querySelector("#slug").value, style_refs: urls.values(), framework: setup.framework(), libs: setup.libs(), site_inputs: copy.values(),
       plan_with_claude: !!(ev.submitter && ev.submitter.value === "chat") };
     out.textContent = `mock: POST /api/new ${JSON.stringify(body)}`;
   });

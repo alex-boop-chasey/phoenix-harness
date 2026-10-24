@@ -11,16 +11,18 @@ document.addEventListener("DOMContentLoaded", () => {
   };
   const amend = new URLSearchParams(location.search).get("form") === "amend";
   const section = nf.designFilesSection(document);
+  const copy = nf.copyFields(document);
   const out = h("pre", { class: "out", "data-testid": "mock-out" });
   const submit = h("button", { class: "act", type: "button", "data-testid": "design-files-submit" }, amend ? "Send change request" : "Create project");
   submit.addEventListener("click", () => {
-    const blocked = section.blocked();
+    const blocked = copy.blocked() || section.blocked();
     if (blocked) { out.textContent = blocked; return; }
     const lines = nf.designSubmitLines(section.uploads());
-    out.textContent = lines.length ? lines.join("\n") : "no design files";
+    const si = amend && copy.empty() ? [] : [`POST /api/${amend ? "action/amend" : "new"} ${JSON.stringify({ site_inputs: copy.values() })}`];
+    out.textContent = [...si, ...lines].join("\n") || "no design files";
   });
   const kids = [h("h2", {}, amend ? "Change request" : "New project")];
   if (amend) kids.push(h("div", { class: "flabel" }, "Style references (optional)"), nf.styleUrlList(document).root);
-  kids.push(section.root, h("div", { class: "row" }, submit), out);
+  kids.push(copy.root, section.root, h("div", { class: "row" }, submit), out);
   document.getElementById("main").replaceChildren(h("section", {}, ...kids));
 });

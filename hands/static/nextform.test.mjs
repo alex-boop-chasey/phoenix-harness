@@ -220,3 +220,16 @@ test("changedDesignFiles keeps only the index entries the plan names", () => {
   assert.deepEqual(nf.changedDesignFiles(files, []), []);
   assert.deepEqual(nf.changedDesignFiles(null, ["d001"]), []);
 });
+
+test("siteInputs splits proof on newlines and banned words on commas, trimmed, empties dropped", () => {
+  const si = nf.siteInputs({ audience: " bakers ", offer: "", proof: "a\n\n  b  \n", tone_notes: "warm", banned_words: "x, ,y ,", directions: "4" });
+  assert.deepEqual(si, { audience: "bakers", offer: "", proof: ["a", "b"], tone_notes: "warm", banned_words: ["x", "y"], directions: 4 });
+});
+
+test("siteInputs defaults directions to 6 and siteInputsEmpty only holds for untouched fields", () => {
+  const si = nf.siteInputs({});
+  assert.equal(si.directions, 6);
+  assert.equal(nf.siteInputsEmpty(si), true);
+  assert.equal(nf.siteInputsEmpty(nf.siteInputs({ offer: "x" })), false);
+  assert.equal(nf.siteInputsEmpty(nf.siteInputs({ directions: 3 })), false);
+});

@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import sitecopy
 from .setup import FRAMEWORK_LABELS, LIB_IDS, SETUP_STATUSES, BLOCKING_STATUSES, InvalidOptions, SetupOptions
 from .stylerefs import InvalidUrl, validate_url
 
@@ -58,7 +59,8 @@ def now_iso() -> str:
 def empty() -> dict:
     return {"schema": SCHEMA, "next_index": 1, "style_refs": [],
             "setup": {"framework": 1, "libs": [], "status": "none", "record": None},
-            "plan_session": {"session_id": None, "status": "none", "brief_sha256": None, "updated": None}}
+            "plan_session": {"session_id": None, "status": "none", "brief_sha256": None, "updated": None},
+            "copy": None}
 
 
 # ------------------------------------------------------------------------------------------- file
@@ -85,6 +87,11 @@ def load(path: Path) -> dict:
     for key in ("setup", "plan_session"):
         if isinstance(raw.get(key), dict):
             state[key].update(raw[key])
+    if isinstance(raw.get("copy"), dict):
+        try:
+            state["copy"] = sitecopy.validate(raw["copy"])
+        except sitecopy.InvalidInputs:
+            state["copy"] = None
     if state["setup"].get("status") not in SETUP_STATUSES:
         state["setup"]["status"] = "none"
     if state["plan_session"].get("status") not in PLAN_STATUSES:
@@ -261,6 +268,18 @@ def set_plan_session(path: Path, status: str, session_id: str | None = None, sha
     return p
 
 
+def set_copy(path: Path, copy: Any) -> dict:
+    """Store the validated site inputs (the copy fields); None clears them."""
+    try:
+        clean = None if copy is None else sitecopy.validate(copy)
+    except sitecopy.InvalidInputs as e:
+        raise InvalidInput(f"site inputs: {e}") from None
+    state = load(path)
+    state["copy"] = clean
+    save(path, state)
+    return state
+
+
 # --------------------------------------------------------------------------------------------- gate
 
 def gate(state: dict) -> list[str]:
@@ -336,6 +355,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--status", required=True, help=" | ".join(PLAN_STATUSES))
     p.add_argument("--session-id")
     p.add_argument("--sha")
+    p = cmd("set-copy", "store the site inputs (copy fields)")
+    p.add_argument("--copy", required=True, help="JSON file with the site inputs")
     cmd("gate", "exit 1 and print the reasons when planning may not start")
     a = ap.parse_args(argv)
 
@@ -356,6 +377,8 @@ def main(argv: list[str] | None = None) -> int:
             set_setup(f, a.status, _record(a.record))
         elif a.cmd == "set-plan-session":
             set_plan_session(f, a.status, a.session_id, a.sha)
+        elif a.cmd == "set-copy":
+            set_copy(f, _record(a.copy))
         elif a.cmd == "gate":
             reasons = gate(load(f))
             for r in reasons:
