@@ -772,7 +772,88 @@
       h(doc, "h3", {}, "Sessions and cost per model"), table || h(doc, "p", { class: "small muted" }, "No sessions yet."));
   }
 
-  const api = { modelsChanged, modelsPending, modelsBlock, MODEL_ROLES, DESIGN_CHIPS, selectionBody, hasPick, tweaksComplete, shotUrl, designPanel, FRAMEWORK_LABELS, LIBS, MAX_STYLE_URLS, MAX_URL, REF_STATUSES, SETUP_STATUSES, PLAN_STATUSES,
+  function resolverTime(at) {
+    const n = typeof at === "number" ? at : NaN;
+    return Number.isFinite(n) ? `${new Date(n * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC` : "unknown time";
+  }
+
+  function resolverEntryText(e) {
+    if (!e || typeof e !== "object") return "";
+    const why = e.reason || e.problem || "";
+    return [resolverTime(e.at), e.step || "?", e.cause || "?", e.action || "none", `executed: ${e.executed ? "yes" : "no"}`, why].join(" · ");
+  }
+
+  function resolverPendingText(p) {
+    if (!p || typeof p !== "object") return "";
+    return `Retry scheduled for ${resolverTime(p.resume_at)}${p.step ? ` (${p.step})` : ""}`;
+  }
+
+  function resolverBadge(doc, enabled) {
+    return enabled ? h(doc, "span", { class: "badge", "data-testid": "resolver-badge" }, "Auto-resolve on") : null;
+  }
+
+  function resolverHistory(doc, history) {
+    const items = (history || []).map((e) => h(doc, "li", { class: "resolverentry", "data-testid": "resolver-entry" },
+      h(doc, "span", {}, resolverEntryText(e)),
+      e.note ? h(doc, "p", { class: "small", "data-testid": "resolver-note" }, e.note) : null,
+      e.root_command ? h(doc, "p", { class: "small" },
+        h(doc, "code", { "data-testid": "resolver-root-command" }, e.root_command), " ",
+        h(doc, "span", { class: "badge", "data-testid": "resolver-not-executed" }, "not executed")) : null));
+    return h(doc, "div", { "data-testid": "resolver-history" }, h(doc, "h3", {}, "Resolver history"),
+      items.length ? h(doc, "ul", { class: "resolverlist" }, items) : h(doc, "p", { class: "small muted" }, "No resolver runs yet."));
+  }
+
+  // view: the GET /api/p/<n>/resolver body. opts: {name, path, send(path, body) -> {status, body}, onDone()}.
+  function resolverBlock(doc, view, opts) {
+    const o = opts || {};
+    const state = { enabled: !!view.enabled };
+    const toggle = h(doc, "button", { class: "btn", type: "button", role: "switch", "aria-label": "Auto-resolve escalations", "data-testid": "resolver-toggle" });
+    const text = h(doc, "span", { "data-testid": "resolver-state" });
+    const error = h(doc, "p", { class: "reason", role: "alert" });
+    error.hidden = true;
+    const pendingText = resolverPendingText(view.pending);
+    const pending = pendingText ? h(doc, "p", { class: "small", "data-testid": "resolver-pending" }, pendingText) : null;
+    const paint = () => {
+      toggle.setAttribute("aria-checked", state.enabled ? "true" : "false");
+      toggle.textContent = state.enabled ? "On" : "Off";
+      text.textContent = `Auto-resolve escalations: ${state.enabled ? "on" : "off"}`;
+    };
+    async function set(enabled) {
+      error.hidden = true;
+      try {
+        const r = await o.send(o.path, { enabled });
+        if (r.status !== 200) { error.textContent = (r.body && r.body.error) || `failed (${r.status})`; error.hidden = false; return; }
+        state.enabled = enabled;
+        paint();
+        if (o.onDone) o.onDone();
+      } catch (e) {
+        error.textContent = `failed (${e.message})`;
+        error.hidden = false;
+      }
+    }
+    const ok = h(doc, "button", { class: "btn sm primary", type: "button", "data-testid": "resolver-off-confirm-ok" }, "Turn off");
+    const cancel = h(doc, "button", { class: "btn sm", type: "button" }, "Keep on");
+    const confirm = h(doc, "div", { class: "modelsconfirm", role: "dialog", "aria-label": "Turn off auto-resolve", "data-testid": "resolver-off-confirm" },
+      h(doc, "p", {}, "Turning this off cancels the scheduled retry. The project goes to a plain escalation."),
+      h(doc, "div", { class: "row" }, ok, cancel));
+    confirm.hidden = true;
+    toggle.addEventListener("click", () => {
+      if (state.enabled && view.pending) { confirm.hidden = false; return; }
+      set(!state.enabled);
+    });
+    ok.addEventListener("click", () => { confirm.hidden = true; set(false); });
+    cancel.addEventListener("click", () => { confirm.hidden = true; });
+    paint();
+    const selfNote = view.is_self ? h(doc, "p", { class: "small muted", "data-testid": "resolver-self-note" },
+      `This is a self project: it needs its own switch: hands ${o.name || "<project>"} resolver on --self`) : null;
+    return h(doc, "section", { class: "modelsblock", "data-testid": "resolver-block" },
+      h(doc, "h2", {}, "Auto-resolve escalations"), h(doc, "div", { class: "row" }, toggle, text),
+      selfNote, pending, confirm, error,
+      h(doc, "p", { class: "small muted" }, `Runs today: ${view.runs_today || 0} of ${view.daily_cap || 0}`),
+      resolverHistory(doc, view.history));
+  }
+
+  const api = { resolverEntryText, resolverPendingText, resolverBadge, resolverBlock, modelsChanged, modelsPending, modelsBlock, MODEL_ROLES, DESIGN_CHIPS, selectionBody, hasPick, tweaksComplete, shotUrl, designPanel, FRAMEWORK_LABELS, LIBS, MAX_STYLE_URLS, MAX_URL, REF_STATUSES, SETUP_STATUSES, PLAN_STATUSES,
     validateStyleUrl, styleUrlsFromForm, reasonText, frameworkLabel, mockFromQuery, mockToolUsage, mockSessions,
     planStatus, planChatLabel, shortSha, toolUsageParts, visibleSessions,
     CREATE_PLAN_LABEL, CREATE_PLAN_HINT, shouldOpenPlanChat,

@@ -280,3 +280,16 @@ test("modelsPending is true only for a row the server marks pending", () => {
   assert.equal(nf.modelsPending({ role: "coder" }), false);
   assert.equal(nf.modelsPending(null), false);
 });
+
+test("resolverEntryText joins time, step, cause, action, executed yes/no and the reason", () => {
+  const e = { at: 1700000000, step: "S02", cause: "same_failure", action: "hint_and_retry", executed: true, reason: "try again" };
+  assert.equal(nf.resolverEntryText(e), "2023-11-14 22:13 UTC · S02 · same_failure · hint_and_retry · executed: yes · try again");
+  assert.match(nf.resolverEntryText({ ...e, executed: false, action: "" }), /executed: no/);
+  assert.match(nf.resolverEntryText({ at: "x", executed: false, valid: false, problem: "bad nonce" }), /bad nonce$/);
+  assert.equal(nf.resolverEntryText(null), "");
+});
+
+test("resolverPendingText names the retry time, empty without a pending retry", () => {
+  assert.equal(nf.resolverPendingText(null), "");
+  assert.equal(nf.resolverPendingText({ step: "S02", resume_at: 1700000000 }), "Retry scheduled for 2023-11-14 22:13 UTC (S02)");
+});

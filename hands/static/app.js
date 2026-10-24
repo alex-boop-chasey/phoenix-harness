@@ -463,6 +463,7 @@ function statusSection(d) {
       el("span", { class: `dot ${d.alive ? "live" : ""}`, "aria-hidden": "true" }),
       el("span", { class: "muted" }, d.alive ? "runner alive" : "runner not running"),
       d.stop ? el("span", { class: "badge s-stopped" }, "STOP requested") : null,
+      hands.nextform.resolverBadge(document, !!(d.resolver && d.resolver.enabled)),
       el("span", { class: "grow" }),
       el("span", { class: "muted small" }, `${d.passed}/${total} steps`)),
     el("span", { class: "bar", role: "progressbar", "aria-valuenow": String(pct), "aria-valuemin": "0", "aria-valuemax": "100", "aria-label": "steps passed" }, fill),
@@ -1332,6 +1333,33 @@ async function loadModels(name) {
   }
   modelsPanel.loading = false;
 }
+// ---- auto-resolve block (project tab): rebuilt only when the server's view changes
+let resolverPanel = { name: null, node: null, key: "", loading: false };
+async function loadResolver(name) {
+  if (resolverPanel.loading) return;
+  resolverPanel.loading = true;
+  const path = `/api/p/${encodeURIComponent(name)}/resolver`;
+  try {
+    const view = await api(path);
+    const key = JSON.stringify(view);
+    if (resolverPanel.name === name && resolverPanel.key !== key) {
+      resolverPanel.key = key;
+      resolverPanel.node.replaceChildren(hands.nextform.resolverBlock(document, view, {
+        name, path, send: designSend, onDone: () => { loadResolver(name); refresh(false); },
+      }));
+    }
+  } catch (e) {
+    if (resolverPanel.name === name) resolverPanel.node.replaceChildren(el("p", { class: "reason" }, `Auto-resolve unavailable: ${e.message}`));
+  }
+  resolverPanel.loading = false;
+}
+function resolverNode(name) {
+  if (resolverPanel.name !== name) {
+    resolverPanel = { name, node: el("section", { "data-key": `resolver:${name}`, "data-self-managed": "" }, el("p", { class: "muted" }, "Loading…")), key: "", loading: false };
+  }
+  loadResolver(name);
+  return keep(resolverPanel.node, `resolver:${name}`);
+}
 function modelsNode(name, d) {
   if (modelsPanel.name !== name) {
     modelsPanel = { name, node: el("section", { "data-key": `models:${name}`, "data-self-managed": "" }, el("p", { class: "muted" }, "Loading…")), key: "", loading: false };
@@ -1396,6 +1424,7 @@ function render(name, d, log) {
       styleRefsHint(d.next)) : null,
     showSetup ? panel(name, "setup", "Setup", d, setupSection(d)) : null,
     panel(name, "models", "Models", d, modelsNode(name, d)),
+    panel(name, "resolver", "Auto-resolve escalations", d, resolverNode(name)),
     panel(name, "env", "Environment", d, envSection(name)),
     panel(name, "steps", "Steps", d, stepsSection(d), `${d.passed}/${d.steps.length} passed${failed ? ` · ${failed} failed` : ""}`),
     panel(name, "metrics", "Sessions", d, metricsSection(d), `${d.total_sessions} · ~$${d.total_cost_usd}`),

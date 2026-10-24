@@ -59,6 +59,7 @@ from . import designfiles
 from . import designloop
 from . import gitops
 from . import models
+from . import resolver
 from . import publicaccess
 from . import rounds
 from . import sessions
@@ -549,6 +550,35 @@ def models_post(name: str, req: dict) -> dict:
     return {"ok": True, "output": out[-500:]}
 
 
+def resolver_view(name: str) -> dict:
+    cfg = load_cfg(name)
+    sd = cfg.state_dir
+    st = read_json(sd / "state.json", {})
+    s = resolver.settings(sd)
+    rows = resolver._jsonl(sd / "resolver.jsonl")
+    day = [x for x in rows if isinstance(x.get("at"), (int, float)) and x["at"] > time.time() - 86400]
+    pend = st.get("resolver_pending") if st.get("status") == "paused_resolver" else None
+    keys = ("at", "step", "cause", "action", "valid", "executed", "problem", "reason", "note", "root_command")
+    history = [{k: x.get(k, "" if k not in ("at", "valid", "executed") else None) for k in keys} for x in rows[-50:][::-1]]
+    return {"enabled": s["enabled"], "self_enabled": s["self_enabled"], "is_self": bool(cfg.is_self),
+            "daily_cap": s["daily_cap"], "runs_today": len(day),
+            "pending": pend if isinstance(pend, dict) else None, "history": history}
+
+
+def resolver_post(name: str, req: dict) -> dict:
+    """`hands <p> resolver on|off`; the switch for a self project stays a CLI decision (`on --self`)."""
+    cfg = load_cfg(name)
+    if not isinstance(req.get("enabled"), bool):
+        raise ValueError("enabled must be true or false")
+    env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
+    env["PYTHONPATH"] = str(cfgmod.RUNNER_HOME)
+    p = subprocess.run(hands_argv(cfg.name, "resolver", "on" if req["enabled"] else "off"), capture_output=True, text=True,
+                       timeout=60, env=env, stdin=subprocess.DEVNULL)
+    if p.returncode != 0:
+        raise ValueError((p.stdout + p.stderr).strip()[-500:] or "resolver failed")
+    return {"ok": True}
+
+
 def design_files_view(cfg) -> dict:
     try:
         return uploads.listing(cfg)
@@ -572,6 +602,7 @@ def detail(name: str) -> dict:
         "round": st.get("round") if isinstance(st.get("round"), dict) else None,
         "version": version(cfg),
         "design_files": design_files_view(cfg),
+        "resolver": {"enabled": resolver.settings(sd)["enabled"]},
     })
     sst = st.get("steps") or {}
     steps, spec_err, spec_commit = [], None, ""
@@ -1540,6 +1571,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, design_shot(load_cfg(name).state_dir, rest[2], rest[3]), "image/png")
             if rest == ["models"]:
                 return self._json(200, models_view(name))
+            if rest == ["resolver"]:
+                return self._json(200, resolver_view(name))
             if rest == ["design-files"]:
                 return self._json(200, uploads.listing(load_cfg(name)))
             if len(rest) == 3 and rest[0] == "design-files" and rest[2] == "thumb":
@@ -1577,6 +1610,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(409, {"error": "stale"})
         if len(parts) == 4 and parts[:2] == ["api", "p"] and parts[3] == "models":
             return self._json(200, models_post(parts[2], _json_body(body)))
+        if len(parts) == 4 and parts[:2] == ["api", "p"] and parts[3] == "resolver":
+            return self._json(200, resolver_post(parts[2], _json_body(body)))
         if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "design-files" and parts[4] in (
                 "remove", "edit", "group"):
             return self._json(200, design_files_action(parts[2], parts[4], _json_body(body)))

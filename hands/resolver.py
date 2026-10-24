@@ -299,7 +299,9 @@ def execute(state: dict, step: str, cause: str, decision: dict, now: float) -> d
 def record_run(state_dir, at: float, step: str, cause: str, decision: dict, executed: bool) -> None:
     _append(Path(state_dir) / "resolver.jsonl", {
         "at": at, "step": step, "cause": cause, "action": decision.get("action", ""),
-        "valid": decision.get("valid") is True, "executed": executed, "problem": decision.get("problem", "")})
+        "valid": decision.get("valid") is True, "executed": executed, "problem": decision.get("problem", ""),
+        "reason": str(decision.get("reason", ""))[:500], "note": str(decision.get("note", ""))[:4000],
+        "root_command": str(decision.get("root_command", ""))[:400]})
 
 
 # ------------------------------------------------------------------ briefing

@@ -497,3 +497,8 @@ select.input { width: auto; max-width: 100%; }
   .modelrow { grid-template-columns: 1fr; }
   .modelrow .small { grid-column: 1; }
 }
+
+/* Auto-resolve block (project tab) */
+.resolverlist { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.resolverentry { overflow-wrap: anywhere; border-bottom: 1px solid var(--line, currentColor); padding-bottom: 8px; }
+.modelsblock button[role=switch] { min-width: 64px; }
