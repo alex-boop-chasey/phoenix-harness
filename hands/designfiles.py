@@ -31,6 +31,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 import zlib
 from pathlib import Path
+from secrets import token_hex
 
 from .projectenv import Redactor
 
@@ -792,6 +793,142 @@ def group(store, ids: list[str], note: str = "") -> dict:
     return entry
 
 
+# ------------------------------------------------------------------ sanitizer container and upload pipeline
+SANITIZE_TIMEOUT_S = 120
+STATUS_KEEP_S = 7 * 86400
+CHUNK = 65536
+
+
+def _host_path(p) -> str:
+    s = os.path.abspath(str(p))
+    if ":" in s or "," in s:
+        raise ValueError(f"host path with ':' or ',' cannot be bind-mounted: {s}")
+    return s
+
+
+def plan_sanitize(stage, capture_dir, image: str = "hands") -> dict:
+    stage_dir, cap = _host_path(stage), _host_path(capture_dir)
+    argv = [
+        "docker", "run", "--rm",
+        "--network", "none",
+        "--read-only", "--tmpfs", "/tmp",
+        "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges",
+        "--memory", "1g", "--pids-limit", "512",
+        "-e", "HOME=/tmp",
+        "-e", "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright",
+        "-v", f"{stage_dir}/raw:/in:ro",
+        "-v", f"{stage_dir}/clean:/out:rw",
+        "-v", f"{cap}:/capture:ro",
+        "--entrypoint", "node",
+        image,
+        "/capture/sanitize-media.mjs", "--in-dir", "/in", "--out-dir", "/out",
+    ]
+    return {"argv": argv, "timeout_s": SANITIZE_TIMEOUT_S}
+
+
+def docker_launcher(docker: str = "docker"):
+    """Launcher that runs a plan_sanitize request with argv[0] replaced; returns the exit code (124 on timeout)."""
+    import subprocess
+
+    def launch(req: dict, stage) -> int:
+        try:
+            return subprocess.run([docker, *req["argv"][1:]], stdin=subprocess.DEVNULL, capture_output=True,
+                                  timeout=req["timeout_s"]).returncode
+        except subprocess.TimeoutExpired:
+            return 124
+    return launch
+
+
+def _write_json(path: Path, obj) -> None:
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(obj) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _set_status(upload_dir: Path, status: str, reason: str = "") -> dict:
+    st = {"status": status, "reason": reason, "id": upload_dir.name}
+    _write_json(upload_dir / "status.json", st)
+    return st
+
+
+def _prune_inbox(inbox: Path, now: float) -> None:
+    for d in inbox.iterdir():
+        try:
+            if d.is_dir() and now - (d / "status.json").stat().st_mtime > STATUS_KEEP_S:
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def receive(inbox, stream, name: str, kind: str, note: str, batch: str, size: int) -> str:
+    inbox = Path(inbox)
+    inbox.mkdir(parents=True, exist_ok=True)
+    _prune_inbox(inbox, time.time())
+    ident = f"u{int(time.time())}-{token_hex(3)}"
+    d = inbox / ident
+    d.mkdir()
+    try:
+        total = 0
+        with open(d / "raw", "wb") as out:
+            while True:
+                buf = stream.read(CHUNK)
+                if not buf:
+                    break
+                total += len(buf)
+                if total > size:
+                    break
+                out.write(buf)
+        if total != size:
+            raise ValueError(f"upload is {total} bytes, expected {size}")
+        _write_json(d / "upload.json", {"name": name, "kind": kind, "note": note or "", "batch": batch,
+                                        "size": size, "received_at": _now(None)})
+        _set_status(d, "queued")
+    except BaseException:
+        shutil.rmtree(d, ignore_errors=True)
+        raise
+    return ident
+
+
+def _sanitizer_reason(stage: Path, code: int) -> str:
+    try:
+        errs = json.loads((stage / "clean" / "errors.json").read_text(encoding="utf-8"))
+        if code == 3 and errs:
+            return "image could not be decoded"
+    except (OSError, ValueError):
+        pass
+    return "image could not be decoded" if code == 3 else f"sanitizer failed (exit {code})"
+
+
+def process_upload(upload_dir, store, thumbs, capture_dir, secrets=None, caps=None, launcher=None,
+                   base_index=None) -> dict:
+    d = Path(upload_dir)
+    stage = d / "stage"
+    launcher = launcher or docker_launcher()
+    result: dict
+    try:
+        up = json.loads((d / "upload.json").read_text(encoding="utf-8"))
+        _set_status(d, "processing")
+        prepare(d / "raw", up["name"], up["kind"], up.get("note", ""), stage, secrets, caps)
+        if any((stage / "raw").iterdir()):
+            clean = stage / "clean"
+            clean.mkdir(exist_ok=True)
+            clean.chmod(0o777)
+            code = launcher(plan_sanitize(stage, capture_dir), stage)
+            if code != 0:
+                raise Refused(_sanitizer_reason(stage, code))
+        entry = ingest(store, stage, thumbs, base_index=base_index)
+        result = {**_set_status(d, "ready"), "design_id": entry["id"], "entry": entry}
+    except Refused as exc:
+        result = _set_status(d, "refused", str(exc))
+    except (OSError, ValueError, KeyError) as exc:
+        result = _set_status(d, "refused", f"processing failed ({type(exc).__name__})")
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+        (d / "raw").unlink(missing_ok=True)
+    return result
+
+
 # ------------------------------------------------------------------ CLI
 def _emit(obj) -> None:
     print(json.dumps(obj))
@@ -826,6 +963,11 @@ def main(argv: list[str] | None = None) -> int:
     cmd("list", "--store").set_defaults(required=("store",))
     cmd("metadata", "--file").set_defaults(required=("file",))
     cmd("clean-png", "--in", "--out", flags=()).set_defaults(required=("in", "out"))
+    cmd("plan-sanitize", "--stage", "--capture-dir", "--image").set_defaults(required=("stage", "capture_dir"))
+    cmd("receive", "--inbox", "--name", "--kind", "--note", "--batch", "--size").set_defaults(
+        required=("inbox", "name", "kind", "batch", "size"))
+    cmd("process", "--upload", "--store", "--thumbs", "--capture-dir", "--secrets", "--docker",
+        "--base-index").set_defaults(required=("upload", "store", "thumbs", "capture_dir"))
     a = ap.parse_args(argv)
     for r in getattr(a, "required", ()):
         if getattr(a, r) is None:
@@ -859,6 +1001,15 @@ def main(argv: list[str] | None = None) -> int:
             _emit({"markers": markers}) if as_json else [print(m) for m in markers]
         elif a.cmd == "clean-png":
             Path(a.out).write_bytes(clean_png(Path(getattr(a, "in")).read_bytes()))
+        elif a.cmd == "plan-sanitize":
+            _emit(plan_sanitize(a.stage, a.capture_dir, a.image or "hands"))
+        elif a.cmd == "receive":
+            _emit({"id": receive(a.inbox, sys.stdin.buffer, a.name, a.kind, a.note or "", a.batch, int(a.size))})
+        elif a.cmd == "process":
+            res = process_upload(a.upload, a.store, a.thumbs, a.capture_dir, load_secrets(a.secrets),
+                                 launcher=docker_launcher(a.docker or "docker"), base_index=a.base_index)
+            _emit({k: v for k, v in res.items() if k != "entry"})
+            return 0 if res["status"] == "ready" else 1
     except Refused as exc:
         if as_json:
             print(json.dumps({"ok": False, "reason": str(exc)}))

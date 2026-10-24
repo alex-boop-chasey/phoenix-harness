@@ -1,6 +1,9 @@
 """hands.designfiles: checks, SVG/ZIP/video rules and the refs/design store."""
 import io
 import json
+import os
+import shutil
+import time
 import struct
 import tempfile
 import unittest
@@ -174,3 +177,78 @@ class TestPngAndStore(Base):
         self.assertEqual([e["id"] for e in df.load_index(store)["files"]], ["d004"])
         with self.assertRaises(df.Refused):
             df.edit(store, "d004", kind="bogus")
+
+
+class SanitizeBase(Base):
+    def make_upload(self, name="a.jpg", src="photo-exif.jpg", kind="screenshot"):
+        data = (FX / src).read_bytes()
+        inbox = self.dir / "inbox"
+        uid = df.receive(inbox, io.BytesIO(data), name, kind, "n", "b1", len(data))
+        return inbox / uid, data
+
+
+class TestSanitizePlan(Base):
+    def test_plan_sanitize_argv(self):
+        stage, cap = self.dir / "stage", self.dir / "capture"
+        req = df.plan_sanitize(stage, cap)
+        argv = req["argv"]
+        self.assertEqual(argv[:2], ["docker", "run"])
+        s = " ".join(argv)
+        for want in ("--network none", "--cap-drop ALL", "no-new-privileges", "--entrypoint node",
+                     f"{stage}/raw:/in:ro", f"{stage}/clean:/out:rw", f"{cap}:/capture:ro", "HOME=/tmp"):
+            self.assertIn(want, s)
+        self.assertIn("--read-only", argv)
+        self.assertNotIn("--env-file", argv)
+        self.assertEqual(argv[-5:], ["/capture/sanitize-media.mjs", "--in-dir", "/in", "--out-dir", "/out"])
+        self.assertEqual(req["timeout_s"], 120)
+
+
+class TestReceiveProcess(SanitizeBase):
+    def test_receive_writes_entry(self):
+        d, data = self.make_upload()
+        self.assertEqual((d / "raw").read_bytes(), data)
+        self.assertEqual(json.loads((d / "status.json").read_text())["status"], "queued")
+        up = json.loads((d / "upload.json").read_text())
+        self.assertEqual((up["name"], up["kind"], up["batch"], up["size"]), ("a.jpg", "screenshot", "b1", len(data)))
+        self.assertRegex(d.name, r"^u\d+-[0-9a-f]{6}$")
+
+    def test_receive_size_mismatch_cleans_up(self):
+        inbox = self.dir / "inbox"
+        with self.assertRaises(ValueError):
+            df.receive(inbox, io.BytesIO(b"abc"), "a.txt", "avoid", "", "b", 10)
+        self.assertEqual(list(inbox.iterdir()), [])
+
+    def test_receive_prunes_old_status(self):
+        d, _ = self.make_upload()
+        old = time.time() - 8 * 86400
+        os.utime(d / "status.json", (old, old))
+        self.make_upload()
+        self.assertFalse(d.exists())
+
+    def run_process(self, d, launcher):
+        return df.process_upload(d, self.dir / "store", self.dir / "thumbs", self.dir / "cap", launcher=launcher)
+
+    def test_process_with_fake_launcher(self):
+        d, _ = self.make_upload()
+        seen = []
+
+        def launcher(req, stage):
+            seen.append(json.loads((d / "status.json").read_text())["status"])
+            shutil.copytree(stage / "raw", stage / "clean", dirs_exist_ok=True)
+            shutil.copyfile(FX / "clean.jpg", stage / "clean" / "a.jpg")
+            return 0
+        res = self.run_process(d, launcher)
+        self.assertEqual(res["status"], "ready")
+        self.assertEqual(seen, ["processing"])
+        self.assertTrue((self.dir / "store" / res["entry"]["file"]).is_file())
+        self.assertFalse((d / "raw").exists())
+        self.assertFalse((d / "stage").exists())
+        self.assertEqual(json.loads((d / "status.json").read_text())["status"], "ready")
+
+    def test_process_refused_status(self):
+        d, _ = self.make_upload()
+        res = self.run_process(d, lambda req, stage: 3)
+        self.assertEqual(res["status"], "refused")
+        self.assertTrue(res["reason"])
+        self.assertFalse((d / "raw").exists())
+        self.assertEqual(json.loads((d / "status.json").read_text())["status"], "refused")
