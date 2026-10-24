@@ -265,3 +265,18 @@ test("shotUrl builds the PNG route from project, step and file and refuses anyth
   assert.equal(nf.shotUrl("demo", "S01", "x.html"), "");
   assert.equal(nf.shotUrl("demo", "S/1", "a-desktop.png"), "");
 });
+
+test("modelsChanged lists the roles whose model or effort differ, in role order", () => {
+  const before = { planner: { model: "a", effort: "" }, coder: { model: "a", effort: "" }, evaluator: { model: "a", effort: "high" }, fallback: { model: "a", effort: "" } };
+  const after = { fallback: { model: "b", effort: "" }, evaluator: { model: "a", effort: "max" }, coder: { model: "a", effort: "" }, planner: { model: "a", effort: "" } };
+  assert.deepEqual(nf.modelsChanged(before, after), ["evaluator", "fallback"]);
+  assert.deepEqual(nf.modelsChanged(before, before), []);
+  assert.deepEqual(nf.modelsChanged(before, { coder: { model: "a" } }), []);
+});
+
+test("modelsPending is true only for a row the server marks pending", () => {
+  assert.equal(nf.modelsPending({ role: "coder", pending: true }), true);
+  assert.equal(nf.modelsPending({ role: "coder", pending: false }), false);
+  assert.equal(nf.modelsPending({ role: "coder" }), false);
+  assert.equal(nf.modelsPending(null), false);
+});

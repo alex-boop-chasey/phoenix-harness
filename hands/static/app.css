@@ -484,3 +484,16 @@ select.input { width: auto; max-width: 100%; }
 @media (min-width: 600px) {
   .directioncards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Models block (project tab) */
+.modelsblock { display: grid; gap: var(--sp-3, 16px); max-width: 900px; }
+.modelrow { display: grid; grid-template-columns: 7rem minmax(12rem, 1fr) 9rem auto; gap: 8px; align-items: center; }
+.modelrow .small { grid-column: 2 / -1; }
+.modelrow select, .modelsblock .btn, .modelsconfirm input[type=checkbox] { min-height: 44px; }
+.modelsconfirm input[type=checkbox] { min-width: 44px; }
+.modelsconfirm { border: 1px solid var(--line, currentColor); border-radius: 8px; padding: 12px; }
+.modelsconfirm[hidden], .modelsblock [hidden] { display: none; }
+@media (max-width: 599px) {
+  .modelrow { grid-template-columns: 1fr; }
+  .modelrow .small { grid-column: 1; }
+}

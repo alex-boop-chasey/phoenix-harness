@@ -671,7 +671,108 @@
       slot, view.approved ? null : foot);
   }
 
-  const api = { DESIGN_CHIPS, selectionBody, hasPick, tweaksComplete, shotUrl, designPanel, FRAMEWORK_LABELS, LIBS, MAX_STYLE_URLS, MAX_URL, REF_STATUSES, SETUP_STATUSES, PLAN_STATUSES,
+  // ---- Models block (project tab): one row per role, selects limited to the server's allowlist, no free text.
+  const MODEL_ROLES = ["planner", "coder", "evaluator", "subagents", "resolver", "fallback"];
+
+  // Roles (in MODEL_ROLES order) whose model or effort differ between two {role: {model, effort}} maps.
+  function modelsChanged(before, after) {
+    const b = before || {}, a = after || {};
+    return MODEL_ROLES.filter((r) => a[r] && b[r] && (a[r].model !== b[r].model || (a[r].effort || "") !== (b[r].effort || "")));
+  }
+
+  // A row of GET /api/p/<n>/models: the saved choice differs from the model of the session now running.
+  function modelsPending(row) {
+    return !!(row && row.pending === true);
+  }
+
+  // view: the GET /api/p/<n>/models body. opts: {send(path, body) -> {status, body}, path, clearOverride(), onDone()}.
+  // The block owns its form state, so the caller builds it once per view and keeps it across patches.
+  function modelsBlock(doc, view, opts) {
+    const o = opts || {};
+    const rows = view.roles || [];
+    const notes = Object.fromEntries((view.allowlist || []).map((m) => [m.id, m.note]));
+    const cost = (n) => `$${(typeof n === "number" ? n : 0).toFixed(2)}`;
+    const before = Object.fromEntries(rows.map((r) => [r.role, { model: r.model, effort: r.effort || "" }]));
+    const fields = {};
+    const rowNodes = rows.map((r) => {
+      const model = h(doc, "select", { "data-testid": "model-select", "aria-label": `${r.role} model` },
+        (view.allowlist || []).map((m) => h(doc, "option", { value: m.id }, m.id)));
+      model.value = r.model;
+      const note = h(doc, "span", { class: "small muted", "data-testid": "model-note" }, r.note || notes[r.model] || "");
+      model.addEventListener("change", () => { note.textContent = notes[model.value] || ""; });
+      let effort = null;
+      if ((view.effort_roles || []).includes(r.role)) {
+        effort = h(doc, "select", { "data-testid": "effort-select", "aria-label": `${r.role} effort` },
+          ["", ...(view.efforts || [])].map((e) => h(doc, "option", { value: e }, e || "default effort")));
+        effort.value = r.effort || "";
+      }
+      fields[r.role] = { model, effort, override: !!r.override };
+      return h(doc, "div", { class: "modelrow", "data-testid": "model-row", "data-role": r.role },
+        h(doc, "strong", { class: "modelrole" }, r.role), model, effort,
+        h(doc, "span", { class: "badge", "data-testid": "model-source" }, r.source), note);
+    });
+    const overridden = rows.filter((r) => r.override);
+    const badge = overridden.length ? h(doc, "div", { class: "row" },
+      h(doc, "span", { class: "badge s-stopped", "data-testid": "model-override-badge" },
+        `Auto-override: ${overridden.map((r) => `${r.role} → ${r.model}`).join(", ")}`),
+      h(doc, "button", { class: "btn sm", type: "button", "data-testid": "models-clear-override",
+        on: { click: () => { if (o.clearOverride) o.clearOverride(); } } }, "Clear override")) : null;
+    const pending = view.alive && rows.some(modelsPending)
+      ? h(doc, "p", { class: "small muted", "data-testid": "models-pending" }, "Pending: applies at next session") : null;
+    const error = h(doc, "p", { class: "reason", role: "alert", "data-testid": "models-error" });
+    error.hidden = true;
+    const msg = h(doc, "p", { class: "small muted", role: "status" });
+    const clearBox = h(doc, "input", { type: "checkbox", "data-testid": "models-clear-confirm", id: "models-clear-confirm" });
+    const confirmOk = h(doc, "button", { class: "btn sm primary", type: "button", "data-testid": "models-confirm-ok" }, "Save");
+    const confirmCancel = h(doc, "button", { class: "btn sm", type: "button" }, "Cancel");
+    const confirm = h(doc, "div", { class: "modelsconfirm", role: "dialog", "aria-label": "Active override", "data-testid": "models-confirm" },
+      h(doc, "p", {}, "A role you changed has an active auto-override. It is kept unless you clear it."),
+      h(doc, "label", { class: "row", for: "models-clear-confirm" }, clearBox, " Also clear the override"),
+      h(doc, "div", { class: "row" }, confirmOk, confirmCancel));
+    confirm.hidden = true;
+    const save = h(doc, "button", { class: "btn primary", type: "button", "data-testid": "models-save" }, "Save models");
+    let busy = false;
+    const current = () => Object.fromEntries(rows.map((r) => [r.role, { model: fields[r.role].model.value, effort: fields[r.role].effort ? fields[r.role].effort.value : "" }]));
+    async function run(changed, clear) {
+      if (busy) return;
+      busy = true;
+      error.hidden = true;
+      msg.textContent = "";
+      try {
+        const now = current();
+        for (const role of changed) {
+          const body = { role, model: now[role].model, effort: now[role].effort, clear_override: clear && fields[role].override };
+          const r = await o.send(o.path, body);
+          if (r.status !== 200) { error.textContent = (r.body && r.body.error) || `failed (${r.status})`; error.hidden = false; return; }
+        }
+        msg.textContent = "Saved. Applies at next session.";
+        if (o.onDone) o.onDone();
+      } catch (e) {
+        error.textContent = `failed (${e.message})`;
+        error.hidden = false;
+      } finally {
+        busy = false;
+      }
+    }
+    save.addEventListener("click", () => {
+      const changed = modelsChanged(before, current());
+      if (!changed.length) { msg.textContent = "No changes."; return; }
+      if (changed.some((r) => fields[r].override)) { clearBox.checked = false; confirm.hidden = false; return; }
+      run(changed, false);
+    });
+    confirmCancel.addEventListener("click", () => { confirm.hidden = true; });
+    confirmOk.addEventListener("click", () => { confirm.hidden = true; run(modelsChanged(before, current()), clearBox.checked); });
+    const usage = view.usage || [];
+    const table = usage.length ? h(doc, "table", { "data-testid": "models-usage" },
+      h(doc, "thead", {}, h(doc, "tr", {}, ["Model", "Sessions", "Cost"].map((t) => h(doc, "th", {}, t)))),
+      h(doc, "tbody", {}, usage.map((u) => h(doc, "tr", { "data-testid": "models-usage-row" },
+        h(doc, "td", {}, u.model), h(doc, "td", { class: "num" }, String(u.sessions)), h(doc, "td", { class: "num" }, cost(u.cost_usd)))))) : null;
+    return h(doc, "section", { class: "modelsblock", "data-testid": "models-block" },
+      h(doc, "h2", {}, "Models"), pending, badge, rowNodes, h(doc, "div", { class: "row" }, save), confirm, error, msg,
+      h(doc, "h3", {}, "Sessions and cost per model"), table || h(doc, "p", { class: "small muted" }, "No sessions yet."));
+  }
+
+  const api = { modelsChanged, modelsPending, modelsBlock, MODEL_ROLES, DESIGN_CHIPS, selectionBody, hasPick, tweaksComplete, shotUrl, designPanel, FRAMEWORK_LABELS, LIBS, MAX_STYLE_URLS, MAX_URL, REF_STATUSES, SETUP_STATUSES, PLAN_STATUSES,
     validateStyleUrl, styleUrlsFromForm, reasonText, frameworkLabel, mockFromQuery, mockToolUsage, mockSessions,
     planStatus, planChatLabel, shortSha, toolUsageParts, visibleSessions,
     CREATE_PLAN_LABEL, CREATE_PLAN_HINT, shouldOpenPlanChat,

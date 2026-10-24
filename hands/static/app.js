@@ -1310,11 +1310,41 @@ function designNode(name, d) {
   return keep(designGate.node, `design:${name}`);
 }
 
+// ---- models block (project tab): nextform.modelsBlock owns its form state; it is rebuilt only when the server's
+// view changes, so a patch never wipes a half-made choice
+let modelsPanel = { name: null, node: null, key: "", loading: false };
+async function loadModels(name) {
+  if (modelsPanel.loading) return;
+  modelsPanel.loading = true;
+  const path = `/api/p/${encodeURIComponent(name)}/models`;
+  try {
+    const view = await api(path);
+    const key = JSON.stringify(view);
+    if (modelsPanel.name === name && modelsPanel.key !== key) {
+      modelsPanel.key = key;
+      modelsPanel.node.replaceChildren(hands.nextform.modelsBlock(document, view, {
+        path, send: designSend, onDone: () => loadModels(name),
+        clearOverride: () => action(name, "ack-clear-model", "Clear override").then(() => loadModels(name)),
+      }));
+    }
+  } catch (e) {
+    if (modelsPanel.name === name) modelsPanel.node.replaceChildren(el("p", { class: "reason" }, `Models unavailable: ${e.message}`));
+  }
+  modelsPanel.loading = false;
+}
+function modelsNode(name, d) {
+  if (modelsPanel.name !== name) {
+    modelsPanel = { name, node: el("section", { "data-key": `models:${name}`, "data-self-managed": "" }, el("p", { class: "muted" }, "Loading…")), key: "", loading: false };
+  }
+  loadModels(name);
+  return keep(modelsPanel.node, `models:${name}`);
+}
+
 const PANEL_DEFAULTS = {
   plan: (d) => ["ready", "planning", "failed"].includes((d.plan && d.plan.state) || "") || !!(d.plan && d.plan.running),
   rounds: (d) => !!(d.round && d.round.record && d.round.record.status !== "merged"),
   setup: (d) => !(d.setup && d.setup.spec_ready),
-  env: () => false, steps: () => true, metrics: () => false, log: (d) => !!d.alive, attempts: () => false,
+  env: () => false, models: () => false, steps: () => true, metrics: () => false, log: (d) => !!d.alive, attempts: () => false,
   progress: () => false, viewer: () => false, create: () => true,
   planchat: (d) => !!(d.next && d.next.plan_session && ["open", "brief_ready"].includes(d.next.plan_session.status)),
   design: () => true,
@@ -1365,6 +1395,7 @@ function render(name, d, log) {
     d.next && !d.next.error ? panel(name, "stylerefs", "Style refs & setup", d, hands.nextform.styleRefsPanel(document, d.next, addRefsNode(name)),
       styleRefsHint(d.next)) : null,
     showSetup ? panel(name, "setup", "Setup", d, setupSection(d)) : null,
+    panel(name, "models", "Models", d, modelsNode(name, d)),
     panel(name, "env", "Environment", d, envSection(name)),
     panel(name, "steps", "Steps", d, stepsSection(d), `${d.passed}/${d.steps.length} passed${failed ? ` · ${failed} failed` : ""}`),
     panel(name, "metrics", "Sessions", d, metricsSection(d), `${d.total_sessions} · ~$${d.total_cost_usd}`),

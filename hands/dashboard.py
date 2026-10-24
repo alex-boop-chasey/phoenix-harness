@@ -58,6 +58,7 @@ from . import config as cfgmod
 from . import designfiles
 from . import designloop
 from . import gitops
+from . import models
 from . import publicaccess
 from . import rounds
 from . import sessions
@@ -510,6 +511,42 @@ def design_action(name: str, verb: str, req: dict) -> dict:
         raise ValueError(str(e))
     started = run_action(name, "start")
     return {"ok": True, "started": started.get("rc") == 0}
+
+
+def models_view(name: str) -> dict:
+    cfg = load_cfg(name)
+    sd = cfg.state_dir
+    st = read_json(sd / "state.json", {})
+    alive = Lock.held(sd / "runner.lock")
+    running = (st.get("current") or {}).get("models") or {}
+    eff = models.effective_all(models.toml_values(cfg), models.load_manual(models.models_file(cfg)), st, time.time())
+    roles = [{"role": r, "model": e["model"], "effort": e["effort"], "source": e["source"], "note": e["note"],
+              "override": e["override"], "pending": bool(alive and r in running and running[r] != e["model"])}
+             for r, e in eff.items()]
+    lines = read_file(sd / "metrics.jsonl", MAX_LOG_BYTES, tail=True)[0].splitlines() if (sd / "metrics.jsonl").is_file() else []
+    return {"roles": roles, "allowlist": [{"id": m, "note": n} for m, n in models.ALLOWLIST.items()],
+            "efforts": list(models.EFFORTS), "effort_roles": list(models.EFFORT_ROLES),
+            "usage": models.usage(lines), "alive": alive}
+
+
+def models_post(name: str, req: dict) -> dict:
+    """Validate against the allowlist first (no free text reaches argv), then `hands <p> models set`, which probes."""
+    cfg = load_cfg(name)
+    role, model, effort = (req.get(k) if isinstance(req.get(k), str) else "" for k in ("role", "model", "effort"))
+    models.validate(role, model, effort)
+    argv = ["models", "set", role, model] + (["--effort", effort] if effort else []) \
+        + (["--clear-override"] if req.get("clear_override") is True else [])
+    env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
+    env["PYTHONPATH"] = str(cfgmod.RUNNER_HOME)
+    try:
+        p = subprocess.run(hands_argv(cfg.name, *argv), capture_output=True, text=True, timeout=120, env=env,
+                           stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        raise ValueError("timed out probing the model")
+    out = (p.stdout + p.stderr).strip()
+    if p.returncode != 0:
+        raise ValueError(out[-500:] or "models set failed")
+    return {"ok": True, "output": out[-500:]}
 
 
 def design_files_view(cfg) -> dict:
@@ -1501,6 +1538,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, design_view(name))
             if len(rest) == 4 and rest[0] == "design" and rest[1] == "shot":
                 return self._send(200, design_shot(load_cfg(name).state_dir, rest[2], rest[3]), "image/png")
+            if rest == ["models"]:
+                return self._json(200, models_view(name))
             if rest == ["design-files"]:
                 return self._json(200, uploads.listing(load_cfg(name)))
             if len(rest) == 3 and rest[0] == "design-files" and rest[2] == "thumb":
@@ -1536,6 +1575,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, design_action(parts[2], parts[4], _json_body(body)))
             except DesignStale:
                 return self._json(409, {"error": "stale"})
+        if len(parts) == 4 and parts[:2] == ["api", "p"] and parts[3] == "models":
+            return self._json(200, models_post(parts[2], _json_body(body)))
         if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "design-files" and parts[4] in (
                 "remove", "edit", "group"):
             return self._json(200, design_files_action(parts[2], parts[4], _json_body(body)))
