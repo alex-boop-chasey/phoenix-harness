@@ -411,7 +411,7 @@ class RunOrchestration(unittest.TestCase):
             for i, _ in enumerate(pkgs):
                 (out / f"{i}.json").write_text(json.dumps({"created": "2020-01-01T00:00:00.000Z",
                                                            "1.2.3": "2026-01-01T00:00:00.000Z",
-                                                           "9.0.0": "2026-10-21T00:00:00.000Z"}))
+                                                           "9.0.0": "2999-01-01T00:00:00.000Z"}))
             return 0
         if script.startswith("set -euo pipefail\ncd /workspace"):
             work = self._mount(r, "/workspace")
