@@ -332,7 +332,7 @@ def publish_time(name: str, version: str) -> float | None:
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
-            data = json.loads(r.read(60_000_000))
+            data = json.loads(r.read(600_000_000))
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
