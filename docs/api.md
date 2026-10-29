@@ -194,7 +194,8 @@ not cover existing code in: lib/" for imported repos), `plan_md` is the candidat
 request), `branch` (`hands/plan` or `hands/amend-C<round>`), `new_steps` (ids added), `tests_changed`
 (0.5.7: `[{"path": "acceptance/<file>", "change": "change"|"remove", "why"}]`, the steps.json
 `tests_changed` list the planner checked against the real diff; older string entries are normalised to
-`change`), `shared_changed` (`[{"key","old","new"}]` for
+`change`), `passed_tests_changed` (0.6.0: `[{"path","step","change","why"}]`, tests of steps that already passed
+the amendment changes; not repeated in `tests_changed`), `shared_changed` (`[{"key","old","new"}]` for
 setup/regression/e2e_command/allowed_paths/allow_text_paths/always_refs); each `step_list` entry carries
 `new: true|false`. The lists are `[]` when absent.
 
@@ -348,7 +349,9 @@ detached, log `state/plan/plan.log`. `200 {"rc": 0, "output": "plan started"}` (
 plan is waiting for review. `approve` of an amendment whose `shared_changed` is non-empty additionally
 requires `{"shared_ack": true}` (the review tick; 400 `"this amendment changes shared settings; …"` otherwise), one
 whose `tests_changed` is non-empty requires `{"tests_ack": true}` (0.5.7; 400 `"this amendment changes or removes
-existing tests; …"` otherwise, passed to the CLI as `--ack-tests`), and
+existing tests; …"` otherwise, passed to the CLI as `--ack-tests`), one whose `passed_tests_changed` is non-empty
+requires `{"passed_tests_ack": true}` (0.6.0; 400 `"this amendment changes tests of steps that already passed; …"`
+otherwise, passed to the CLI as `--ack-passed-tests`), and
 `approve` of a plan whose `domains` is non-empty requires `{"domains_ack": true}` (400 `"this plan adds network
 domains; …"`). The ticks are passed to the CLI as `--ack-shared` / `--ack-domains`, which enforces them too.
 

@@ -177,7 +177,12 @@ steps already built may not change (entry or owned acceptance files); new ids us
 prefix; every existing acceptance file you change or remove is declared in steps.json `tests_changed`
 (`[{"path": "acceptance/<file>", "change": "change"|"remove", "why": "..."}]`, matched exactly against the
 real diff; PLAN.md may summarise it for the human); existing pins stay. Shared settings may change only when
-the new steps need it. Built steps' entries and owned tests are immutable; docs may change in later rounds.
+the new steps need it. Built steps' entries are immutable; docs may change in later rounds. Built steps' owned
+tests are immutable too, except when such a test is itself wrong (not the code; e.g. a wall-clock limit that a
+growing suite will always break): then change (or remove, if the step's command does not name it) the file and
+list it in `tests_changed` with a why that says what is wrong with the test. The human approves that with a
+separate tick ("tests of steps that already passed"), so explain it in PLAN.md. Never use it to make failing
+code pass: fix the code in a new step.
 
 ## Output contract (exactly these files; anything else is discarded)
 1. `steps.json` — the machine spec (schema below).

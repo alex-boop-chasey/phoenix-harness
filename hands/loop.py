@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -511,8 +512,115 @@ class Runner:
             if not self.state.passed(s.id):
                 if s.type == "human":
                     self.escalate(f"HUMAN STEP {s.id}: {s.title}\n{s.goal}\nWhen done: hands {c.name} mark-done {s.id}")
+                if self.round_id and rounds.round_of(s.id) == self.round_id:
+                    self.baseline()
                 return s
         return None
+
+    def baseline(self) -> None:
+        """Change-round baseline (0.6.0): before the round's first new step is built, every passed code step's
+        acceptance runs once on the round's base commit (same plan order, containers and view rules as the per-step
+        regression run). A failure there is not the new step's fault, so it escalates before any coder starts.
+        The result goes into the round record; a passed one is reused until its key (base, commands, the passed
+        steps' spec_hash) changes. A failed one escalates, so it only runs again after `ack`."""
+        assert self.spec
+        c = self.cfg
+        rec = rounds.record(self.state.data)
+        if not rec or rec.get("status") != "open":
+            return
+        rnd = int(rec["id"])
+        if any(rounds.round_of(sid) == rnd and self.state.passed(sid) for sid in self.state.data["steps"]):
+            return                              # the round is under way: each step's regression run covers it
+        regs = self.regression_steps()
+        plan = prompts.baseline_plan(self.spec, regs)
+        base = str(rec.get("base_sha") or "")
+        hashes = {s.id: str(self.state.data["steps"][s.id].get("spec_hash") or "") for s in regs}
+        key = rounds.baseline_key(base, [cmd for cmd, _ in plan], hashes)
+        old = rec.get("baseline")
+        if isinstance(old, dict) and old.get("status") == "passed" and old.get("key") == key:
+            return
+        out = {"key": key, "base_sha": base, "spec_commit": self.spec.commit,
+               "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        if not regs:
+            rec["baseline"] = {**out, "status": "passed", "commands": 0}
+            self.state.save()
+            self.log(f"round C{rnd} baseline: no passed code steps to check")
+            return
+        adir = self.attempt_dir(f"baseline-C{rnd}", 1)
+        passed = {sid for sid in self.state.data["steps"] if self.state.passed(sid)}
+        self.acc_view = c.state_dir / "acc-view"
+        accview.build(self.spec, specmod.Step(id="", title="", goal="", acceptance=[]), passed, self.acc_view)
+        self.log(f"round C{rnd} baseline: {len(plan)} command(s) for {len(regs)} passed step(s) on base {base[:9]}")
+        report, failure = self._run_plan(plan, "", f"baseline-C{rnd}", f"baseline C{rnd}", base, adir)
+        out["logs"] = str(adir)
+        if not failure:
+            rec["baseline"] = {**out, "status": "passed", "commands": len(report)}
+            self.state.save()
+            self.log(f"round C{rnd} baseline passed: {len(report)} command(s) green on base {base[:9]}")
+            self.send(f"round C{rnd} baseline: {len(report)} check(s) of the passed steps pass on base {base[:9]}")
+            return
+        bad = report[-1]
+        owner, cmd, rc = str(bad["for"]), str(bad["cmd"]), int(bad["rc"])
+        files = self.passed_files_for(owner, cmd) if owner else []
+        rec["baseline"] = {**out, "status": "failed", "step": owner, "cmd": cmd, "files": files, "rc": rc}
+        self.state.save()
+        why = "timed out" if rc == 124 else f"exit {rc}"
+        tail = failure[1] if len(failure) > 1 else ""
+        if len(tail) > 3000:
+            tail = "last output (trimmed):\n..." + tail[-3000:]
+        if owner:
+            what = ", ".join(f"acceptance/{f}" for f in files) or "its acceptance commands"
+            head = (f"round C{rnd} baseline: the acceptance of passed step {owner} failed on the round's base "
+                    f"{base[:9]}, before any change of this round ({what}; `{cmd}`, {why}). No coder was started.\n"
+                    + self.passed_test_advice(owner, files))
+        else:
+            head = (f"round C{rnd} baseline: a shared setup/regression command failed on the round's base "
+                    f"{base[:9]}, before any change of this round (`{cmd}`, {why}). No coder was started. "
+                    f"Fix the spec repo (PR) or the environment, then: hands {c.name} ack")
+        self.escalate(f"{head}\n{tail}\nLogs: {adir}")
+
+    def passed_files_for(self, sid: str, cmd: str) -> list[str]:
+        """The passed step's recorded acceptance files that `cmd` names, else all of them."""
+        rec = self.state.data["steps"].get(sid) or {}
+        files = [f for f in rec.get("spec_files") or [] if isinstance(f, str)]
+        named = [f for f in files if re.search(r"(?<![\w./-])(?:/workspace/|\./)?acceptance/" + re.escape(f)
+                                               + r"(?![\w./-])", cmd)]
+        return named or files
+
+    def passed_test_advice(self, sid: str, files: list[str]) -> str:
+        """What the human can really do when a passed step's own test fails (a spec PR cannot change it)."""
+        name = self.cfg.name
+        what = ", ".join(f"acceptance/{f}" for f in files) or f"{sid}'s acceptance files"
+        lines = [f"The failing check is {sid}'s test ({what}) and {sid} already passed, so a spec PR cannot change it "
+                 f"(a passed step's steps.json entry and acceptance files are frozen; a hand-merged change escalates).",
+                 "Options:",
+                 "1. Amend plan with a code fix (the test is right, the code must change).",
+                 f"2. Amend plan changing that test (the test itself is wrong): the amendment lists {what} in steps.json "
+                 f"tests_changed with a why, and approving it needs the extra tick \"This amendment changes tests of steps "
+                 f"that already passed\" (CLI: hands {name} approve --ack-passed-tests)."]
+        rr = rounds.record(self.state.data)
+        if rr and rr.get("status") == "open":
+            lines.append(f"Amendments are refused while round C{rr['id']} is open on {rr.get('branch')}: discard it "
+                         f"first (dashboard: Discard, or hands {name} discard --branch-sha <head of {rr.get('branch')}>).")
+        return "\n".join(lines)
+
+    def regression_advice(self, reasons: list[str]) -> str:
+        """passed_test_advice for a 'regression: acceptance of passed step X failed' check failure, else ''."""
+        m = re.match(r"regression: acceptance of passed step (\S+) failed \(.*?\): `(.*)`", reasons[0] if reasons else "", re.S)
+        if not m or not self.state.passed(m.group(1)):
+            return ""
+        return self.passed_test_advice(m.group(1), self.passed_files_for(m.group(1), m.group(2)))
+
+    def spec_problem_advice(self, text: str, current: str) -> str:
+        """passed_test_advice when the coder's SPEC_PROBLEM names a passed step or one of its acceptance files."""
+        for sid, rec in sorted(self.state.data["steps"].items()):
+            if sid == current or rec.get("status") != "passed":
+                continue
+            files = [f for f in rec.get("spec_files") or [] if isinstance(f, str)]
+            named = [f for f in files if re.search(r"(?<![\w./-])" + re.escape(f) + r"(?![\w/-]|\.\w)", text)]
+            if named or re.search(r"(?<![\w-])" + re.escape(sid) + r"(?![\w-])", text):
+                return self.passed_test_advice(sid, named or files)
+        return ""
 
     def attempt_dir(self, sid: str, attempt: int) -> Path:
         adir = self.cfg.state_dir / "attempts" / f"{sid}-{attempt}"
@@ -707,8 +815,14 @@ class Runner:
     def run_acceptance(self, step, attempt, commit: str, adir: Path) -> tuple[list[dict], list[str] | None]:
         """Each command runs in its own container; the result is that container's exit code.
         Output goes to a host file via the container's stdout, so nothing in the container can forge it."""
-        c, spec = self.cfg, self.spec
-        plan = prompts.acceptance_plan(spec, step, self.regression_steps())
+        plan = prompts.acceptance_plan(self.spec, step, self.regression_steps())
+        return self._run_plan(plan, step.id, f"{step.id}-{attempt}", f"{step.id}#{attempt}", commit, adir)
+
+    def _run_plan(self, plan: list[tuple[str, str]], own: str, tag: str, label: str, commit: str,
+                  adir: Path) -> tuple[list[dict], list[str] | None]:
+        """Run (command, owner) pairs at `commit` (step acceptance and the round baseline share this): stops at
+        the first failure; a failure owned by another (passed) step is reported as a regression."""
+        c = self.cfg
         verify = self.fresh_clone("verify", commit)
         store = docker.volume_create(c, f"hands-{c.name}-accept-{secrets.token_hex(4)}")
         report: list[dict] = []
@@ -718,17 +832,17 @@ class Runner:
                 logf.write_text(f"### {cmd}\n")
                 t0 = time.time()
                 rc = docker.run(c, Run(
-                    name=docker.unique_name(c, "accept", f"{step.id}-{attempt}-{i}"), role="accept",
+                    name=docker.unique_name(c, "accept", f"{tag}-{i}"), role="accept",
                     cmd=["bash", "-c", cmd], mounts=self.mounts(verify, store=store),
                     env=self.common_env("accept"), env_files=self.env_files(claude_token=False),
                     stdout=logf, stderr=logf, timeout_s=c.accept_timeout_min * 60, append_stdout=True))
                 self.redact_files(logf)
                 report.append({"cmd": cmd, "rc": rc, "for": owner})
-                self.log(f"acceptance {step.id}#{attempt} [{i}] rc={rc} {time.time() - t0:.0f}s: {cmd}")
+                self.log(f"acceptance {label} [{i}] rc={rc} {time.time() - t0:.0f}s: {cmd}")
                 if rc != 0:
                     tail = "\n".join(logf.read_text(errors="replace").splitlines()[-80:])
                     why = "timed out" if rc == 124 else f"exit {rc}"
-                    what = (f"regression: acceptance of passed step {owner} failed" if owner and owner != step.id
+                    what = (f"regression: acceptance of passed step {owner} failed" if owner and owner != own
                             else "acceptance command failed")
                     return report, [f"{what} ({why}): `{cmd}`", f"last output:\n{tail}"]
             return report, None
@@ -810,15 +924,19 @@ class Runner:
         self.state.append_jsonl("attempts.jsonl", {"step": step.id, "attempt": attempt, "reasons": reasons[:10]})
         first = reasons[0] if reasons else "?"
         self.log(f"FAILED {step.id} attempt {attempt}/{max_attempts}: {first}")
+        advice = self.regression_advice(reasons)
+        advice = advice + "\n" if advice else ""
         if attempt >= max_attempts:
-            self.escalate(f"{step.id} failed {attempt} attempts. Last: {' | '.join(reasons[:3])[:900]}\nLogs: {adir}")
+            self.escalate(f"{step.id} failed {attempt} attempts. Last: {' | '.join(reasons[:3])[:900]}\n{advice}Logs: {adir}")
         if getattr(self, "spec_problem", ""):
+            named = self.spec_problem_advice(self.spec_problem, step.id)
+            fix = named or f"Fix the spec repo (PR), then: hands {c.name} ack"
             self.escalate(f"{step.id} attempt {attempt} failed and the coder reports a problem in the spec/tests it "
-                          f"cannot fix:\n{self.spec_problem[:900]}\nFix the spec repo (PR), then: hands {c.name} ack\nLogs: {adir}")
+                          f"cannot fix:\n{self.spec_problem[:900]}\n{fix}\nLogs: {adir}")
         sig = failure_signature(reasons)
         if prev_sig and sig and sig == prev_sig:
             self.escalate(f"{step.id} failed twice in a row with the same error, so another attempt is unlikely to "
-                          f"help:\n{' | '.join(reasons[:2])[:900]}\nLogs: {adir}")
+                          f"help:\n{' | '.join(reasons[:2])[:900]}\n{advice}Logs: {adir}")
         self.send(f"{step.id} attempt {attempt}/{max_attempts} rejected: {first[:300]}")
         return False
 

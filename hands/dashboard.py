@@ -490,10 +490,12 @@ def plan_info(cfg) -> dict:
     out = {k: st.get(k) for k in ("state", "error", "pr", "pr_url", "head_sha", "summary", "files", "domains", "steps",
                                   "activity", "files_written", "started", "warnings",
                                   "mode", "round", "app_sha", "request", "branch")}
-    for k in ("new_steps", "tests_changed", "shared_changed"):
+    for k in ("new_steps", "tests_changed", "shared_changed", "passed_tests_changed"):
         out[k] = st.get(k) if isinstance(st.get(k), list) else []
     out["tests_changed"] = [x if isinstance(x, dict) else {"path": str(x), "change": "change", "why": ""}
                             for x in out["tests_changed"]]
+    out["passed_tests_changed"] = [{k: str(x.get(k) or "") for k in ("path", "step", "change", "why")}
+                                   for x in out["passed_tests_changed"] if isinstance(x, dict)]
     out["running"] = running
     act = read_json(d / "plan-activity.json", None)
     if isinstance(act, dict) and st.get("state") == "planning":
@@ -553,11 +555,13 @@ def spawn_cli(log: Path, argv_tail: list[str], stdin_text: str = "") -> None:
 
 
 def plan_action(name: str, action: str, feedback: str, head_sha: str = "", shared_ack: bool = False,
-                domains_ack: bool = False, tests_ack: bool = False, req: dict | None = None) -> dict:
+                domains_ack: bool = False, tests_ack: bool = False, req: dict | None = None,
+                passed_tests_ack: bool = False) -> dict:
     """plan | amend | approve. `amend` = `hands NAME plan --amend` with the change request on stdin (and, from
     `req`, new style_refs[] / framework / libs[] as CLI flags, processed before the planner runs). Approving a
     plan that adds network domains needs domains_ack, an amendment that changes shared settings (regression,
-    allowed_paths, ...) needs shared_ack: the review ticks, passed on to the CLI as --ack-domains / --ack-shared."""
+    allowed_paths, ...) needs shared_ack, one that changes tests of steps that already passed needs passed_tests_ack:
+    the review ticks, passed on to the CLI as --ack-domains / --ack-shared / --ack-tests / --ack-passed-tests."""
     from . import planner
     cfg = load_cfg(name)
     if not cfg.managed:
@@ -580,6 +584,9 @@ def plan_action(name: str, action: str, feedback: str, head_sha: str = "", share
             raise ValueError("this plan adds network domains; tick the box confirming you checked them, then approve")
         if action == "approve" and st.get("tests_changed") and not tests_ack:
             raise ValueError("this amendment changes or removes existing tests; tick the box confirming you checked them, then approve")
+        if action == "approve" and st.get("passed_tests_changed") and not passed_tests_ack:
+            raise ValueError("this amendment changes tests of steps that already passed; tick that separate box "
+                             "confirming you checked them, then approve")
         if action == "plan" and st.get("state") == "approved":
             raise ValueError("the plan was already approved; use Amend plan to add to it")
         if action == "amend":
@@ -596,7 +603,7 @@ def plan_action(name: str, action: str, feedback: str, head_sha: str = "", share
                                 **({"mode": "amend"} if action == "amend" else {}))
         argv = {"plan": [name, "plan"], "amend": [name, "plan", "--amend", *extra],
                 "approve": [name, "approve", head_sha] + (["--ack-shared"] if shared_ack else []) + (["--ack-domains"] if domains_ack else [])
-                + (["--ack-tests"] if tests_ack else [])}[action]
+                + (["--ack-tests"] if tests_ack else []) + (["--ack-passed-tests"] if passed_tests_ack else [])}[action]
         spawn_cli(d / "plan.log", argv, feedback if action in ("plan", "amend") else "")
     return {"rc": 0, "output": f"{action} started"}
 
@@ -1350,8 +1357,9 @@ class Handler(BaseHTTPRequestHandler):
             ack = req.get("shared_ack") is True if isinstance(req, dict) else False
             dack = req.get("domains_ack") is True if isinstance(req, dict) else False
             tack = req.get("tests_ack") is True if isinstance(req, dict) else False
+            pack = req.get("passed_tests_ack") is True if isinstance(req, dict) else False
             return self._json(200, plan_action(parts[2], parts[4], fb, hs, ack, dack, tack,
-                                               req if isinstance(req, dict) else None))
+                                               req if isinstance(req, dict) else None, pack))
         if len(parts) == 5 and parts[:2] == ["api", "p"] and parts[3] == "action" and parts[4] in ("merge", "discard"):
             try:
                 req = json.loads(body or b"{}")

@@ -1048,6 +1048,7 @@ const planViewerTitle = el("h3", { "data-self-managed": "" }, "File");
 
 let sharedAck = false;
 let testsAck = false;
+let passedTestsAck = false;
 let ackFor = "";                       // head_sha the ticks were given for: a new candidate starts unticked
 const RISKY = /\b(curl|wget|nc|ncat|socat|ssh|scp|base64|eval|exec|python3? -c|node -e|perl|env|printenv|sudo)\b|\|\s*(ba)?sh\b|\$\(|`|>\s*\/|https?:\/\//;
 let domainAck = false;
@@ -1063,9 +1064,9 @@ async function planAction(name, act, label, headSha) {
       headers: { "X-Hands": "1", "Content-Type": "application/json" },
       body: JSON.stringify({ feedback: act === "plan" || act === "amend" ? planFeedback : "", head_sha: headSha || "",
         shared_ack: act === "approve" ? sharedAck : false, domains_ack: act === "approve" ? domainAck : false,
-        tests_ack: act === "approve" ? testsAck : false }) });
+        tests_ack: act === "approve" ? testsAck : false, passed_tests_ack: act === "approve" ? passedTestsAck : false }) });
     if (act === "plan" || act === "amend") planFeedback = "";
-    if (act === "approve") { sharedAck = false; domainAck = false; testsAck = false; }
+    if (act === "approve") { sharedAck = false; domainAck = false; testsAck = false; passedTestsAck = false; }
   } catch (e) { toast(`${label} failed: ${e.message}`, true); }
   refresh(false);
 }
@@ -1107,6 +1108,22 @@ function testsBox(p) {
     el("table", { class: "diff" }, el("thead", {}, el("tr", {}, ["Test", "Change", "Why"].map((h) => el("th", {}, h)))),
       el("tbody", {}, p.tests_changed.map(row))),
     el("label", { for: "testsack", class: "inline" }, box, " I checked these test changes and want them"));
+}
+
+// tests of steps that already passed (0.6.0): a frozen step's test the amendment changes because the test itself
+// is wrong; its own tick, separate from the tests box above (CLI: approve --ack-passed-tests)
+function passedTestsBox(p) {
+  const box = el("input", { type: "checkbox", id: "passedtestsack" });
+  box.checked = passedTestsAck;
+  box.addEventListener("change", () => { passedTestsAck = box.checked; refresh(false); });
+  const row = (x) => el("tr", {}, el("td", { class: "mono" }, x.path), el("td", { class: "mono" }, x.step),
+    el("td", {}, x.change === "remove" ? "removed" : "changed"), el("td", { class: "goal" }, x.why || ""));
+  return el("div", { class: "warnbox" },
+    el("strong", {}, "This amendment changes tests of steps that already passed:"),
+    el("table", { class: "diff" }, el("thead", {}, el("tr", {}, ["Test", "Step", "Change", "Why"].map((h) => el("th", {}, h)))),
+      el("tbody", {}, p.passed_tests_changed.map(row))),
+    el("p", { class: "muted" }, "Those steps were built and checked with the old tests; after the merge their records are updated to the new ones."),
+    el("label", { for: "passedtestsack", class: "inline" }, box, " I checked these changes to already-passed tests and want them"));
 }
 
 function sharedBox(p) {
@@ -1182,11 +1199,12 @@ function planSection(d) {
   const parts = [head];
   if (p.error) parts.push(el("p", { class: "reason" }, p.error));
   if (st === "ready") {
-    if ((p.head_sha || "") !== ackFor) { ackFor = p.head_sha || ""; sharedAck = false; domainAck = false; testsAck = false; }
+    if ((p.head_sha || "") !== ackFor) { ackFor = p.head_sha || ""; sharedAck = false; domainAck = false; testsAck = false; passedTestsAck = false; }
     parts.push(el("p", {}, p.summary || ""));
     if (amend) parts.push(amendNotice(p));
     if (amend && (p.shared_changed || []).length) parts.push(sharedBox(p));
     if (amend && (p.tests_changed || []).length) parts.push(testsBox(p));
+    if (amend && (p.passed_tests_changed || []).length) parts.push(passedTestsBox(p));
     (p.warnings || []).forEach((w) => parts.push(el("div", { class: "notice warn" }, el("strong", {}, "Check before approving"), w)));
     if ((p.domains || []).length) {
       const box = el("input", { type: "checkbox", id: "domack" });
@@ -1226,7 +1244,8 @@ function planSection(d) {
   if (p.plan_md) parts.push(el("h3", {}, "PLAN.md"), el("pre", {}, p.plan_md));
   parts.push(el("label", {}, st === "ready" ? "Feedback (optional, for a re-plan)" : "Feedback for the next attempt (optional)"), fb);
   const canApprove = !d.alive && (!(p.domains || []).length || domainAck) && (!amend || !(p.shared_changed || []).length || sharedAck)
-    && (!amend || !(p.tests_changed || []).length || testsAck);
+    && (!amend || !(p.tests_changed || []).length || testsAck)
+    && (!amend || !(p.passed_tests_changed || []).length || passedTestsAck);
   parts.push(el("div", { class: "row out" },
     st === "ready" ? btn(`Approve & build${amend ? " amendment" : ""} (${(p.head_sha || "").slice(0, 7)})`, "approve",
       `Merge PR #${p.pr} at ${(p.head_sha || "").slice(0, 7)} exactly as reviewed and start building`, canApprove, p.head_sha || "") : null,

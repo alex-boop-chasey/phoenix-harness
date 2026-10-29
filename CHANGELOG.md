@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0 fix: change rounds and passed steps' tests (2026-10-29)
+
+On `phoenix-frozen`; VERSION stays 0.6.0. From phoenix-8-0 round C1: S01's `REQ-REPO-03` (suite under 60 s) had
+been failing since S05, unnoticed, and the escalation's advice (a spec PR) could not work for a passed step.
+
+- Round baseline: before a change round's first new step, every passed code step's acceptance runs once on the
+  round's base (same containers as the regression run). A failure escalates before any coder starts, naming the
+  step and file; the result is recorded in `round.baseline` (not re-run on restart unless the base, the commands
+  or the passed steps' records change). Records without it load unchanged.
+- Route B: an amendment may change (or remove, unless the step's command names it) a passed step's acceptance
+  files when they are listed in `tests_changed` with a why. Shown separately (`passed_tests_changed`), approved
+  only with its own tick ("This amendment changes tests of steps that already passed", CLI
+  `--ack-passed-tests`); after the merge those steps are re-recorded (`spec_hash`/`spec_files`, `tests_amended`).
+  The entry stays frozen; a change merged by hand still escalates. Planner instructions explain the route.
+- Escalations for a passed step's failing test (regression, baseline, a SPEC_PROBLEM naming it) name the step and
+  file, say a spec PR cannot change it, and give the two real options (and that an open round must be discarded
+  first); the generic text stays for the current step's own spec.
+
 ## 0.6.0 (dashboard render rethink, 2026-10-22)
 
 From `main` 0301dd6 (0.5.8). Session manager untouched.

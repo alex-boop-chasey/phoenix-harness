@@ -22,6 +22,20 @@ def acceptance_plan(spec: Spec, step: Step, regression_steps: list[Step] = ()) -
     for s in regression_steps:
         cmds += [(c, step.id if c in own else s.id) for c in _step_cmds(spec, s)]
     cmds += [(c, step.id) for c in _step_cmds(spec, step)]
+    return _dedupe(cmds)
+
+
+def baseline_plan(spec: Spec, regression_steps: list[Step]) -> list[tuple[str, str]]:
+    """The change round's baseline (0.6.0): setup + regression (owner ""), then every passed step's own commands
+    (owner = that step), run once on the round's base commit before any new step is built."""
+    cmds: list[tuple[str, str]] = [(c, "") for c in (*spec.setup, *spec.regression)]
+    for s in regression_steps:
+        cmds += [(c, s.id) for c in _step_cmds(spec, s)]
+    return _dedupe(cmds)
+
+
+def _dedupe(cmds: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Drop repeated commands, keeping the first owner."""
     seen, out = set(), []
     for c, who in cmds:
         if c not in seen:

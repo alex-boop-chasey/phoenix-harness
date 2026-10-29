@@ -318,15 +318,21 @@ step; a new id without the `C<round>-` prefix; any change to a step the runner a
 when it passed, `mark-done` records it too, and since 0.5.7 the runner's own record `spec_hash`/`spec_files`
 is the final arbiter, independent of the spec repo's history); a changed or removed existing acceptance file
 that is not declared in steps.json `tests_changed` (`[{"path", "change": "change"|"remove", "why"}]`, 0.5.7:
-the list must match the real diff of existing `acceptance/**` files exactly, in both directions; a file of a
-built step may not appear; PLAN.md may summarise it but is not the source of truth; removed files become
-deletions in the PR); a dropped or re-versioned pin (no pins at all is fine when the base had none; only new
+the list must match the real diff of existing `acceptance/**` files exactly, in both directions; PLAN.md may
+summarise it but is not the source of truth; removed files become deletions in the PR. 0.6.0: a file of a built
+step may appear there too (route B, for a test that is itself wrong, e.g. a wall-clock limit a growing suite will
+always break): the step's entry stays frozen, the record must still match with that file at its recorded bytes,
+a file the step's frozen command names may change but not be removed, and the entry is reported separately as
+`passed_tests_changed`); a dropped or re-versioned pin (no pins at all is fine when the base had none; only new
 pins are age-checked); an amendment that adds no step; in a fresh plan, ids that look like `C<n>-` or a
 `tests_changed` list. Changes to shared settings (setup, regression, e2e_command, allowed_paths,
 allow_text_paths, always_refs) are accepted but flagged (`shared_changed`, old vs new): Approve is refused
 until the reviewer ticks them, in the dashboard (`shared_ack`, server-side) and in the CLI (`--ack-shared`,
 which prints the old and new values); changed or removed tests need their own tick (`tests_ack` /
-`--ack-tests`, which prints the list with reasons); new network domains need the same (`domains_ack` /
+`--ack-tests`, which prints the list with reasons); changed tests of built steps need a separate one
+(`passed_tests_ack` / `--ack-passed-tests`, 0.6.0), and after the merge approve re-records exactly those steps
+under the runner lock (`spec_hash`/`spec_files` plus `tests_amended` {commit, round, at, files}, the commit later
+amendments compare them with; logged, and a `tests_rerecorded` event in rounds.jsonl); new network domains need the same (`domains_ack` /
 `--ack-domains`). Each round opens its own branch `hands/amend-C<round>` and PR; approve is the same
 sha-pinned squash merge; the runner then picks up the first non-passed step as usual. Early refusals (build
 running, a fresh plan awaiting review, no steps.json, empty change request, an open change round) leave the
@@ -411,7 +417,19 @@ the runner records `spec_hash` over exactly those when the step passes and re-ch
 (a mismatch escalates before any session starts: "passed step(s) changed in the spec since they passed"),
 and the amend validator checks candidates against the same record. Everything else may change in later
 rounds through the validator: `docs/*.md`, PLAN.md, shared settings (ticked), tests of steps not built yet
-and shared tests (declared in `tests_changed`, ticked), pins (only additions).
+and shared tests (declared in `tests_changed`, ticked), pins (only additions). 0.6.0: a built step's tests (never
+its entry) through route B above, with their own tick; a change merged any other way still escalates.
+
+**Round baseline (0.6.0).** Round 0 runs each step's own checks only, so a passed step's test can start failing
+later without anyone noticing (phoenix-8-0: a 60 s suite-time limit the growing suite broke). Before a change
+round's first new step is built, the runner therefore runs every passed code step's acceptance once on the
+round's base commit (same plan order, containers, view rules and redaction as the per-step regression run). A
+failure there escalates before any coder starts, naming the passed step and file, with the two real options
+(an amendment with a code fix, or one changing that test via route B); the result is kept in the round record
+(`baseline`: key over the base, the commands and the passed steps' `spec_hash`, status, and the failing
+step/cmd/files/rc), so a passed baseline is not re-run on restart unless the key changes. Escalations whose
+failing check is a passed step's acceptance (regression failures, a SPEC_PROBLEM that names a passed step or
+its file) give the same options instead of "fix the spec repo", which cannot work for a frozen step.
 
 **Not supported yet: database migrations.** A change round rebuilds nothing and runs on a branch of the
 app repo only; it has no notion of a database schema, data migration, or rollback of either. A project

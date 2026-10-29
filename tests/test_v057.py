@@ -94,10 +94,13 @@ class TestRounds(unittest.TestCase):
             s = r.state.data["steps"][sid]
             self.assertEqual((s["status"], s["round"], s["branch"]), ("passed", 1, "change/C1"))
         self.assertEqual(r.state.data["steps"]["S01"]["round"], 0)
-        # regression: every passed step's acceptance ran before C1-01's own, in spec order, and the prompt said so
+        # 0.6.0 baseline: the passed steps' acceptance once on the base, before C1-01's coder; then the regression
+        # rule: every passed step's acceptance ran before C1-01's own, in spec order, and the prompt said so
         accept = [a[-1] for a in (json.loads(x) for x in (e.tmp / "docker.jsonl").read_text().splitlines()) if "HANDS_ROLE=accept" in a]
-        self.assertEqual(accept, ["bash acceptance/check.sh", "test -f src/b.js", "test -f src/p.js",
+        self.assertEqual(accept, ["bash acceptance/check.sh", "test -f src/b.js",
+                                  "bash acceptance/check.sh", "test -f src/b.js", "test -f src/p.js",
                                   "bash acceptance/check.sh", "test -f src/b.js", "test -f src/p.js", "test -f src/f.js"])
+        self.assertEqual((rec["baseline"]["status"], rec["baseline"]["base_sha"]), ("passed", b.main))
         recs = [x for x in e.prompt_records() if x["role"] == "coder"]
         self.assertIn("change round C1", recs[0]["prompt"])
         self.assertIn("- `bash acceptance/check.sh`", recs[0]["prompt"].split("regression)")[1])
